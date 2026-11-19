@@ -189,7 +189,7 @@ fn obtain(sink: &ProgressFn, src: &ArtifactSource, name: &str, url: &str, dest: 
                 format!("{}/{}", base_url.trim_end_matches('/'), name)
             };
             log(sink, format!("downloading {url}"));
-            let resp = crate::net::agent().get(&url)
+            let resp = crate::net::get(&url)?
                 .call()
                 .map_err(|e| format!("download {name}: {e}"))?;
             let mut reader = resp.into_reader();
@@ -198,6 +198,13 @@ fn obtain(sink: &ProgressFn, src: &ArtifactSource, name: &str, url: &str, dest: 
         }
     }
     Ok(out)
+}
+
+/// [`obtain`] of `url` online, into `dest` (the offline test of every
+/// downloader).
+#[cfg(test)]
+pub(crate) fn obtain_for_test(url: &str, dest: &Path) -> Result<PathBuf, String> {
+    obtain(&crate::progress::noop(), &ArtifactSource::Remote { base_url: String::new() }, "spm-offline-test.bin", url, dest)
 }
 
 /// Extract a `.zip` using the `tar.exe` that ships with Windows 10+.

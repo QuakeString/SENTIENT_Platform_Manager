@@ -80,6 +80,10 @@ pub struct UpdatePage {
     /// update whose server needs a newer glibc is not offered).
     libc: sentient_installer_core::glibc::Libc,
     os_name: String,
+    /// "Update from an offline pack": the pack being checked or checked
+    /// (crate::pack_check). Its update runs on `job` (SENTIENT, then the
+    /// gateway); the Platform Manager goes first, on `manager_job`.
+    pack: Option<Entity<crate::pack_check::PackCheck>>,
     _observe: Subscription,
     _observe_updates: Subscription,
     _observe_manager: Subscription,
@@ -171,6 +175,7 @@ impl UpdatePage {
                 None
             },
             debug_gate: std::env::var("SPM_DEBUG_LICENCE_DIALOG").ok().filter(|_| cfg!(debug_assertions)),
+            pack: None,
             _observe,
             _observe_updates,
             _observe_manager,
@@ -181,7 +186,110 @@ impl UpdatePage {
         page.refresh_versions(cx);
         page.refresh_gateway(cx);
         page.refresh_licence(cx);
+        // Screens: SPM_DEBUG_PACK = verifying, verified or wrong-os.
+        let debug_pack = std::env::var("SPM_DEBUG_PACK").ok().filter(|_| cfg!(debug_assertions));
+        if let Some(kind) = debug_pack {
+            page.pack = Some(cx.new(|_| crate::pack_check::PackCheck::debug(&kind)));
+        } else if let Some(dir) = std::env::args().collect::<Vec<_>>().windows(2).find(|w| w[0] == crate::updates::OFFLINE_PACK_ARG).map(|w| PathBuf::from(&w[1])) {
+            // The Platform Manager was updated from this pack: go on with it.
+            page.use_pack(dir, cx);
+        }
         page
+    }
+
+    /// Check the offline pack in `dir` (its table shows once it is verified).
+    fn use_pack(&mut self, dir: PathBuf, cx: &mut Context<Self>) {
+        let check = cx.new(|cx| crate::pack_check::PackCheck::new(dir, cx));
+        self._subs.push(cx.observe(&check, |_, _, cx| cx.notify()));
+        self.pack = Some(check);
+        cx.notify();
+    }
+
+    /// "Update from an offline pack": choose its folder.
+    fn choose_pack(&mut self, cx: &mut Context<Self>) {
+        let start = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")).map(PathBuf::from);
+        let rx = crate::chooser::open(
+            cx,
+            crate::chooser::Ask { title: "Choose the folder of the offline pack", start: start.as_deref(), directory: true },
+            PathPromptOptions { files: false, directories: true, multiple: false, prompt: Some("Use this pack".into()) },
+        );
+        cx.spawn(async move |this, cx| {
+            let Ok(Ok(Some(paths))) = rx.await else { return };
+            let Some(path) = paths.into_iter().next() else { return };
+            let dir = if path.is_file() { path.parent().map(PathBuf::from).unwrap_or(path) } else { path };
+            this.update(cx, |page, cx| page.use_pack(dir, cx)).ok();
+        })
+        .detach();
+    }
+
+    /// The verified pack's versions against what is installed here.
+    fn pack_versions(&self, cx: &App) -> Option<PackVersions> {
+        let p = self.pack.as_ref()?.read(cx).verified()?;
+        let gateway_here = self.gateway.as_ref().filter(|s| s.installed).map(|s| s.version.clone().unwrap_or_default());
+        Some(PackVersions::of(&p, crate::updates::manager_version(), &self.installed(), gateway_here.as_deref()))
+    }
+
+    /// "Update from this pack": the Platform Manager first when the pack's
+    /// is newer (it restarts and goes on with the pack); else SENTIENT
+    /// (after the licence check) and the gateway.
+    fn gate_pack_update(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(p) = self.pack.as_ref().and_then(|c| c.read(cx).verified()) else { return };
+        let Some(v) = self.pack_versions(cx) else { return };
+        if v.manager.newer() {
+            self.start_manager_from_pack(cx);
+            return;
+        }
+        if v.sentient.newer() {
+            let go = self.runs(|page, cx| page.start_pack_update(cx), cx);
+            self.gated(p.pack.sentient_version.clone(), p.pack.licence_build(), false, go, window, cx);
+        } else if v.gateway.newer() {
+            self.start_pack_update(cx);
+        }
+    }
+
+    /// The Platform Manager from the pack (crate::updates::
+    /// install_manager_from_pack); this window closes when the new one runs.
+    fn start_manager_from_pack(&mut self, cx: &mut Context<Self>) {
+        let Some(p) = self.pack.as_ref().and_then(|c| c.read(cx).verified()) else { return };
+        let plan = vec![
+            sentient_installer_core::progress::PlanStep::new(format!("Checking Platform Manager {} from the offline pack", p.pack.spm_version)),
+            sentient_installer_core::progress::PlanStep::new("Replacing the Platform Manager"),
+        ];
+        self.manager_job.update(cx, |job, _| job.set_plan(plan));
+        self.manager_job.update(cx, |job, cx| job.start(move |sink| crate::updates::install_manager_from_pack(&p, &sink), cx));
+        cx.notify();
+    }
+
+    /// SENTIENT and then the gateway from the pack, whichever is newer
+    /// there, in offline mode: nothing is pulled or downloaded.
+    fn start_pack_update(&mut self, cx: &mut Context<Self>) {
+        let Some(p) = self.pack.as_ref().and_then(|c| c.read(cx).verified()) else { return };
+        let Some(v) = self.pack_versions(cx) else { return };
+        let Some(record) = self.record.clone() else { return };
+        let accept = self.accept_breaking;
+        let docker = record.engine == Engine::Docker;
+        let target = docker.then(|| retag(&record.stack.image, &p.pack.sentient_version));
+        let mut plan = Vec::new();
+        if v.sentient.newer() {
+            plan = match &target {
+                Some(_) => crate::jobplan::docker_to(self.shape(), &p.pack.sentient_version, self.docker_step(&p.pack.sentient_version).unwrap_or(crate::updating::DockerStep::Update)),
+                None => crate::jobplan::update(self.shape(), None, Some(&p.pack.sentient_version)),
+            };
+        }
+        let gateway = v.gateway.newer().then(|| sentient_installer_core::gateway::offer_from_pack(&p)).flatten();
+        if let Some(o) = &gateway {
+            plan.push(sentient_installer_core::progress::PlanStep::new(format!("Copying Sentient Gateway {} from the offline pack", o.version)).weight(1.));
+            plan.push(sentient_installer_core::progress::PlanStep::new(format!("Installing Sentient Gateway {}", o.version)).weight(2.));
+        }
+        let do_sentient = v.sentient.newer();
+        let title = if do_sentient {
+            format!("Updating SENTIENT {} to {} from the offline pack", self.installed(), p.pack.sentient_version)
+        } else {
+            "Updating the Sentient Gateway from the offline pack".to_string()
+        };
+        self.plan_run(title, plan, cx);
+        self.job.update(cx, |job, cx| job.start(move |sink| crate::updating::from_pack(record, &p, do_sentient, target.as_deref(), gateway.as_ref(), accept, sink).map(|_| ()), cx));
+        cx.notify();
     }
 
     /// Read the licence's allowed versions without a sign-in (in the
@@ -577,6 +685,97 @@ impl UpdatePage {
 
 pub(crate) use crate::maintenance_ops::retag;
 
+/// The Update-from-pack table's version columns and its verdict column.
+const PACK_COL_W: f32 = 104.;
+const PACK_PILL_W: f32 = 112.;
+
+/// One product of the Update-from-pack table: what is installed and what
+/// the pack holds.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PackRow {
+    /// None: not installed here.
+    pub installed: Option<String>,
+    /// None: the pack does not carry it.
+    pub in_pack: Option<String>,
+}
+
+impl PackRow {
+    /// The pack's is newer than the installed one (an update).
+    pub fn newer(&self) -> bool {
+        match (&self.installed, &self.in_pack) {
+            (Some(i), Some(p)) => releases::movement(p, i) == Move::Newer,
+            _ => false,
+        }
+    }
+
+    /// The table's last column: what the pack does to it.
+    pub fn verdict(&self) -> (Tone, &'static str) {
+        match (&self.installed, &self.in_pack) {
+            (_, None) => (Tone::Neutral, "Not in the pack"),
+            (None, Some(_)) => (Tone::Neutral, "Not installed"),
+            (Some(i), Some(p)) => match releases::movement(p, i) {
+                Move::Newer => (Tone::Good, "Update"),
+                Move::Same => (Tone::Neutral, "Up to date"),
+                _ => (Tone::Warn, "Older: kept"),
+            },
+        }
+    }
+}
+
+/// The Update-from-pack table: the Platform Manager, SENTIENT and the
+/// gateway.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PackVersions {
+    pub manager: PackRow,
+    pub sentient: PackRow,
+    pub gateway: PackRow,
+}
+
+impl PackVersions {
+    pub fn of(p: &sentient_installer_core::pack::Opened, manager: &str, sentient: &str, gateway: Option<&str>) -> PackVersions {
+        let carries = |k: sentient_installer_core::pack::Kind| p.file(k).is_some();
+        use sentient_installer_core::pack::Kind;
+        PackVersions {
+            manager: PackRow { installed: Some(manager.to_string()), in_pack: carries(Kind::Spm).then(|| p.pack.spm_version.clone()) },
+            sentient: PackRow {
+                installed: Some(sentient.to_string()).filter(|v| !v.is_empty()),
+                in_pack: (carries(Kind::Payload) || carries(Kind::Image)).then(|| p.pack.sentient_version.clone()),
+            },
+            gateway: PackRow { installed: gateway.map(String::from), in_pack: p.pack.gateway_version.clone().filter(|_| carries(Kind::Gateway)) },
+        }
+    }
+
+    /// Whether the pack updates anything here.
+    pub fn any(&self) -> bool {
+        self.manager.newer() || self.sentient.newer() || self.gateway.newer()
+    }
+
+    /// The button: the Platform Manager first, when it is newer.
+    pub fn action(&self) -> &'static str {
+        if self.manager.newer() {
+            "Update the Platform Manager first"
+        } else {
+            "Update from this pack"
+        }
+    }
+
+    /// The line under the table: the order the updates go in.
+    pub fn order(&self) -> String {
+        if self.manager.newer() {
+            let rest: Vec<&str> = [(self.sentient.newer(), "SENTIENT"), (self.gateway.newer(), "the gateway")].into_iter().filter(|(n, _)| *n).map(|(_, w)| w).collect();
+            if rest.is_empty() {
+                "The Platform Manager restarts on the new version.".into()
+            } else {
+                format!("The Platform Manager is updated first and restarts; it then shows this pack again to update {}.", rest.join(" and "))
+            }
+        } else if self.any() {
+            "SENTIENT first (its database is copied, the changes dry-run, and a failure goes back), then the gateway. Nothing is downloaded.".into()
+        } else {
+            "Everything here is as new as the pack, or newer: nothing to update.".into()
+        }
+    }
+}
+
 impl UpdatePage {
     /// Whether the version list was read and has entries; otherwise the
     /// page offers the channel's newest alone, as before.
@@ -789,6 +988,92 @@ impl UpdatePage {
             .ok();
         })
         .detach();
+    }
+
+    /// "Update from an offline pack": the pack's check, then a table of the
+    /// versions (installed → in the pack) and the update.
+    fn pack_panel(&self, theme: &gpui_kit::component::Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let check = self.pack.as_ref()?;
+        let busy = self.job.read(cx).is_running() || self.manager_job.read(cx).is_running();
+        let card = crate::pack_check::panel_of(check, cx);
+        let close = crate::ui::button("pack-close").outline().label("Close").disabled(busy).on_click(cx.listener(|this, _, _, cx| {
+            this.pack = None;
+            cx.notify();
+        }));
+        let Some(v) = self.pack_versions(cx) else {
+            return Some(card.child(ui::button_row(vec![close.into_any_element()]).justify_end()).into_any_element());
+        };
+        let p = check.read(cx).verified()?;
+        let read = self.licence_read();
+        let cell = |w: f32| div().w(px(w)).flex_shrink_0().min_w_0();
+        // A narrow window: each product on two lines (name; installed →
+        // in the pack and the verdict), no column heads.
+        let narrow = ui::narrow();
+        let header = (!narrow).then(|| {
+            h_flex()
+                .gap_3()
+                .py(px(6.))
+                .text_size(px(13.))
+                .text_color(theme.muted_foreground)
+                .child(div().flex_1().min_w(px(120.)).child("Product"))
+                .child(cell(PACK_COL_W).child("Installed"))
+                .child(cell(PACK_COL_W).child("In this pack"))
+                .child(cell(PACK_PILL_W))
+        });
+        let rows = [
+            (ui::Product::Manager, "Platform Manager", &v.manager, None),
+            (ui::Product::Sentient, "SENTIENT", &v.sentient, Some(p.pack.licence_build())),
+            (ui::Product::Gateway, "Sentient Gateway", &v.gateway, None),
+        ];
+        let table = v_flex().children(header).children(rows.into_iter().map(|(logo, name, row, build)| {
+            let (tone, word) = row.verdict();
+            let installed = row.installed.clone().unwrap_or_else(|| "Not installed".into());
+            let in_pack = row.in_pack.clone().unwrap_or_else(|| "Not in the pack".into());
+            let product = h_flex()
+                .flex_1()
+                .min_w(px(120.))
+                .flex_wrap()
+                .gap_2()
+                .items_center()
+                .child(h_flex().gap_2().items_center().child(ui::product_logo(logo, 20.)).child(div().font_weight(FontWeight::MEDIUM).child(name)))
+                // The licence-aware check: does the licence cover the pack's SENTIENT?
+                .when_some(build.filter(|_| row.newer()), |r, b| r.child(licence_gate::pill(theme, &read, &b)));
+            let verdict = h_flex().flex_shrink_0().justify_end().child(ui::pill(theme, tone, word));
+            let line = h_flex().gap_3().py(px(8.)).items_center().border_t_1().border_color(theme.border).text_sm();
+            if narrow {
+                line.child(
+                    v_flex().flex_1().min_w_0().gap_1().child(product).child(
+                        h_flex()
+                            .gap_3()
+                            .items_center()
+                            .child(div().flex_1().min_w_0().font_features(ui::tabular()).text_color(theme.muted_foreground).child(format!("{installed} → {in_pack}")))
+                            .child(verdict),
+                    ),
+                )
+            } else {
+                line.child(product)
+                    .child(cell(PACK_COL_W).font_features(ui::tabular()).child(installed))
+                    .child(cell(PACK_COL_W).font_features(ui::tabular()).child(in_pack))
+                    .child(cell(PACK_PILL_W).child(verdict))
+            }
+        }));
+        let update = crate::ui::button("pack-update")
+            .primary()
+            .label(v.action())
+            .disabled(busy || !v.any())
+            .on_click(cx.listener(|this, _, window, cx| this.gate_pack_update(window, cx)));
+        // The Platform Manager's own update, when it goes first.
+        let manager_run = (self.manager_job.read(cx).is_running() || matches!(self.manager_job.read(cx).state(), JobState::Failed(_))).then(|| {
+            crate::manager::jobview::JobView::new("pack-mgr", format!("Updating the Platform Manager to {} from the offline pack", p.pack.spm_version), &self.manager_job).render(cx)
+        });
+        Some(
+            card.child(table)
+                .child(div().text_sm().text_color(theme.muted_foreground).child(v.order()))
+                .child(div().text_sm().text_color(theme.muted_foreground).child(crate::pack_check::LICENCE_ONLINE))
+                .children(manager_run)
+                .child(ui::button_row(vec![close.into_any_element(), crate::ui::probed(update).into_any_element()]).justify_end())
+                .into_any_element(),
+        )
     }
 
     /// B4–B7: what this Platform Manager changes in the installation.
@@ -1041,6 +1326,16 @@ impl UpdatePage {
                     .child(div().text_sm().child("Channel"))
                     .child(channels)
                     .child(div().flex_1())
+                    // An installation: update it from an offline pack too.
+                    .when(self.record.is_some(), |r| {
+                        r.child(crate::ui::probed(
+                            crate::ui::button("from-pack")
+                                .outline()
+                                .label("Update from an offline pack")
+                                .disabled(self.job.read(cx).is_running())
+                                .on_click(cx.listener(|this, _, _, cx| this.choose_pack(cx))),
+                        ))
+                    })
                     .child(
                         crate::ui::button("check-updates")
                             .outline()
@@ -1110,7 +1405,9 @@ impl Render for UpdatePage {
             "Update",
             "Install a newer SENTIENT, with its database changes, and go back automatically if it fails.",
         );
-        let page = page.children(self.changes_panel(&theme, cx)).child(self.updates_panel(&theme, cx));
+        // An offline pack chosen: its check and table first, above the channel.
+        let pack = if self.record.is_some() { self.pack_panel(&theme, cx) } else { None };
+        let page = page.children(self.changes_panel(&theme, cx)).children(pack).child(self.updates_panel(&theme, cx));
         let Some(record) = &self.record else {
             return page.child(ui::not_installed(&theme));
         };
@@ -1409,4 +1706,44 @@ fn signature_note(theme: &gpui_kit::component::Theme, o: &crate::updates::Offer,
             .child(ui::info(SharedString::from(format!("sig-{id}")), help.into()))
             .into_any_element(),
     )
+}
+
+#[cfg(test)]
+mod pack_tests {
+    use super::{PackVersions, Tone};
+
+    fn pack() -> sentient_installer_core::pack::Opened {
+        sentient_installer_core::pack::debug_fake()
+    }
+
+    #[test]
+    fn the_pack_table_updates_the_platform_manager_first() {
+        // The fake pack: Platform Manager 0.9.4, SENTIENT 4.4.0.4, gateway 4.16.2.
+        let v = PackVersions::of(&pack(), "0.9.3", "4.4.0.3", Some("4.16.1"));
+        assert!(v.manager.newer() && v.sentient.newer() && v.gateway.newer());
+        assert_eq!(v.action(), "Update the Platform Manager first");
+        assert!(v.order().contains("Platform Manager is updated first") && v.order().contains("SENTIENT and the gateway"), "{}", v.order());
+        assert!(matches!(v.manager.verdict(), (Tone::Good, w) if w == "Update"), "{}", v.manager.verdict().1);
+        // The Platform Manager up to date: SENTIENT, then the gateway.
+        let v = PackVersions::of(&pack(), "0.9.4", "4.4.0.3", Some("4.16.1"));
+        assert_eq!(v.action(), "Update from this pack");
+        assert!(v.order().starts_with("SENTIENT first"));
+        assert!(matches!(v.manager.verdict(), (Tone::Neutral, w) if w == "Up to date"), "{}", v.manager.verdict().1);
+    }
+
+    #[test]
+    fn an_older_or_missing_product_is_said_and_never_updated() {
+        let v = PackVersions::of(&pack(), "0.9.5", "4.4.0.5", None);
+        assert!(!v.any());
+        assert!(matches!(v.manager.verdict(), (Tone::Warn, w) if w == "Older: kept"), "{}", v.manager.verdict().1);
+        assert!(matches!(v.sentient.verdict(), (Tone::Warn, w) if w == "Older: kept"), "{}", v.sentient.verdict().1);
+        assert!(matches!(v.gateway.verdict(), (Tone::Neutral, w) if w == "Not installed"), "{}", v.gateway.verdict().1);
+        assert!(!v.gateway.newer());
+        assert!(v.order().contains("nothing to update"));
+        // A pack without the gateway's installer.
+        let mut p = pack();
+        p.pack.files.retain(|f| f.kind != sentient_installer_core::pack::Kind::Gateway);
+        let v = PackVersions::of(&p, "0.9.4", "4.4.0.4", Some("4.16.1"));
+        assert!(matches!(v.gateway.verdict(), (Tone::Neutral, w) if w == "Not in the pack"), "{}", v.gateway.verdict().1);
+    }
 }

@@ -45,7 +45,7 @@ pub fn install_sentient_from_package(window: &mut Window, cx: &mut App) {
                 Err(e) => format!("Could not start {}: {e}", setup.display()),
             },
             None => format!(
-                "{} is not a SENTIENT package: choose the unpacked folder that holds SENTIENT-Setup and payload.",
+                "{} is not a SENTIENT package: choose the unpacked folder that holds SENTIENT-Setup and payload (an offline pack's folder holds them too).",
                 dir.display()
             ),
         };

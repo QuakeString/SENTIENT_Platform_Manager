@@ -225,6 +225,30 @@ pub struct Offer {
     /// Its image ({IMAGE}:<version>) is not on Docker Hub yet: a gateway in
     /// Docker cannot take it ([`offer_blocker`]). False when not known.
     pub image_missing: bool,
+    /// The installer is this file of an offline pack (crate::pack), its
+    /// SHA-256 the `installer`'s digest: nothing is downloaded.
+    pub pack_file: Option<std::path::PathBuf>,
+}
+
+/// The gateway an offline pack carries, as an offer: its Windows installer
+/// from the pack.
+pub fn offer_from_pack(pack: &crate::pack::Opened) -> Option<Offer> {
+    let f = pack.file(crate::pack::Kind::Gateway)?;
+    let version = pack.pack.gateway_version.clone().or_else(|| {
+        let name = f.path.rsplit(['/', '\\']).next()?;
+        name.strip_prefix("SentientGatewaySetup-")?.strip_suffix(".exe").map(String::from)
+    })?;
+    let name = f.path.rsplit(['/', '\\']).next().unwrap_or(&f.path).to_string();
+    Some(Offer {
+        version,
+        date: pack.pack.created.clone(),
+        notes: String::new(),
+        page: String::new(),
+        installer: Some(releases::Asset { name, browser_download_url: String::new(), size: f.size, digest: Some(format!("sha256:{}", f.sha256)) }),
+        checksum: None,
+        image_missing: false,
+        pack_file: Some(pack.path_of(f)),
+    })
 }
 
 /// The gateway's releases in the SENTIENT releases repository.
@@ -260,6 +284,7 @@ pub fn newest_with(channel: releases::Channel, docker: bool, force: bool) -> Res
                 installer: None,
                 checksum: None,
                 image_missing: false,
+                pack_file: None,
             }));
         }
         Err(e) => return Err(e),
@@ -357,7 +382,7 @@ fn offer_of(r: &Release) -> Offer {
     let v = version_of(r);
     let installer = r.assets.iter().find(|a| a.name == format!("SentientGatewaySetup-{v}.exe")).cloned();
     let checksum = r.assets.iter().find(|a| a.name == format!("SentientGatewaySetup-{v}.exe.sha256")).cloned();
-    Offer { version: v, date: r.date(), notes: r.summary(), page: r.html_url.clone(), installer, checksum, image_missing: false }
+    Offer { version: v, date: r.date(), notes: r.summary(), page: r.html_url.clone(), installer, checksum, image_missing: false, pack_file: None }
 }
 
 /// Where the Windows service writes its log files, as the gateway resolves
@@ -618,9 +643,21 @@ mod windows {
         let dir = std::env::temp_dir().join(format!("sentient-gateway-{}", offer.version));
         std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
         let file = dir.join(&asset.name);
-        step(sink, &format!("Downloading Sentient Gateway {} ({} MB)", offer.version, asset.size >> 20));
-        download(&asset.browser_download_url, &file)?;
-        if let Some(sum) = &offer.checksum {
+        // From an offline pack: its file, checked against the pack's SHA-256.
+        if let Some(local) = &offer.pack_file {
+            step(sink, &format!("Copying Sentient Gateway {} from the offline pack", offer.version));
+            std::fs::copy(local, &file).map_err(|e| format!("copy {}: {e}", local.display()))?;
+            let expected = asset.digest.as_deref().and_then(|d| d.strip_prefix("sha256:")).unwrap_or_default().to_ascii_lowercase();
+            let actual = crate::manifest::sha256_file(&file)?;
+            if expected.is_empty() || expected != actual {
+                let _ = std::fs::remove_file(&file);
+                return Err(format!("The offline pack's gateway installer does not match its checksum ({}). Copy the pack again. Nothing was changed.", local.display()));
+            }
+        } else {
+            step(sink, &format!("Downloading Sentient Gateway {} ({} MB)", offer.version, asset.size >> 20));
+            download(&asset.browser_download_url, &file)?;
+        }
+        if let Some(sum) = offer.checksum.as_ref().filter(|_| offer.pack_file.is_none()) {
             let expected = fetch_text(&sum.browser_download_url)?
                 .split_whitespace()
                 .next()
@@ -917,8 +954,7 @@ mod windows {
     }
 
     fn download(url: &str, to: &std::path::Path) -> Result<(), String> {
-        let response = crate::net::agent()
-            .get(url)
+        let response = crate::net::get(url)?
             .set("User-Agent", "SENTIENT-Platform-Manager")
             .call()
             .map_err(|e| format!("download {url}: {e}"))?;
@@ -929,8 +965,7 @@ mod windows {
     }
 
     fn fetch_text(url: &str) -> Result<String, String> {
-        crate::net::agent()
-            .get(url)
+        crate::net::get(url)?
             .set("User-Agent", "SENTIENT-Platform-Manager")
             .call()
             .map_err(|e| format!("download {url}: {e}"))?

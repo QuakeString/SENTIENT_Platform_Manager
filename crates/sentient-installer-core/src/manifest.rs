@@ -102,7 +102,7 @@ pub fn fetch(url: &str) -> Result<Manifest, String> {
 }
 
 fn fetch_body(url: &str) -> Result<String, String> {
-    crate::net::agent().get(url)
+    crate::net::get(url)?
         .call()
         .map_err(|e| format!("Could not fetch the release manifest: {e}"))?
         .into_string()
@@ -168,7 +168,7 @@ pub fn download(sink: &ProgressFn, art: &Artifact, dir: &Path) -> Result<PathBuf
 
     let url = direct_url(&art.url);
     sink(Progress::Log { line: format!("downloading {}", art.file) });
-    let resp = crate::net::agent().get(&url)
+    let resp = crate::net::get(&url)?
         .call()
         .map_err(|e| format!("download {}: {e}", art.file))?;
 

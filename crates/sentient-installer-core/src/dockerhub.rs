@@ -45,8 +45,8 @@ pub fn tag_exists(repo: &str, tag: &str, force: bool) -> Result<bool, String> {
 }
 
 /// One GET: the body, `Ok(None)` for 404.
-fn get(url: &str) -> Result<Option<String>, Failure> {
-    match crate::net::agent().get(url).set("Accept", "application/json").set("User-Agent", AGENT).call() {
+pub(crate) fn get(url: &str) -> Result<Option<String>, Failure> {
+    match crate::net::get(url).map_err(Failure::Other)?.set("Accept", "application/json").set("User-Agent", AGENT).call() {
         Ok(r) => r.into_string().map(Some).map_err(|e| Failure::Other(format!("could not read Docker Hub's answer: {e}"))),
         Err(ureq::Error::Status(404, _)) => Ok(None),
         Err(ureq::Error::Status(403 | 429, _)) => Err(Failure::Limited("Docker Hub is limiting requests from this network; try again later.".into())),

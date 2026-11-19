@@ -407,6 +407,7 @@ pub fn update(sink: &ProgressFn, version: &str) -> Result<(), String> {
         let current = inspect_spec(CONTAINER).ok_or("The gateway container could not be read.")?;
         let image = format!("{IMAGE}:{version}");
         sink(Progress::Step { name: format!("Pulling {image}") });
+        crate::offline::refuse_network(&format!("pulling the image {image}"))?;
         super::run_stream(sink, &format!("docker pull {}", super::shell_quote(&image)))?;
         let found: Vec<SerialDevice> = serial_devices();
         let spec = update_spec(&current, &image, &image_env(&current.image), &found);
@@ -466,6 +467,7 @@ fn start(sink: &ProgressFn, version: &str, host: &str, port: u16, token: &str) -
     {
         let image = format!("{IMAGE}:{version}");
         sink(Progress::Step { name: format!("Pulling {image}") });
+        crate::offline::refuse_network(&format!("pulling the image {image}"))?;
         super::run_stream(sink, &format!("docker pull {}", super::shell_quote(&image)))?;
         sink(Progress::Step { name: format!("Starting Sentient Gateway {version}") });
         let _ = super::run(sink, &format!("docker rm -f {CONTAINER} >/dev/null 2>&1 || true"));
@@ -1018,6 +1020,9 @@ mod tests {
         assert_eq!(image_version(&all[2]), None);
     }
 
+    // std::os::unix and the #[cfg(unix)] serial_devices_in: Unix only (it
+    // broke the core tests on windows-latest).
+    #[cfg(unix)]
     #[test]
     fn serial_adapters_prefer_their_stable_names() {
         use std::os::unix::fs::MetadataExt as _;

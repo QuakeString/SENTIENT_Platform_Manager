@@ -358,6 +358,7 @@ pub fn update(sink: &ProgressFn, version: &str) -> Result<String, String> {
     let p = plan(&l, version, &now)?;
     // Before anything changes: the image, and the backup.
     step(format!("Pulling {}", p.run.image));
+    crate::offline::refuse_network(&format!("pulling the image {}", p.run.image))?;
     super::run_stream(sink, &format!("docker pull {}", q(&p.run.image)))?;
     if let Some((m, vol)) = &p.backup {
         step(format!("Backing up the gateway's configuration to the volume {vol}"));

@@ -154,6 +154,10 @@ pub struct Installer {
     /// Sign in to the computer automatically (only with open_at_signin).
     autologin: bool,
     bundle: Option<PathBuf>,
+    /// An offline pack (next to Setup, or chosen on Welcome), checked on
+    /// System check; once Verified, `bundle` is its payload and the
+    /// install runs offline (crate::pack_check).
+    pub(crate) pack: Option<Entity<crate::pack_check::PackCheck>>,
     /// No package: the latest release online (None while looking).
     online: Option<Result<sentient_installer_core::manifest::Manifest, String>>,
     /// No package: the published versions to choose from (None while
@@ -243,6 +247,8 @@ impl Installer {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         // After a restart for WSL2: the saved plan, to continue where it stopped.
         let resumed = std::env::args().any(|a| a == "--resume").then(plan::take_pending).flatten();
+        // A resumed install checks its pack itself (plan::run): not here too.
+        let resuming = resumed.is_some();
         let mut d = DeployConfig::default();
         if let Some(p) = &resumed {
             d.http_port = p.stack.http_port;
@@ -321,7 +327,10 @@ impl Installer {
             }
             cx.notify();
         });
-        let bundle = native::bundled_payload_dir();
+        // A pack beside Setup wins over a bare payload folder: it is used
+        // once it is verified (pack_verified).
+        let pack_dir = sentient_installer_core::pack::beside_exe();
+        let bundle = if pack_dir.is_some() { None } else { native::bundled_payload_dir() };
         let sentient_version = bundle
             .as_ref()
             .and_then(|dir| std::fs::read_to_string(dir.join("VERSION")).ok())
@@ -357,6 +366,7 @@ impl Installer {
             open_at_signin: false,
             autologin: false,
             bundle,
+            pack: None,
             online: None,
             versions: None,
             chosen_version: None,
@@ -426,32 +436,19 @@ impl Installer {
             this.install.update(cx, |job, _| job.set_plan(steps));
             this.install.update(cx, |job, cx| job.start(move |sink| plan::run(plan, sink), cx));
         }
-        if this.bundle.is_none() {
-            let task = cx.spawn(async move |this, cx| {
-                let found = cx.background_executor().spawn(async move { crate::online::latest() }).await;
-                this.update(cx, |page, cx| {
-                    if let Ok(m) = &found {
-                        page.sentient_version = format!("{} (downloaded)", m.version).into();
-                    }
-                    page.online = Some(found);
-                    if page.fit_engine_to_glibc() {
-                        page.run_checks(cx);
-                    }
-                    cx.notify();
-                })
-                .ok();
-            });
-            this._tasks.push(task);
-            let native = this.engine == Engine::Native;
-            let task = cx.spawn(async move |this, cx| {
-                let found = cx.background_executor().spawn(async move { crate::online::versions(native) }).await;
-                this.update(cx, |page, cx| {
-                    page.versions = Some(found);
-                    cx.notify();
-                })
-                .ok();
-            });
-            this._tasks.push(task);
+        // Screens: the pack check (SPM_DEBUG_PACK = verifying, verified
+        // or wrong-os), with a pack that is not on disk.
+        let debug_pack = debug_env("SPM_DEBUG_PACK");
+        if let Some(kind) = &debug_pack {
+            let check = cx.new(|_| crate::pack_check::PackCheck::debug(kind));
+            this.watch_pack(check, cx);
+        } else if let Some(dir) = pack_dir.filter(|_| !resuming) {
+            this.use_pack(dir, cx);
+        }
+        // A resumed install has its plan (and a pack its files): nothing to
+        // look up online.
+        if this.bundle.is_none() && this.pack.is_none() && !resuming {
+            this.look_online(cx);
         }
         // Development aid: open the wizard on a given page to inspect it.
         #[cfg(debug_assertions)]
@@ -569,7 +566,7 @@ impl Installer {
     fn run_checks(&mut self, cx: &mut Context<Self>) {
         self.checks = None;
         self.look_for_old_pg(cx);
-        let offline = self.bundle.is_some();
+        let offline = self.bundle.is_some() || self.pack.is_some();
         let engine = self.engine;
         let ports = self.check_ports(cx);
         #[cfg(debug_assertions)]
@@ -786,9 +783,12 @@ impl Installer {
         let f = &self.fields;
         match self.step {
             0 if !self.accepted => Err("Accept the licence agreement to continue.".into()),
+            // The pack's own refusal (wrong system, signature, a damaged file).
+            0 | 1 if self.pack_refused(cx).is_some() => Err(self.pack_refused(cx).unwrap_or_default()),
+            1 if self.pack.as_ref().is_some_and(|p| p.read(cx).is_checking()) => Err("The offline pack is still being checked. Nothing is installed from it until every file matches.".into()),
             // SENTIENT itself comes only from a package (there is no download
             // of it yet): without one a native install would stop half-way.
-            0 if !self.manager_only && self.bundle.is_none() && cfg!(windows) && !self.can_download() => Err(match &self.online {
+            0 if !self.manager_only && !self.has_package() && cfg!(windows) && !self.can_download() => Err(match &self.online {
                 None => "Still looking for the latest SENTIENT online…".to_string(),
                 Some(Err(e)) => format!("There is no SENTIENT package next to Setup and SENTIENT could not be found online ({e}). Connect to the internet, or unzip the SENTIENT package and run SENTIENT-Setup from that folder, or choose “Only the Platform Manager”."),
                 Some(Ok(_)) => String::new(),
@@ -808,7 +808,7 @@ impl Installer {
                 if self.value(&f.install_dir, cx).is_empty() { Err("The folder is required.".into()) } else { Ok(()) }
             }
             2 if self.engine == Engine::Docker => self.locations(cx).map(|_| ()),
-            2 if self.bundle.is_none() && !self.can_download() => Err(
+            2 if !self.has_package() && !self.can_download() => Err(
                 "A native install needs SENTIENT's program files: connect to the internet (they are downloaded), or unzip the SENTIENT package and run SENTIENT-Setup from that folder, or choose Docker, which pulls the image.".into(),
             ),
             2 => {
@@ -1215,7 +1215,10 @@ impl Installer {
         };
         // Docker runs the version being installed under its own tag, never
         // :latest: the picked one, else the newest found online.
-        if self.engine == Engine::Docker && self.bundle.is_none() {
+        // From an offline pack: its release's tag (its images carry it).
+        if let Some(p) = self.verified_pack(cx) {
+            stack.image = plan::pinned_image(&stack.image, Some(&p.pack.sentient_version));
+        } else if self.engine == Engine::Docker && self.bundle.is_none() {
             let version = self.chosen_version.clone().or_else(|| match &self.online {
                 Some(Ok(m)) => Some(m.version.clone()),
                 _ => None,
@@ -1243,8 +1246,6 @@ impl Installer {
             existing: self.existing.as_ref().map(|_| self.keep_existing),
             delete_existing: self.existing.is_some() && !self.keep_existing && self.delete_existing,
             old_pg: self.old_pg_choice,
-            wsl_restarted: false,
-            remote: false,
             admin_email: self.value(&f.admin_email, cx),
             admin_password: self.value(&f.admin_password, cx),
             settings: self.chosen_settings(cx),
@@ -1264,11 +1265,14 @@ impl Installer {
             },
             auto_signin_password: self.fields.autologin_password.read(cx).value().to_string(),
             bundle: self.bundle.clone(),
-            download: if self.bundle.is_none() {
+            download: if self.bundle.is_none() && self.pack.is_none() {
                 self.online.as_ref().and_then(|o| o.as_ref().ok()).map(|m| m.version.clone())
             } else {
                 None
             },
+            wsl_restarted: false,
+            remote: false,
+            pack: self.verified_pack(cx).map(|p| p.dir.clone()),
         })
     }
 
@@ -1305,6 +1309,134 @@ impl Installer {
             .ok();
         });
         self._tasks.push(task);
+    }
+
+    /// A package next to Setup, or an offline pack (being checked counts:
+    /// System check waits for it).
+    fn has_package(&self) -> bool {
+        self.bundle.is_some() || self.pack.is_some()
+    }
+
+    /// The offline pack, once every file of it matched.
+    pub(crate) fn verified_pack(&self, cx: &App) -> Option<std::sync::Arc<sentient_installer_core::pack::Opened>> {
+        self.pack.as_ref().and_then(|p| p.read(cx).verified())
+    }
+
+    /// Why the offline pack is not used, when it is refused.
+    fn pack_refused(&self, cx: &App) -> Option<String> {
+        self.pack.as_ref().and_then(|p| p.read(cx).refused().map(String::from))
+    }
+
+    /// Check the offline pack in `dir` (beside Setup, or chosen).
+    pub(crate) fn use_pack(&mut self, dir: PathBuf, cx: &mut Context<Self>) {
+        let check = cx.new(|cx| crate::pack_check::PackCheck::new(dir, cx));
+        self.watch_pack(check, cx);
+    }
+
+    fn watch_pack(&mut self, check: Entity<crate::pack_check::PackCheck>, cx: &mut Context<Self>) {
+        // A pack replaces any package found or chosen before; until it is
+        // verified nothing is installed from either.
+        self.bundle = None;
+        sentient_installer_core::offline::set(None);
+        self.problem = None;
+        let sub = cx.observe(&check, |this, check, cx| {
+            let verified = check.read(cx).verified();
+            if let Some(p) = verified {
+                this.pack_verified(p, cx);
+            }
+            cx.notify();
+        });
+        self._subscriptions.push(sub);
+        let verified = check.read(cx).verified();
+        self.pack = Some(check);
+        match verified {
+            Some(p) => self.pack_verified(p, cx),
+            // The check rows for an offline install (no download hosts).
+            None => self.run_checks(cx),
+        }
+        cx.notify();
+    }
+
+    /// The pack checked out: its payload is the package, its version the
+    /// one installed, and the wizard is offline from here (nothing it
+    /// reads goes to the network).
+    fn pack_verified(&mut self, p: std::sync::Arc<sentient_installer_core::pack::Opened>, cx: &mut Context<Self>) {
+        if self.bundle.is_some() && self.sentient_version.as_ref() == p.pack.sentient_version {
+            return;
+        }
+        self.sentient_version = p.pack.sentient_version.clone().into();
+        self.online = None;
+        self.versions = None;
+        // Screens: the fake pack is not on disk; nothing points at it.
+        if p.dir.exists() {
+            self.bundle = p.payload_dir();
+            sentient_installer_core::offline::set(Some(p));
+        } else {
+            self.bundle = Some(p.dir.join("payload"));
+        }
+        self.run_checks(cx);
+    }
+
+    /// No package: the latest release and the published versions, online.
+    fn look_online(&mut self, cx: &mut Context<Self>) {
+        let task = cx.spawn(async move |this, cx| {
+            let found = cx.background_executor().spawn(async move { crate::online::latest() }).await;
+            this.update(cx, |page, cx| {
+                if let Ok(m) = &found {
+                    page.sentient_version = format!("{} (downloaded)", m.version).into();
+                }
+                page.online = Some(found);
+                if page.fit_engine_to_glibc() {
+                    page.run_checks(cx);
+                }
+                cx.notify();
+            })
+            .ok();
+        });
+        self._tasks.push(task);
+        let native = self.engine == Engine::Native;
+        let task = cx.spawn(async move |this, cx| {
+            let found = cx.background_executor().spawn(async move { crate::online::versions(native) }).await;
+            this.update(cx, |page, cx| {
+                page.versions = Some(found);
+                cx.notify();
+            })
+            .ok();
+        });
+        self._tasks.push(task);
+    }
+
+    /// A refused pack set aside: Setup goes on without it (online, or a
+    /// package folder beside it).
+    pub(crate) fn drop_pack(&mut self, cx: &mut Context<Self>) {
+        self.pack = None;
+        sentient_installer_core::offline::set(None);
+        self.problem = None;
+        self.bundle = native::bundled_payload_dir();
+        self.sentient_version = self.bundle.as_ref().and_then(|d| std::fs::read_to_string(d.join("VERSION")).ok()).map(|v| v.trim().to_string()).unwrap_or_else(|| "in this package".into()).into();
+        if self.bundle.is_none() {
+            self.look_online(cx);
+        }
+        self.run_checks(cx);
+        cx.notify();
+    }
+
+    /// "Install from an offline pack": choose its folder.
+    pub(crate) fn choose_pack(&mut self, cx: &mut Context<Self>) {
+        let start = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")).map(PathBuf::from);
+        let rx = crate::chooser::open(
+            cx,
+            crate::chooser::Ask { title: "Choose the folder of the offline pack", start: start.as_deref(), directory: true },
+            PathPromptOptions { files: false, directories: true, multiple: false, prompt: Some("Use this pack".into()) },
+        );
+        cx.spawn(async move |this, cx| {
+            let Ok(Ok(Some(paths))) = rx.await else { return };
+            let Some(path) = paths.into_iter().next() else { return };
+            // The pack.json itself chosen: its folder.
+            let dir = if path.is_file() { path.parent().map(PathBuf::from).unwrap_or(path) } else { path };
+            this.update(cx, |page, cx| page.use_pack(dir, cx)).ok();
+        })
+        .detach();
     }
 
     /// No package, but the latest release was found online.

@@ -641,7 +641,10 @@ pub fn safe_update_to(sink: ProgressFn, cfg: &DeployConfig, target: Option<&str>
     step(&sink, "Getting the new SENTIENT image");
     match target.filter(|t| *t != cfg.image) {
         Some(t) => {
-            if let Err(e) = run(&sink, &format!("docker pull {}", shell_quote(t))) {
+            // Offline: the image was loaded from the pack; nothing is pulled.
+            if let Some(pack) = crate::offline::pack() {
+                super::pack_use::load_images(&sink, &pack, &[t.to_string()])?;
+            } else if let Err(e) = run(&sink, &format!("docker pull {}", shell_quote(t))) {
                 log(&sink, format!("note: {e}; using the images already on this machine"));
             }
             if image_id(t).is_none() {

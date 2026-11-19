@@ -219,7 +219,7 @@ impl Maintenance {
                     }
                     #[cfg(debug_assertions)]
                     if let Ok(v) = std::env::var("SPM_DEBUG_GATEWAY_OFFER") {
-                        let o = sentient_installer_core::gateway::Offer { version: v, date: "2026-11-17".into(), notes: String::new(), page: String::new(), installer: None, checksum: None, image_missing: false };
+                        let o = sentient_installer_core::gateway::Offer { version: v, date: "2026-11-17".into(), notes: String::new(), page: String::new(), installer: None, checksum: None, image_missing: false, pack_file: None };
                         return crate::manager::gateway::gateway_update(&s, Some(&o), cfg!(windows)).map(|u| (u, o, s.version.clone()));
                     }
                     let o = sentient_installer_core::gateway::newest(crate::updates::Prefs::load().channel).ok().flatten()?;

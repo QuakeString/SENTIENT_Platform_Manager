@@ -41,6 +41,32 @@ pub fn work_dir() -> PathBuf {
         .join("clickhouse")
 }
 
+/// Offline install (crate::offline): the part of the pack the account
+/// reads (the Ubuntu image, Docker's packages, ClickHouse's image), copied
+/// here because the account cannot read the installing user's folders.
+#[cfg(windows)]
+pub fn pack_dir() -> PathBuf {
+    work_dir().join("pack")
+}
+
+/// Names [`pack_dir`] while an offline provisioning runs: the agent, which
+/// Task Scheduler starts without the installer's environment, turns
+/// offline mode on from it.
+#[cfg(windows)]
+pub fn offline_marker() -> PathBuf {
+    work_dir().join("offline-pack.txt")
+}
+
+/// The files of `pack` the account's provisioning needs.
+pub fn account_needs(f: &crate::pack::PackFile) -> bool {
+    use crate::pack::Kind;
+    match f.kind {
+        Kind::Rootfs | Kind::Deb => true,
+        Kind::Image => f.image_ref.as_deref().is_some_and(|r| crate::distro::pack_use::clickhouse_images().iter().any(|i| i == r)),
+        _ => false,
+    }
+}
+
 #[cfg(windows)]
 fn powershell(script: &str, env: &[(&str, &str)]) -> Result<String, String> {
     let mut c = sys::command("powershell.exe");

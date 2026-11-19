@@ -69,11 +69,22 @@ pub fn install(sink: ProgressFn) -> WslOutcome {
             line: "Windows is turning on WSL 2. These steps are Windows' own and can be quiet for a few minutes.".into(),
         });
         let mut restart = false;
-        let known = run_logged(&sink, "Turning on WSL 2", "wsl.exe", &["--install", "--no-distribution"]);
+        // Offline: `wsl --install` fetches the WSL package from the Store
+        // or GitHub on newer Windows, so the features are turned on with
+        // DISM (from Windows' own component store) and the package comes
+        // from the pack (ensure_kernel).
+        let known = if crate::offline::is_offline() {
+            sink(Progress::Log { line: "Offline pack: turning the Windows features on with DISM; the WSL package comes from the pack".into() });
+            None
+        } else {
+            run_logged(&sink, "Turning on WSL 2", "wsl.exe", &["--install", "--no-distribution"])
+        };
         match known {
             Some((true, out)) => restart |= mentions_restart(&out),
             _ => {
-                sink(Progress::Log { line: "This wsl.exe does not know --no-distribution: turning the Windows features on with DISM".into() });
+                if !crate::offline::is_offline() {
+                    sink(Progress::Log { line: "This wsl.exe does not know --no-distribution: turning the Windows features on with DISM".into() });
+                }
                 for feature in FEATURES {
                     sink(Progress::Step { name: format!("Turning on the Windows feature {feature}") });
                     let arg = format!("/featurename:{feature}");
@@ -167,6 +178,21 @@ fn ensure_kernel(sink: &ProgressFn) {
     if kernel_present() {
         return;
     }
+    // Offline: the pack's WSL package (or the kernel for an older Windows
+    // 10); `wsl --update` would go to the Store or GitHub.
+    if let Some(pack) = crate::offline::pack() {
+        let packaged = os_build().is_none_or(|(build, ubr)| packaged_supported(build, ubr));
+        let (kind, what) = if packaged { (crate::pack::Kind::WslMsi, "the WSL package") } else { (crate::pack::Kind::KernelMsi, "the WSL 2 kernel") };
+        sink(Progress::Step { name: format!("Installing {what} from the offline pack") });
+        let result = match pack.file(kind) {
+            Some(f) => pack.recheck(f).and_then(|path| install_msi_file(sink, &path, what, false)),
+            None => Err(format!("the offline pack has no {what} (a {} file)", if packaged { "wsl_msi" } else { "kernel_msi" })),
+        };
+        if let Err(e) = result {
+            sink(Progress::Log { line: format!("{what} was not installed: {e}") });
+        }
+        return;
+    }
     let _ = run_logged(sink, "Updating the WSL kernel", "wsl.exe", &["--update"]);
     if kernel_present() {
         return;
@@ -205,7 +231,7 @@ pub fn packaged_supported(build: u32, ubr: u32) -> bool {
 
 /// This Windows' build and update revision.
 #[cfg(windows)]
-fn os_build() -> Option<(u32, u32)> {
+pub(crate) fn os_build() -> Option<(u32, u32)> {
     let script = "[Environment]::OSVersion.Version.Build; (Get-ItemProperty 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion').UBR";
     let (_, out, _) = sys::output("powershell.exe", &["-NoProfile", "-NonInteractive", "-Command", script])?;
     let text = sys::decode(&out);
@@ -262,8 +288,7 @@ pub fn package_url_for_tag(tag: &str, arm: bool) -> String {
 #[cfg(windows)]
 fn latest_package_url() -> Result<String, String> {
     let arm = cfg!(target_arch = "aarch64");
-    let api = crate::net::agent()
-        .get(PACKAGE_RELEASES)
+    let api = crate::net::get(PACKAGE_RELEASES)?
         .set("User-Agent", "sentient-setup")
         .call()
         .map_err(|e| e.to_string())
@@ -273,7 +298,7 @@ fn latest_package_url() -> Result<String, String> {
     if let Some(url) = api {
         return Ok(url);
     }
-    let page = crate::net::agent().get(PACKAGE_LATEST).set("User-Agent", "sentient-setup").call().map_err(|e| e.to_string())?;
+    let page = crate::net::get(PACKAGE_LATEST)?.set("User-Agent", "sentient-setup").call().map_err(|e| e.to_string())?;
     let tag = tag_from_release_url(page.get_url()).ok_or_else(|| format!("no release tag in {}", page.get_url()))?;
     Ok(package_url_for_tag(&tag, arm))
 }
@@ -290,6 +315,15 @@ fn install_signed_msi(sink: &ProgressFn, url: &str, file: &str) -> Result<(), St
     let msi = std::env::temp_dir().join(file);
     sink(Progress::Log { line: format!("Downloading {url}") });
     crate::distro::download(url, &msi, sink)?;
+    let what = if file.contains("kernel") { "the WSL 2 kernel" } else { "the WSL package" };
+    install_msi_file(sink, &msi, what, true)
+}
+
+/// Check that Microsoft signed the MSI at `msi`, install it quietly;
+/// `remove`: delete it afterwards (a download, not the pack's file).
+#[cfg(windows)]
+fn install_msi_file(sink: &ProgressFn, msi: &std::path::Path, what: &str, remove: bool) -> Result<(), String> {
+    let msi = msi.to_path_buf();
     // Microsoft's signature, or nothing is installed.
     let check = format!(
         "$s = Get-AuthenticodeSignature -LiteralPath '{}'; if ($s.Status -eq 'Valid' -and $s.SignerCertificate.Subject -match 'O=Microsoft Corporation') {{ 'signed' }} else {{ $s.Status }}",
@@ -299,13 +333,17 @@ fn install_signed_msi(sink: &ProgressFn, url: &str, file: &str) -> Result<(), St
         .map(|(_, out, _)| sys::decode(&out).trim().to_string())
         .unwrap_or_default();
     if signed != "signed" {
-        let _ = std::fs::remove_file(&msi);
-        return Err(format!("the download is not signed by Microsoft ({signed})"));
+        if remove {
+            let _ = std::fs::remove_file(&msi);
+        }
+        return Err(format!("{} is not signed by Microsoft ({signed})", msi.display()));
     }
-    sink(Progress::Step { name: format!("Installing {}", if file.contains("kernel") { "the WSL 2 kernel" } else { "the WSL package" }) });
+    sink(Progress::Step { name: format!("Installing {what}") });
     let path = msi.display().to_string();
     let result = sys::output_tracked("msiexec.exe", &["/i", &path, "/quiet", "/norestart"]);
-    let _ = std::fs::remove_file(&msi);
+    if remove {
+        let _ = std::fs::remove_file(&msi);
+    }
     match result {
         Some((true, _, _)) => Ok(()),
         // 3010: installed, a restart finishes it.

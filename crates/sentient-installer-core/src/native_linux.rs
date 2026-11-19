@@ -112,6 +112,8 @@ pub fn setup(sink: ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
     }
     let pm = package_manager().ok_or("No supported package manager found (apt, pacman, dnf, zypper).")?;
     let ch = cfg.flavor.uses_clickhouse();
+    // The distribution's packages come from its mirrors.
+    crate::offline::refuse_network("installing PostgreSQL from this distribution's package mirrors")?;
 
     step(&sink, if ch { "Installing PostgreSQL and ClickHouse from your distribution" } else { "Installing PostgreSQL from your distribution" });
     let install = match pm {

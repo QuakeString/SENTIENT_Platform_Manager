@@ -8,7 +8,9 @@
 //!
 //! Jobs:
 //! - `provision`: import the WSL distro, install Docker, start ClickHouse
-//!   from `config.json` (a DeployConfig) in the work directory.
+//!   from `config.json` (a DeployConfig) in the work directory; from the
+//!   offline pack's part the installer copied when `offline-pack.txt`
+//!   names it (sentient_installer_core::offline).
 //! - `unregister`: delete the distro and with it ClickHouse's data.
 //! - `harden`: add the crash-safe ClickHouse settings to an install made
 //!   before them, and restart ClickHouse.
@@ -32,6 +34,12 @@ pub fn run(job: &str) -> i32 {
             // It holds the ClickHouse password: gone as soon as it is read.
             let _ = std::fs::remove_file(&path);
             let cfg: DeployConfig = serde_json::from_str(&text).map_err(|e| format!("config.json: {e}"))?;
+            // An offline install: the installer copied the part of the pack
+            // this account needs and named it here; offline mode on, so the
+            // Ubuntu image, Docker and ClickHouse come from it.
+            if let Ok(dir) = std::fs::read_to_string(sentient_installer_core::clickhouse_wsl::offline_marker()) {
+                sentient_installer_core::offline::activate(std::path::Path::new(dir.trim()), false)?;
+            }
             sentient_installer_core::clickhouse_wsl::write_account_wslconfig()?;
             distro::setup(sink.clone(), &work_dir())?;
             distro::deploy_clickhouse(sink.clone(), &cfg)

@@ -67,6 +67,11 @@ pub struct InstallPlan {
     /// already, and a server has no desktop, so neither is put in place.
     #[serde(default)]
     pub remote: bool,
+    /// Installed from the offline pack in this folder, verified by the
+    /// wizard (sentient_installer_core::pack): offline mode for the whole
+    /// run, every file from the pack, nothing downloaded.
+    #[serde(default)]
+    pub pack: Option<PathBuf>,
 }
 
 /// The passwords of a plan, apart from it: a plan sent to a server goes
@@ -344,13 +349,34 @@ fn provision_clickhouse_wsl_with(stack: &DeployConfig, manager: &std::path::Path
     clickhouse_wsl::ensure_account(sink, &password)?;
     crate::secrets::save(Secret::ClickhouseAccount, &password)?;
 
+    // Offline: the part of the pack the account reads, where it can read
+    // it, and the marker that turns offline mode on in its agent.
+    let marker = clickhouse_wsl::offline_marker();
+    match sentient_installer_core::offline::pack() {
+        Some(pack) => {
+            step(sink, "Copying the offline pack's Ubuntu image, Docker and ClickHouse for the service account");
+            let part = pack.copy_part(&clickhouse_wsl::pack_dir(), &clickhouse_wsl::account_needs)?;
+            std::fs::write(&marker, part.dir.display().to_string()).map_err(|e| format!("write {}: {e}", marker.display()))?;
+        }
+        None => {
+            let _ = std::fs::remove_file(&marker);
+        }
+    }
+
     // The account's stack: ClickHouse alone, under the reference names.
     let ch = DeployConfig { flavor: Flavor::Clickhouse, ..stack.clone() };
     let config = clickhouse_wsl::work_dir().join("config.json");
     std::fs::write(&config, serde_json::to_string(&ch).map_err(|e| e.to_string())?)
         .map_err(|e| format!("write {}: {e}", config.display()))?;
     step(sink, "Installing WSL2, Docker and ClickHouse as the service account");
-    clickhouse_wsl::run_as_account(sink, &password, manager, if reuse_kept { "provision-reuse" } else { "provision" }, None)?;
+    let provisioned = clickhouse_wsl::run_as_account(sink, &password, manager, if reuse_kept { "provision-reuse" } else { "provision" }, None);
+    // The copied part of the pack has served (the distro holds Docker and
+    // the image now).
+    if marker.exists() {
+        let _ = std::fs::remove_file(&marker);
+        let _ = std::fs::remove_dir_all(clickhouse_wsl::pack_dir());
+    }
+    provisioned?;
     step(sink, "Starting ClickHouse at every boot");
     clickhouse_wsl::register_keepalive(&password)?;
     step(sink, "Stopping ClickHouse cleanly when Windows shuts down");
@@ -437,6 +463,7 @@ const STEP_CLICKHOUSE: &str = "Setting up ClickHouse";
 const STEP_SENTIENT: &str = "Installing SENTIENT and its database";
 
 const STEP_WSL: &str = "Turning on WSL 2";
+const STEP_PACK_AGAIN: &str = "Checking the offline pack again";
 const STEP_DOCKER_WSL: &str = "Setting up Docker in WSL 2";
 
 /// What the install's steps depend on besides the plan.
@@ -471,7 +498,11 @@ pub fn steps(plan: &InstallPlan) -> Vec<sentient_installer_core::progress::PlanS
 pub fn steps_on(plan: &InstallPlan, host: Host) -> Vec<sentient_installer_core::progress::PlanStep> {
     use sentient_installer_core::progress::PlanStep;
     let mut v = Vec::new();
-    if plan.bundle.is_none() && plan.engine == Engine::Native {
+    // After the restart for WSL 2, a new process: the pack is read again.
+    if plan.pack.is_some() && plan.wsl_restarted {
+        v.push(PlanStep::new(STEP_PACK_AGAIN).detail("Every file against its checksum, before anything else changes").weight(1.));
+    }
+    if plan.bundle.is_none() && plan.pack.is_none() && plan.engine == Engine::Native {
         if let Some(version) = &plan.download {
             v.push(PlanStep::new(format!("Downloading SENTIENT {version}")).detail("Checked against its SHA-256 and signature").when(&["Downloading SENTIENT"]).weight(3.));
         }
@@ -487,7 +518,7 @@ pub fn steps_on(plan: &InstallPlan, host: Host) -> Vec<sentient_installer_core::
         v.push(
             PlanStep::new(STEP_WSL)
                 .detail("Windows restarts once, and Setup continues after you sign in")
-                .when(&["Turning on the Windows feature", "Updating the WSL kernel", "Downloading the WSL package", "Installing the WSL package"])
+                .when(&["Turning on the Windows feature", "Updating the WSL kernel", "Downloading the WSL package", "Installing the WSL package", "Installing the WSL 2 kernel", "Downloading the WSL 2 kernel"])
                 .weight(2.),
         );
     }
@@ -498,7 +529,7 @@ pub fn steps_on(plan: &InstallPlan, host: Host) -> Vec<sentient_installer_core::
         v.push(
             PlanStep::new(STEP_DOCKER_WSL)
                 .detail("SENTIENT's own Ubuntu distribution with Docker Engine")
-                .when(&["Resetting an unresponsive SENTIENT distro", "Taking back the SENTIENT distro", "Downloading Ubuntu", "Creating the SENTIENT WSL distro", "Enabling systemd", "Installing Docker Engine", "Starting Docker"])
+                .when(&["Resetting an unresponsive SENTIENT distro", "Taking back the SENTIENT distro", "Downloading Ubuntu", "Using the Ubuntu base image", "Creating the SENTIENT WSL distro", "Enabling systemd", "Installing Docker Engine", "Starting Docker"])
                 .weight(4.),
         );
     }
@@ -534,6 +565,38 @@ pub fn manager_only_steps() -> Vec<sentient_installer_core::progress::PlanStep> 
 }
 
 pub fn run(mut plan: InstallPlan, sink: ProgressFn) -> Result<(), String> {
+    // Offline: the pack the wizard verified, checked again (every SHA-256
+    // after a restart, which is a new process and a pack that may have
+    // been changed meanwhile; else every file there with its size), and
+    // offline mode on: every downloader refuses from here.
+    let pack = match &plan.pack {
+        Some(dir) => {
+            if plan.wsl_restarted {
+                step(&sink, STEP_PACK_AGAIN);
+            }
+            let opened = sentient_installer_core::offline::activate(dir, plan.wsl_restarted)?;
+            sink(Progress::Log { line: format!("Installing from the offline pack {} (SENTIENT {}): nothing is downloaded", dir.display(), opened.pack.sentient_version) });
+            plan.bundle = opened.payload_dir();
+            plan.download = None;
+            Some(opened)
+        }
+        None => None,
+    };
+    let result = run_steps(plan, sink);
+    // The Platform Manager keeps the pack's gateway installer (its Gateway
+    // screen offers it when the release list cannot be reached).
+    if let (Some(opened), Ok(())) = (&pack, &result) {
+        if let Err(e) = crate::offline_pack::remember(opened) {
+            crate::maintenance_ops::log_line(&format!("The offline pack's gateway installer was not kept: {e}"));
+        }
+    }
+    if pack.is_some() {
+        sentient_installer_core::offline::set(None);
+    }
+    result
+}
+
+fn run_steps(mut plan: InstallPlan, sink: ProgressFn) -> Result<(), String> {
     if plan.bundle.is_none() && plan.engine == Engine::Native {
         if let Some(version) = plan.download.clone() {
             let (_, dir) = crate::online::download(Some(&version), &sink)?;
@@ -695,6 +758,7 @@ mod tests {
             old_pg: Default::default(),
             wsl_restarted: false,
             remote: false,
+            pack: None,
         }
     }
 
@@ -767,6 +831,30 @@ mod tests {
         assert_eq!(chosen(linux, default_engine(), Flavor::Clickhouse).unwrap().engine, Engine::Native);
         assert_eq!(chosen(linux, Engine::Native, Flavor::Timescaledb).err(), Some(Why::NoDistroTimescale));
         assert_eq!(chosen(linux, Engine::Docker, Flavor::Timescaledb).unwrap().engine, Engine::Docker);
+    }
+
+    #[test]
+    fn an_offline_install_downloads_nothing_and_checks_the_pack_again_after_the_restart() {
+        let mut p = plan(Engine::Native, Flavor::Timescaledb);
+        p.download = Some("4.4.0.4".into());
+        p.pack = Some(PathBuf::from(r"E:\pack"));
+        let v = names(&p, WINDOWS);
+        assert!(!v.iter().any(|s| s.starts_with("Downloading")), "{v:?}");
+        assert!(!v.contains(&STEP_PACK_AGAIN.to_string()));
+        p.wsl_restarted = true;
+        assert_eq!(names(&p, WINDOWS)[0], STEP_PACK_AGAIN);
+        // A saved plan from before the field reads as online.
+        let mut v = serde_json::to_value(plan(Engine::Docker, Flavor::Stock)).unwrap();
+        v.as_object_mut().unwrap().remove("pack");
+        let back: InstallPlan = serde_json::from_value(v).unwrap();
+        assert!(back.pack.is_none());
+        // The offline Docker steps are the plan's own.
+        let docker = steps_on(&plan(Engine::Docker, Flavor::Stock), WINDOWS).remove(0);
+        assert!(docker.matches("Using the Ubuntu base image from the offline pack"));
+        assert!(docker.matches("Installing Docker Engine from the offline pack"));
+        let wsl = steps_on(&plan(Engine::Docker, Flavor::Stock), Host { wsl_ready: false, ..WINDOWS }).remove(0);
+        assert!(wsl.matches("Installing the WSL package from the offline pack"));
+        assert!(wsl.matches("Installing the WSL 2 kernel from the offline pack"));
     }
 
     #[test]

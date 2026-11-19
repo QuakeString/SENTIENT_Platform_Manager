@@ -32,8 +32,23 @@ fn tls_config() -> Option<Arc<rustls::ClientConfig>> {
         .clone()
 }
 
-/// An agent for requests to the internet.
-pub fn agent() -> ureq::Agent {
+/// A GET to the internet, refused in offline mode (crate::offline): every
+/// download goes through here, so an install from an offline pack never
+/// opens a connection.
+pub fn get(url: &str) -> Result<ureq::Request, String> {
+    crate::offline::refuse_network(&format!("a download from {}", host_of(url)))?;
+    Ok(agent().get(url))
+}
+
+/// `https://cloud-images.ubuntu.com/wsl/…` → `cloud-images.ubuntu.com`.
+pub fn host_of(url: &str) -> &str {
+    let rest = url.split_once("://").map(|(_, r)| r).unwrap_or(url);
+    rest.split(['/', '?', '#']).next().unwrap_or(rest)
+}
+
+/// An agent for requests to the internet. Only [`get`] uses it: it says no
+/// in offline mode.
+fn agent() -> ureq::Agent {
     let builder = ureq::AgentBuilder::new().try_proxy_from_env(true);
     match tls_config() {
         Some(config) => builder.tls_config(config),
@@ -48,5 +63,12 @@ mod tests {
     #[test]
     fn platform_verifier_starts() {
         assert!(super::tls_config().is_some());
+    }
+
+    #[test]
+    fn the_host_of_a_download_is_named() {
+        assert_eq!(super::host_of("https://cloud-images.ubuntu.com/wsl/releases/24.04/x.tar.gz"), "cloud-images.ubuntu.com");
+        assert_eq!(super::host_of("https://aka.ms?x=1"), "aka.ms");
+        assert_eq!(super::host_of("example.test/a"), "example.test");
     }
 }

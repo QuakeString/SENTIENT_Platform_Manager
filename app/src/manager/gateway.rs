@@ -1465,7 +1465,7 @@ mod tests {
 
     fn offer(v: &str, installer: bool) -> Offer {
         let asset = sentient_installer_core::releases::Asset { name: format!("SentientGatewaySetup-{v}.exe"), browser_download_url: String::new(), size: 1, digest: None };
-        Offer { version: v.into(), date: "2026-11-17".into(), notes: String::new(), page: String::new(), installer: installer.then_some(asset), checksum: None, image_missing: false }
+        Offer { version: v.into(), date: "2026-11-17".into(), notes: String::new(), page: String::new(), installer: installer.then_some(asset), checksum: None, image_missing: false, pack_file: None }
     }
 
     #[test]

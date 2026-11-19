@@ -146,11 +146,11 @@ pub fn list(repo: &str, force: bool) -> Result<crate::fetch_cache::Listed<Vec<Re
     LISTS.get(repo, force, || request(repo))
 }
 
-fn request(repo: &str) -> Result<Vec<Release>, crate::fetch_cache::Failure> {
+pub(crate) fn request(repo: &str) -> Result<Vec<Release>, crate::fetch_cache::Failure> {
     use crate::fetch_cache::Failure;
     let url = format!("https://api.github.com/repos/{repo}/releases?per_page=50");
-    let body = crate::net::agent()
-        .get(&url)
+    let body = crate::net::get(&url)
+        .map_err(Failure::Other)?
         .set("Accept", "application/vnd.github+json")
         .set("User-Agent", "SENTIENT-Platform-Manager")
         .call()

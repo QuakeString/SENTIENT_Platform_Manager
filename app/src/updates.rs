@@ -368,11 +368,18 @@ pub fn check_with(channel: Channel, installed: Option<String>, native: bool, for
             installer: None,
             checksum: None,
             image_missing: std::env::var_os("SPM_DEBUG_GATEWAY_NO_IMAGE").is_some(),
+            pack_file: None,
         })),
         Err(_) => gateway::newest_with(channel, gateway_docker, force),
     };
     #[cfg(not(debug_assertions))]
     let gateway_offer = gateway::newest_with(channel, gateway_docker, force);
+    // The release list cannot be reached (an offline site): the gateway the
+    // last offline pack carried, its installer kept (crate::offline_pack).
+    let gateway_offer = match gateway_offer {
+        Err(e) if cfg!(windows) => crate::offline_pack::gateway_offer().map(|o| Ok(Some(o))).unwrap_or(Err(e)),
+        other => other,
+    };
     Found {
         sentient,
         manager,
@@ -542,8 +549,7 @@ pub fn install_manager(offer: &Offer, sink: &ProgressFn) -> Result<(), String> {
     let dir = std::env::temp_dir().join(format!("sentient-manager-{}", offer.version));
     std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
     let file = dir.join(&asset.name);
-    let response = sentient_installer_core::net::agent()
-        .get(&asset.browser_download_url)
+    let response = sentient_installer_core::net::get(&asset.browser_download_url)?
         .set("User-Agent", "SENTIENT-Platform-Manager")
         .call()
         .map_err(|e| format!("The download of Platform Manager {} could not start ({e}). Nothing was changed.", offer.version))?;
@@ -620,12 +626,60 @@ pub fn install_manager(offer: &Offer, sink: &ProgressFn) -> Result<(), String> {
     Ok(())
 }
 
+/// The argument naming an offline pack to go on updating from (after the
+/// Platform Manager itself was updated from it).
+pub const OFFLINE_PACK_ARG: &str = "--offline-pack";
+
+/// Update the Platform Manager from the offline pack `pack` (verified by
+/// the caller): its program, checked against the pack's SHA-256 again and
+/// (Windows) its Authenticode signature, started as `--self-update`, told
+/// to go on with the pack (`--offline-pack`). This program then quits.
+pub fn install_manager_from_pack(pack: &sentient_installer_core::pack::Opened, sink: &ProgressFn) -> Result<(), String> {
+    use sentient_installer_core::pack::Kind;
+    #[cfg(not(windows))]
+    if let Some(owner) = crate::self_install::owner() {
+        return Err(format!("This Platform Manager was installed with {tool}: update it with {tool}.", tool = owner.tool()));
+    }
+    let version = pack.pack.spm_version.clone();
+    sink(Progress::Step { name: format!("Checking Platform Manager {version} from the offline pack") });
+    let f = pack.file(Kind::Spm).ok_or("The offline pack carries no Platform Manager program. Nothing was changed.")?;
+    let src = pack.recheck(f)?;
+    // A copy outside the pack: the pack may be on a drive that is removed,
+    // and the running program is replaced from it.
+    let dir = std::env::temp_dir().join(format!("sentient-manager-{version}"));
+    std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
+    let file = dir.join(src.file_name().unwrap_or_else(|| std::ffi::OsStr::new("SENTIENT-Setup.exe")));
+    std::fs::copy(&src, &file).map_err(|e| format!("copy {}: {e}", src.display()))?;
+    if !manifest::sha256_file(&file).is_ok_and(|h| h.eq_ignore_ascii_case(f.sha256.trim())) {
+        let _ = std::fs::remove_file(&file);
+        return Err(format!("The copy of Platform Manager {version} from the offline pack is damaged. Nothing was changed."));
+    }
+    #[cfg(windows)]
+    if let Some(w) = crate::authenticode::check(&file).map_err(|e| format!("Platform Manager {version} is not used: {e}. Nothing was changed."))? {
+        sink(Progress::Log { line: format!("Platform Manager {version}: {w} (allowed until releases are code-signed).") });
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o755));
+    }
+    sink(Progress::Step { name: "Replacing the Platform Manager".into() });
+    std::process::Command::new(&file)
+        .args(["--self-update", "--from", manager_version(), OFFLINE_PACK_ARG, &pack.dir.display().to_string()])
+        .spawn()
+        .map_err(|e| format!("start {}: {e}", file.display()))?;
+    Ok(())
+}
+
 /// `--self-update`, run by the downloaded program: put itself where the
 /// manager lives and start it there, telling it which version it replaced
 /// (`--updated-from`), so it can say so and list what it changes.
 pub fn finish_self_update() -> i32 {
     let args: Vec<String> = std::env::args().collect();
     let from = args.windows(2).find(|w| w[0] == "--from").map(|w| w[1].clone());
+    // An update from an offline pack goes on there: the new manager opens
+    // its Update screen on the pack (SENTIENT and the gateway next).
+    let pack = args.windows(2).find(|w| w[0] == OFFLINE_PACK_ARG).map(|w| w[1].clone());
     // The previous manager quits once this has started.
     std::thread::sleep(Duration::from_secs(2));
     match crate::self_install::install_manager() {
@@ -647,6 +701,9 @@ pub fn finish_self_update() -> i32 {
             cmd.arg("--manager");
             if let Some(from) = from {
                 cmd.args(["--updated-from", &from]);
+            }
+            if let Some(pack) = pack {
+                cmd.args(["--page", "update", OFFLINE_PACK_ARG, &pack]);
             }
             let _ = cmd.spawn();
             0

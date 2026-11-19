@@ -2410,8 +2410,8 @@ fn released_agent(system: System, sink: &ProgressFn) -> Result<PathBuf, NoAgent>
     let file = dir.join(format!("{version}-{name}"));
     let ok = |f: &Path| sentient_installer_core::manifest::sha256_file(f).is_ok_and(|h| h.eq_ignore_ascii_case(&sha));
     if !ok(&file) {
-        let resp = sentient_installer_core::net::agent()
-            .get(&asset.browser_download_url)
+        let resp = sentient_installer_core::net::get(&asset.browser_download_url)
+            .map_err(download)?
             .set("User-Agent", "SENTIENT-Platform-Manager")
             .call()
             .map_err(|e| download(format!("download {name}: {e}")))?;

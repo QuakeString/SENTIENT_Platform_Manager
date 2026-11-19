@@ -361,6 +361,7 @@ mod tests {
             old_pg: Default::default(),
             wsl_restarted: false,
             remote: true,
+            pack: None,
         }
     }
 

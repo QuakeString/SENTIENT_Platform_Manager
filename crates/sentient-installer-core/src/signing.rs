@@ -100,7 +100,7 @@ fn check_with(key: &str, what: &str, data: &[u8], signature: Option<&str>, signi
 
 /// Fetch the signature published at `url` (`Ok(None)`: there is none).
 pub fn fetch_signature(url: &str) -> Result<Option<String>, String> {
-    match crate::net::agent().get(url).set("User-Agent", "SENTIENT-Platform-Manager").call() {
+    match crate::net::get(url)?.set("User-Agent", "SENTIENT-Platform-Manager").call() {
         Ok(r) => r.into_string().map(Some).map_err(|e| format!("could not read the signature: {e}")),
         Err(ureq::Error::Status(404, _)) => Ok(None),
         Err(e) => Err(format!("could not fetch the signature: {e}")),

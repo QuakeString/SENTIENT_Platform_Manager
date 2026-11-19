@@ -276,19 +276,26 @@ impl Installer {
 
     fn welcome(&mut self, cx: &mut Context<Self>) -> Div {
         let theme = cx.theme().clone();
-        let package: SharedString = match (&self.bundle, &self.online) {
-            (Some(_), _) => "Offline package: everything is included".into(),
-            (None, None) => "Looking for the latest SENTIENT online…".into(),
-            (None, Some(Ok(m))) => format!(
+        let pack = self.pack.as_ref().map(|p| {
+            let p = p.read(cx);
+            (p.dir.display().to_string(), p.verified().is_some(), p.refused().is_some())
+        });
+        let package: SharedString = match (&pack, &self.bundle, &self.online) {
+            (Some((_, true, _)), _, _) => "Offline pack: everything is included and was checked".into(),
+            (Some((_, _, true)), _, _) => "Offline pack: refused, see below".into(),
+            (Some(_), _, _) => "Offline pack: everything is included, checked on the next page".into(),
+            (None, Some(_), _) => "Offline package: everything is included".into(),
+            (None, None, None) => "Looking for the latest SENTIENT online…".into(),
+            (None, None, Some(Ok(m))) => format!(
                 "Downloaded during install: SENTIENT {}, {}, checked before use",
                 m.version,
                 crate::online::size_label(m.download_size())
             )
             .into(),
-            (None, Some(Err(_))) if cfg!(windows) => {
+            (None, None, Some(Err(_))) if cfg!(windows) => {
                 "No SENTIENT package next to Setup and no SENTIENT download for this computer: only the Platform Manager can be installed".into()
             }
-            (None, Some(Err(_))) => {
+            (None, None, Some(Err(_))) => {
                 "No SENTIENT package next to Setup and no SENTIENT download for this computer: Docker installs pull the image; a native install needs the package".into()
             }
         };
@@ -312,7 +319,10 @@ impl Installer {
                     }),
             )
             .child(ui::card_fact(&theme, "Platform Manager", manager_version))
-            .child(ui::card_fact(&theme, "Package", package));
+            .child(ui::card_fact(&theme, "Package", package))
+            .when(!self.manager_only, |p| p.child(self.pack_actions(pack.as_ref().map(|(_, _, refused)| *refused), cx)));
+        // A refused pack: why, on the first page.
+        let refused = self.pack.as_ref().filter(|p| p.read(cx).refused().is_some()).map(|p| crate::pack_check::panel_of(p, cx).flex_shrink_0());
         let choice = |manager_only: bool, id: &'static str, title: &'static str, desc: &'static str| {
             choice_card(&theme, id, choice_title(&theme, title, false), desc, self.manager_only == manager_only).on_click(cx.listener(move |this, _, _, cx| {
                 this.manager_only = manager_only;
@@ -367,6 +377,7 @@ impl Installer {
                 ))
             })
             .child(what)
+            .children(refused)
             .child(licence)
             .child(
                 div().flex_shrink_0().child(
@@ -382,8 +393,28 @@ impl Installer {
             )
     }
 
+    /// Welcome's offline pack buttons: choose one; a refused one chosen
+    /// again or set aside.
+    fn pack_actions(&self, refused: Option<bool>, cx: &mut Context<Self>) -> Div {
+        let mut buttons: Vec<AnyElement> = Vec::new();
+        match refused {
+            None => buttons.push(
+                ui::probed(ui::button("choose-pack").outline().label("Install from an offline pack").on_click(cx.listener(|this, _, _, cx| this.choose_pack(cx)))).into_any_element(),
+            ),
+            Some(refused) => {
+                buttons.push(ui::probed(ui::button("choose-pack").outline().label("Choose another pack").on_click(cx.listener(|this, _, _, cx| this.choose_pack(cx)))).into_any_element());
+                if refused {
+                    buttons.push(ui::probed(ui::button("drop-pack").outline().label("Install without the pack").on_click(cx.listener(|this, _, _, cx| this.drop_pack(cx)))).into_any_element());
+                }
+            }
+        }
+        ui::button_row(buttons)
+    }
+
     fn system_check(&mut self, cx: &mut Context<Self>) -> Div {
         let theme = cx.theme().clone();
+        // The offline pack first: nothing is used from it until it is verified.
+        let pack = self.pack.as_ref().map(|p| crate::pack_check::panel_of(p, cx));
         // Windows: the WSL 2 row says how WSL stands for the choice.
         let rows = self.checks.clone().map(|rows| if self.windows { super::with_wsl_row(rows, self.engine, self.docker_choice.as_ref()) } else { rows });
         let engine_choice = self.engine_choice(&theme, cx);
@@ -426,6 +457,7 @@ impl Installer {
         // An older PostgreSQL's data: upgrade or keep aside, before installing.
         let old_pg = self.old_pg_panel(cx);
         column()
+            .children(pack)
             .child(engine_choice)
             .children(leftovers)
             .children(old_pg)
@@ -1349,6 +1381,11 @@ impl Installer {
                 rows.push(("Operator screen", screen, 8));
             }
         }
+        // From an offline pack: where from, and the one thing that is online.
+        let offline = (!self.manager_only).then(|| self.pack.as_ref().map(|p| p.read(cx).dir.display().to_string())).flatten();
+        if let Some(dir) = &offline {
+            rows.insert(0, ("Installs from", format!("The offline pack in {dir}: nothing is downloaded"), 0));
+        }
         let coap_local = !self.manager_only && coap_local_only(self.windows, self.engine);
         column().child(ui::panel(&theme).gap_0().py(px(8.)).children(rows.into_iter().enumerate().map(|(i, (label, value, step))| {
             let empty = value.trim().is_empty();
@@ -1374,6 +1411,7 @@ impl Installer {
                         .on_click(cx.listener(move |this, _, _, cx| this.go(step, cx))),
                 )
         })))
+        .when(offline.is_some(), |c| c.child(ui::notice(&theme, Tone::Neutral, crate::pack_check::LICENCE_ONLINE)))
     }
 
     fn installing(&mut self, cx: &mut Context<Self>) -> Div {
@@ -1457,7 +1495,11 @@ impl Installer {
             .child(ui::notice(
                 &theme,
                 Tone::Neutral,
-                "Next: activate your licence\nSign in to SENTIENT as the system administrator and activate it under Licence. Activation needs internet once.",
+                if self.pack.is_some() {
+                    format!("Next: activate your licence\nSign in to SENTIENT as the system administrator and activate it under Licence. {}", crate::pack_check::LICENCE_ONLINE)
+                } else {
+                    "Next: activate your licence\nSign in to SENTIENT as the system administrator and activate it under Licence. Activation needs internet once.".to_string()
+                },
             ))
             .child(
                 h_flex()

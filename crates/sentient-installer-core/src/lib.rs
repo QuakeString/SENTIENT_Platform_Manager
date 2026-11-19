@@ -34,6 +34,11 @@ pub mod licence_version;
 pub mod manifest;
 pub mod native;
 pub mod net;
+/// Offline mode: every downloader refuses, the pack's files are used.
+pub mod offline;
+/// The offline pack: pack.json, its signature, every file's SHA-256, the
+/// target check.
+pub mod pack;
 /// A PostgreSQL data folder from an older major: upgrade or keep aside.
 pub mod old_pg;
 /// What went wrong in a failed step, and the fix (Setup and every SPM job).

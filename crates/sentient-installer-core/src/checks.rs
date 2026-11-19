@@ -74,16 +74,17 @@ fn cmd(label: &str, command: impl Into<String>) -> Fix {
 
 /// Run every preflight check, in display order.
 pub fn run_all() -> Vec<Check> {
-    vec![
-        windows_version(),
-        administrator(),
-        virtualization(),
-        wsl_installed(),
-        distro_present(),
-        docker_ready(),
-        disk_space(),
-        internet(),
-    ]
+    run_windows_docker(false)
+}
+
+/// Docker in WSL 2 on Windows. `offline` (an offline pack): the Docker
+/// registry is not needed, and not asked (no connection is opened).
+pub fn run_windows_docker(offline: bool) -> Vec<Check> {
+    let mut v = vec![windows_version(), administrator(), virtualization(), wsl_installed(), distro_present(), docker_ready(), disk_space()];
+    if !offline {
+        v.push(internet());
+    }
+    v
 }
 
 /// Preflight for the **native** mode. Deliberately a different list: WSL,
@@ -105,7 +106,7 @@ pub fn run_for(mode: &str, offline: bool, ports: Option<&[(u16, String)]>) -> Ve
         "windows-native" => run_native(offline),
         "linux-docker" => run_linux_docker(offline),
         "linux-native" => run_linux_native(offline),
-        _ => run_all(),
+        _ => run_windows_docker(offline),
     };
     if let Some(p) = ports {
         if let Some(slot) = v.iter_mut().find(|c| c.id == "ports") {

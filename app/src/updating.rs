@@ -238,6 +238,67 @@ pub fn run_to(
     Ok(updated)
 }
 
+/// Update from the offline pack `pack` (verified by the caller), in
+/// offline mode so nothing is pulled or downloaded: SENTIENT when
+/// `sentient` (native from the pack's payload; Docker to the image
+/// `docker_target`, `docker load`ed from the pack), then the gateway to
+/// `gateway` (its installer from the pack). The pack's list and gateway
+/// installer are kept for the Gateway screen (crate::offline_pack).
+pub fn from_pack(
+    record: InstallationRecord,
+    pack: &sentient_installer_core::pack::Opened,
+    sentient: bool,
+    docker_target: Option<&str>,
+    gateway: Option<&sentient_installer_core::gateway::Offer>,
+    accept_breaking: bool,
+    sink: ProgressFn,
+) -> Result<InstallationRecord, String> {
+    use sentient_installer_core::offline;
+    if crate::rootjob::needed(&record) {
+        return Err("Updating from an offline pack needs the Platform Manager to run as an administrator here. Nothing was changed.".into());
+    }
+    // The pack still as it was checked (a USB drive may have been swapped).
+    pack.check_present().map_err(|e| e.message())?;
+    offline::set(Some(std::sync::Arc::new(pack.clone())));
+    let result = (|| {
+        let mut record = record;
+        if sentient {
+            record = match record.engine {
+                Engine::Docker => run_to(record, None, docker_target, accept_breaking, sink.clone())?,
+                Engine::Native => {
+                    let payload = pack.payload_dir().ok_or("The offline pack carries no SENTIENT program files for this computer. Nothing was changed.")?;
+                    let mut updated = run(record, Some(&payload), accept_breaking, sink.clone())?;
+                    // A payload without VERSION: the pack names it.
+                    if updated.sentient_version != pack.pack.sentient_version {
+                        updated.sentient_version = pack.pack.sentient_version.clone();
+                        let json = serde_json::to_string_pretty(&updated).map_err(|e| e.to_string())?;
+                        crate::self_install::write_record(&crate::installation::record_path(), &json)?;
+                    }
+                    updated
+                }
+            };
+        }
+        if let Some(offer) = gateway {
+            sentient_installer_core::gateway::update(&sink, offer)?;
+        }
+        Ok(record)
+    })();
+    offline::set(None);
+    if result.is_ok() {
+        if let Err(e) = crate::offline_pack::remember(pack) {
+            sink(Progress::Log { line: format!("note: the pack's gateway installer was not kept: {e}") });
+        }
+        let what = match (sentient, gateway) {
+            (true, Some(g)) => format!("SENTIENT {} and Sentient Gateway {}", pack.pack.sentient_version, g.version),
+            (true, None) => format!("SENTIENT {}", pack.pack.sentient_version),
+            (false, Some(g)) => format!("Sentient Gateway {}", g.version),
+            (false, None) => "Nothing".into(),
+        };
+        sink(Progress::Done { message: format!("{what} updated from the offline pack. Nothing was downloaded.") });
+    }
+    result
+}
+
 /// What the last update replaced, if it is still there to go back to.
 /// Blocking (Docker asks the containers): call from a job or a background
 /// task. Native Linux reads it without root.

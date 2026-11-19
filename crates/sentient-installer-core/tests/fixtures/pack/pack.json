@@ -1,0 +1,19 @@
+{
+  "format": 1,
+  "target": "windows-x64",
+  "min_os": { "windows_build": 19044 },
+  "spm_version": "0.9.4",
+  "sentient_version": "4.4.0.4",
+  "build_version": "4.4.0",
+  "gateway_version": "4.16.2",
+  "components": { "postgresql": "18.6-1", "timescaledb": "2.29.2", "wsl": "2.6.1", "ubuntu_rootfs": "24.04-20261101", "docker": "28.5.1" },
+  "created": "2026-11-19",
+  "notes": "Test pack.",
+  "files": [
+    { "path": "payload/sentient-payload.tar", "sha256": "d4e4877bac978b7952f0d544fc52ebff5411d351d129f1f056fa43f11da9af2b", "size": 8, "kind": "payload" },
+    { "path": "gateway/SentientGatewaySetup-4.16.2.exe", "sha256": "fb8fe70e1e97d8a2e3c2377659770dadae67ab2243ea9682620e34d46a539843", "size": 8, "kind": "gateway" },
+    { "path": "wsl/docker-debs/containerd.io.deb", "sha256": "e6f553d34cf16ff8e80308057fcef9c4affb91a8104c2dd5fadc487445bd7b6d", "size": 15, "kind": "deb" },
+    { "path": "wsl/docker-debs/docker-ce.deb", "sha256": "4a50ad33a77338a6af43a3ba9232c7581f804b964bda73989f85953facb7ae15", "size": 14, "kind": "deb" },
+    { "path": "images/sentient-4.4.0.4.tar.zst", "sha256": "c4f9d694d1d3b7b9dafdb0d21c096f729038682cf694cc6847957e4989b4f7e3", "size": 15, "kind": "image", "image_ref": "quakestring/sentient:4.4.0.4" }
+  ]
+}

@@ -28,6 +28,8 @@ pub mod docker_ops;
 pub mod hosts;
 pub mod idle;
 pub mod move_data;
+/// The offline pack's Ubuntu image, Docker packages and images (crate::offline).
+pub mod pack_use;
 pub mod gateway_docker;
 pub mod gateway_legacy;
 pub mod port_forward;
@@ -913,11 +915,21 @@ pub fn deploy_clickhouse(sink: ProgressFn, cfg: &DeployConfig) -> Result<(), Str
     write_host_file(&sink, &cfg.compose_path(), &compose_clickhouse_only(cfg))?;
     write_host_file(&sink, &cfg.ch_config_path(), &stack::clickhouse_config_xml(&cfg.ch, None, None))?;
     bail_if_cancelled!();
-    sink(Progress::Step { name: "Pulling the ClickHouse image".into() });
-    run_stream(&sink, &cfg.compose_cmd("pull"))?;
+    let offline = crate::offline::pack();
+    match &offline {
+        // Offline: loaded from the pack, never pulled.
+        Some(pack) => {
+            sink(Progress::Step { name: "Loading the ClickHouse image from the offline pack".into() });
+            pack_use::load_images(&sink, pack, &pack_use::clickhouse_images())?;
+        }
+        None => {
+            sink(Progress::Step { name: "Pulling the ClickHouse image".into() });
+            run_stream(&sink, &cfg.compose_cmd("pull"))?;
+        }
+    }
     bail_if_cancelled!();
     sink(Progress::Step { name: "Starting ClickHouse".into() });
-    run_stream(&sink, &cfg.compose_cmd("up -d"))?;
+    run_stream(&sink, &pack_use::up_cmd(cfg, offline.is_some()))?;
     for i in 0..60 {
         bail_if_cancelled!();
         if clickhouse_answers(cfg.ch_http_port) {
@@ -958,7 +970,7 @@ pub fn deploy_with(sink: ProgressFn, cfg: &DeployConfig, keep_existing: Option<b
     sink(Progress::Log { line: format!("{}: {}", cfg.compose_path(), cfg.flavor.label()) });
     bail_if_cancelled!();
 
-    sink(Progress::Step { name: "Pulling SENTIENT images (first time, a few minutes)".into() });
+    sink(Progress::Step { name: if crate::offline::is_offline() { "Loading SENTIENT images from the offline pack".into() } else { "Pulling SENTIENT images (first time, a few minutes)".into() } });
     pull_images(&sink, cfg)?;
     bail_if_cancelled!();
 
@@ -989,7 +1001,7 @@ pub fn deploy_with(sink: ProgressFn, cfg: &DeployConfig, keep_existing: Option<b
     bail_if_cancelled!();
 
     sink(Progress::Step { name: "Starting SENTIENT".into() });
-    run_stream(&sink, &cfg.compose_cmd("up -d"))?;
+    run_stream(&sink, &pack_use::up_cmd(cfg, crate::offline::is_offline()))?;
 
     let url = format!("http://localhost:{}", cfg.http_port);
     sink(Progress::Step { name: format!("Waiting for SENTIENT to become ready (its first answer on {url}, up to {} minutes)", FIRST_ANSWER_SECS / 60) });
@@ -1261,9 +1273,19 @@ fn setup_windows(sink: ProgressFn, install_dir: &Path) -> Result<(), String> {
     }
 
     if !distro_present() {
-        let rootfs = install_dir.join("ubuntu.rootfs.tar.gz");
-        sink(Progress::Step { name: "Downloading Ubuntu base image (~350 MB)".into() });
-        download(ROOTFS_URL, &rootfs, &sink)?;
+        // Offline: the pack's image, imported where it is (and kept).
+        let (rootfs, downloaded) = match crate::offline::pack() {
+            Some(pack) => {
+                sink(Progress::Step { name: "Using the Ubuntu base image from the offline pack".into() });
+                (pack_use::rootfs(&pack)?, false)
+            }
+            None => {
+                let rootfs = install_dir.join("ubuntu.rootfs.tar.gz");
+                sink(Progress::Step { name: "Downloading Ubuntu base image (~350 MB)".into() });
+                download(ROOTFS_URL, &rootfs, &sink)?;
+                (rootfs, true)
+            }
+        };
 
         sink(Progress::Step { name: "Creating the SENTIENT WSL distro".into() });
         let distro_dir = install_dir.join("distro");
@@ -1288,7 +1310,9 @@ fn setup_windows(sink: ProgressFn, install_dir: &Path) -> Result<(), String> {
                 Err((e, _)) => return Err(e),
             }
         }
-        let _ = std::fs::remove_file(&rootfs);
+        if downloaded {
+            let _ = std::fs::remove_file(&rootfs);
+        }
     }
 
     // Verify the distro actually runs a command before configuring it —
@@ -1306,8 +1330,17 @@ fn setup_windows(sink: ProgressFn, install_dir: &Path) -> Result<(), String> {
     // restart the distro so systemd becomes PID 1
     let _ = sys::output("wsl.exe", &["--terminate", DISTRO]);
 
-    sink(Progress::Step { name: "Installing Docker Engine (a few minutes)".into() });
-    run_stream(&sink, "[ -x /usr/bin/docker ] || (curl -fsSL https://get.docker.com | sh)")?;
+    // Offline: the pack's packages (dpkg); never get.docker.com.
+    match crate::offline::pack() {
+        Some(pack) => {
+            sink(Progress::Step { name: "Installing Docker Engine from the offline pack".into() });
+            run_stream(&sink, &pack_use::docker_install(&pack)?)?;
+        }
+        None => {
+            sink(Progress::Step { name: "Installing Docker Engine (a few minutes)".into() });
+            run_stream(&sink, "[ -x /usr/bin/docker ] || (curl -fsSL https://get.docker.com | sh)")?;
+        }
+    }
 
     sink(Progress::Step { name: "Starting Docker".into() });
     // The inbox WSL 2 kernel (5.10) has no nf_tables NAT: Docker's
@@ -1634,6 +1667,9 @@ fn setup_linux(sink: ProgressFn) -> Result<(), String> {
         "Installing Docker from your distribution's packages".into()
     } });
 
+    if !(have_cli && have_compose) {
+        crate::offline::refuse_network("installing Docker from this distribution's package mirrors")?;
+    }
     let install = if have_cli && have_compose {
         String::new()
     } else {
@@ -1965,7 +2001,7 @@ pub fn logs(cfg: &DeployConfig, tail: u32) -> String {
 /// reference upgrade flow (stop server → migrate → start) so a running server
 /// never races the migration.
 pub fn update(sink: ProgressFn, cfg: &DeployConfig) -> Result<(), String> {
-    sink(Progress::Step { name: "Pulling the latest SENTIENT images".into() });
+    sink(Progress::Step { name: if crate::offline::is_offline() { "Loading the SENTIENT images from the offline pack".into() } else { "Pulling the latest SENTIENT images".into() } });
     pull_images(&sink, cfg)?;
     bail_if_cancelled!();
 
@@ -1984,7 +2020,7 @@ pub fn update(sink: ProgressFn, cfg: &DeployConfig) -> Result<(), String> {
     bail_if_cancelled!();
 
     sink(Progress::Step { name: "Starting SENTIENT on the new image".into() });
-    run_stream(&sink, &cfg.compose_cmd("up -d"))?;
+    run_stream(&sink, &pack_use::up_cmd(cfg, crate::offline::is_offline()))?;
     sink(Progress::Done { message: "SENTIENT updated to the latest image.".into() });
     Ok(())
 }
@@ -2130,7 +2166,13 @@ fn parse_size(s: &str) -> Option<f64> {
 /// `--ignore-pull-failures` so a SENTIENT image that only exists locally
 /// (side-loaded with `docker load` on an offline site) does not abort the
 /// deploy; a genuinely missing image still fails at `up`.
+///
+/// Offline (crate::offline): nothing is pulled; the stack's images that
+/// are not on this machine are loaded from the pack (distro::pack_use).
 fn pull_images(sink: &ProgressFn, cfg: &DeployConfig) -> Result<(), String> {
+    if let Some(pack) = crate::offline::pack() {
+        return pack_use::load_images(sink, &pack, &pack_use::stack_images(cfg));
+    }
     use std::collections::HashMap;
     use std::io::BufRead;
     use std::process::Stdio;
@@ -2249,7 +2291,7 @@ fn pull_images(sink: &ProgressFn, cfg: &DeployConfig) -> Result<(), String> {
 /// Download a URL to a file, reporting percent progress.
 pub(crate) fn download(url: &str, dest: &Path, sink: &ProgressFn) -> Result<(), String> {
     use std::io::{Read, Write};
-    let resp = crate::net::agent().get(url).call().map_err(|e| e.to_string())?;
+    let resp = crate::net::get(url)?.call().map_err(|e| e.to_string())?;
     let total: u64 = resp.header("Content-Length").and_then(|s| s.parse().ok()).unwrap_or(0);
     let mut reader = resp.into_reader();
     let mut file = std::fs::File::create(dest).map_err(|e| e.to_string())?;

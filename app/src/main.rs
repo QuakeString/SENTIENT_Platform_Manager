@@ -75,8 +75,13 @@ mod movedata;
 mod movedata_win;
 mod mode;
 mod notes;
+/// What is kept of the last offline pack (its gateway installer).
+mod offline_pack;
 mod online;
 mod open_client;
+/// "Checking the offline pack" (Setup and the Update screen).
+#[cfg(feature = "gui")]
+mod pack_check;
 mod remote;
 mod replace;
 mod restore_flow;
@@ -180,6 +185,12 @@ fn main() {
         std::process::exit(remote::askpass());
     }
     if args.get(1).map(String::as_str) == Some("--job") {
+        // Started by an offline install or update (SPM_OFFLINE_PACK): the
+        // same offline mode here (sentient_installer_core::offline).
+        if let Err(e) = sentient_installer_core::offline::init_from_env() {
+            eprintln!("{e}");
+            std::process::exit(1);
+        }
         std::process::exit(headless::run(&args[2..]));
     }
     #[cfg(not(feature = "gui"))]

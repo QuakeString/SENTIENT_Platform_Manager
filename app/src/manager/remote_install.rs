@@ -480,6 +480,7 @@ impl InstallFlow {
             old_pg: Default::default(),
             wsl_restarted: false,
             remote: true,
+            pack: None,
         })
     }
 
@@ -1166,6 +1167,7 @@ mod tests {
             old_pg: Default::default(),
             wsl_restarted: false,
             remote: true,
+            pack: None,
         };
         let names: Vec<String> = job_plan(&plan).into_iter().map(|s| s.name).collect();
         assert_eq!(names, [crate::jobplan::CONNECT, "Downloading SENTIENT 4.4.0.3", "Installing SENTIENT and its database", "Setting the administrator sign-in", "Saving the installation record"]);
