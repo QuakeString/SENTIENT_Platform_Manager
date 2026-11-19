@@ -227,6 +227,15 @@ pub struct Opened {
 
 /// Open the pack in `dir`: `pack.json` signed with the release key.
 pub fn open(dir: &Path) -> Result<Opened, Refusal> {
+    // Debug builds only: SPM_PACK_TEST_KEY names one more trusted public
+    // key, for testing a pack signed with a test key on a VM. Release
+    // builds trust the SENTIENT release key and nothing else.
+    #[cfg(debug_assertions)]
+    if let Some(test_key) = std::env::var("SPM_PACK_TEST_KEY").ok().filter(|k| !k.trim().is_empty()) {
+        if let Ok(opened) = open_with_key(test_key.trim(), dir) {
+            return Ok(opened);
+        }
+    }
     open_with_key(crate::signing::RELEASE_PUBLIC_KEY, dir)
 }
 
