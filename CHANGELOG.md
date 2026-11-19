@@ -15,6 +15,10 @@ refreshes that repository's Downloads table.
 
 ## [Unreleased]
 
+## [0.9.4] - 2026-11-19
+
+The gateway installs on remote Windows servers, the Platform Manager is code-signed by INVENIA SYSTEMS, Stable users get final releases, and Setup's progress, Windows ClickHouse disk use and self-update fixes.
+
 ### Added
 - Install the gateway on a remote Windows server. "Install the gateway" on
   a Windows server's page (and on an empty Windows server) now works as it
@@ -28,6 +32,10 @@ refreshes that repository's Downloads table.
   SENTIENT itself on a remote Windows server is still not supported.
 
 ### Changed
+- The Platform Manager is code-signed by INVENIA SYSTEMS, with our own
+  certificate for now. 0.9.3 accepts an update signed with exactly that
+  certificate; Windows shows "Verified publisher: INVENIA SYSTEMS" where a
+  site trusts it (`Trust-INVENIA.ps1`), "Unknown publisher" elsewhere.
 - The access token and passwords an install keeps for a moment on a
   Windows computer (a remote install's staged secrets, the gateway
   installer's token file) are readable only by SYSTEM, the Administrators
