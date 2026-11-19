@@ -319,6 +319,11 @@ impl Installer {
             if this.step == INSTALL && matches!(job.read(cx).state(), JobState::Done(_)) {
                 this.step = FINISH;
             }
+            // Stopped for the restart: the run after it starts where this
+            // one's bar got to (plan::take_pending_progress).
+            if matches!(job.read(cx).state(), JobState::Failed(m) if m.as_ref() == plan::RESTART_REQUIRED) {
+                plan::save_pending_progress(job.read(cx).overall());
+            }
             cx.notify();
         });
         let bundle = native::bundled_payload_dir();
@@ -423,7 +428,11 @@ impl Installer {
             this.engine = plan.engine;
             this.step = INSTALL;
             let steps = plan::steps(&plan);
-            this.install.update(cx, |job, _| job.set_plan(steps));
+            let from = plan::take_pending_progress();
+            this.install.update(cx, |job, _| {
+                job.set_plan(steps);
+                job.resume_from(from);
+            });
             this.install.update(cx, |job, cx| job.start(move |sink| plan::run(plan, sink), cx));
         }
         if this.bundle.is_none() {

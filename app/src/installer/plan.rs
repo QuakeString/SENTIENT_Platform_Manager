@@ -265,6 +265,27 @@ fn save_pending(plan: &InstallPlan) -> Result<(), String> {
     Ok(())
 }
 
+fn pending_progress_path() -> PathBuf {
+    crate::installation::record_path().with_file_name("pending-install-progress")
+}
+
+/// How far the install's bar had got when it stopped for the restart, so
+/// the run after it starts there instead of going back.
+pub fn save_pending_progress(percent: f32) {
+    if let Some(dir) = pending_progress_path().parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(pending_progress_path(), format!("{percent:.1}"));
+}
+
+/// [`save_pending_progress`]'s value, once (removed when read); 0 without one.
+pub fn take_pending_progress() -> f32 {
+    let path = pending_progress_path();
+    let v = std::fs::read_to_string(&path).ok().and_then(|s| s.trim().parse::<f32>().ok()).unwrap_or(0.);
+    let _ = std::fs::remove_file(&path);
+    v
+}
+
 /// The plan saved before a restart, if there is one; removed once read.
 pub fn take_pending() -> Option<InstallPlan> {
     let path = pending_path();

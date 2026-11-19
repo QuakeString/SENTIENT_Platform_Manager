@@ -82,6 +82,9 @@ pub struct Job {
     /// The highest overall percent shown in this run: the bar never goes
     /// back (a plan replaced, a sub-step starting over).
     peak: f32,
+    /// Where the next run's bar starts (`resume_from`): a run that continues
+    /// an earlier one, such as Setup after the restart for WSL 2.
+    next_floor: f32,
     /// The last LOG_KEEP lines; `log_total` counts them all.
     log: std::collections::VecDeque<SharedString>,
     log_total: usize,
@@ -142,6 +145,7 @@ impl Job {
             percent: None,
             row_floor: 0.,
             peak: 0.,
+            next_floor: 0.,
             log: Default::default(),
             log_total: 0,
             log_file: None,
@@ -181,6 +185,13 @@ impl Job {
     /// (`Progress::Plan`), which replaces the ones not started yet.
     pub fn set_plan(&mut self, steps: Vec<PlanStep>) {
         self.next_plan = Some(steps);
+    }
+
+    /// The next run continues one that had reached `percent` (0–100): its
+    /// bar starts there and never shows less, so it does not go back across
+    /// the restart Setup makes for WSL 2.
+    pub fn resume_from(&mut self, percent: f32) {
+        self.next_floor = if percent.is_finite() { percent.clamp(0., 99.) } else { 0. };
     }
 
     /// The run's steps, in order.
@@ -420,22 +431,14 @@ impl Job {
         self.state == JobState::Running
     }
 
-    /// Run `work` on a background thread. It receives the progress sink and
-    /// returns `Err(message)` on failure. Starting a job while one runs is
-    /// ignored.
-    pub fn start(
-        &mut self,
-        work: impl FnOnce(ProgressFn) -> Result<(), String> + Send + 'static,
-        cx: &mut Context<Self>,
-    ) {
-        if self.is_running() {
-            return;
-        }
+    /// A new run's state: the plan set for it, the bar at its floor
+    /// (`resume_from`, else 0), the log empty.
+    fn begin(&mut self) {
         self.state = JobState::Running;
         self.step = SharedString::default();
         self.percent = None;
         self.row_floor = 0.;
-        self.peak = 0.;
+        self.peak = std::mem::take(&mut self.next_floor);
         self.log.clear();
         self.log_total = 0;
         self.follow.set(true);
@@ -450,6 +453,20 @@ impl Job {
         self.diagnosis = None;
         self.diag_view = None;
         self.step_started = Some(std::time::Instant::now());
+    }
+
+    /// Run `work` on a background thread. It receives the progress sink and
+    /// returns `Err(message)` on failure. Starting a job while one runs is
+    /// ignored.
+    pub fn start(
+        &mut self,
+        work: impl FnOnce(ProgressFn) -> Result<(), String> + Send + 'static,
+        cx: &mut Context<Self>,
+    ) {
+        if self.is_running() {
+            return;
+        }
+        self.begin();
         self.log_file = new_log_file(self.label.as_deref().unwrap_or("job"));
         cx.notify();
         // The global progress strip follows it (crate::manager::strip).
@@ -767,6 +784,34 @@ mod plan_tests {
         j.finish(Err("no".into()));
         assert_eq!(states(&j)[3], RowState::Failed);
         assert!(matches!(j.state(), JobState::Failed(_)));
+    }
+
+    #[test]
+    fn a_resumed_run_starts_where_the_earlier_one_stopped() {
+        // Setup before the restart for WSL 2: 18 % at "Turning on WSL 2";
+        // after it the run starts over at step 2 with step 1 done (4 % in
+        // 0.9.3-rc2 and 0.9.3).
+        let mut j = Job::new();
+        j.resume_from(18.);
+        j.begin();
+        j.apply(Progress::Plan { steps: vec![PlanStep::new("Install").weight(0.5), PlanStep::new("WSL").weight(2.), PlanStep::new("Docker").weight(4.), PlanStep::new("SENTIENT").weight(6.)] });
+        j.apply(Progress::Step { name: "Install".into() });
+        j.apply(Progress::Step { name: "WSL".into() });
+        assert!(j.overall() >= 18., "{}", j.overall());
+        // Real progress beyond it shows as usual.
+        j.apply(Progress::Step { name: "Docker".into() });
+        j.apply(Progress::Percent { value: 0.9 });
+        assert!(j.overall() > 40., "{}", j.overall());
+        // A later run that is not a resume starts at 0.
+        j.begin();
+        assert_eq!(j.overall(), 0.);
+        // Out-of-range values are kept sane.
+        j.resume_from(f32::NAN);
+        j.begin();
+        assert_eq!(j.overall(), 0.);
+        j.resume_from(250.);
+        j.begin();
+        assert!(j.overall() <= 99.);
     }
 
     #[test]
