@@ -53,10 +53,14 @@ pub(crate) fn take_go_status() -> bool {
     GO_STATUS.swap(false, std::sync::atomic::Ordering::SeqCst)
 }
 
+/// Installing SENTIENT or the gateway on a Windows server from here is not
+/// built yet (the owner's decision for 0.9.3): both installs say so.
+pub(crate) const WINDOWS_REMOTE_INSTALL: &str = "Remote install is not supported on Windows servers yet.";
+
 /// Why Install SENTIENT cannot start on this server (its tooltip), or None.
 fn install_blocked(inst: &Instance, busy: bool) -> Option<&'static str> {
     if remote::is_windows(inst) {
-        Some("Installing SENTIENT on a Windows server from here comes in a later version. Run Setup on that server.")
+        Some(WINDOWS_REMOTE_INSTALL)
     } else if busy {
         Some("Another job is running on this server.")
     } else {
@@ -1497,7 +1501,14 @@ impl RemotePages {
                 ui::Product::Gateway,
                 "Sentient Gateway",
                 "Reads the plant's devices next to this server and sends their data to a SENTIENT, here or elsewhere.",
-                crate::ui::button("r-go-gateway").outline().label("Install the gateway").disabled(busy).on_click(|_, _, cx| go_gateway(cx)).into_any_element(),
+                {
+                    let b = crate::ui::button("r-go-gateway").outline().label("Install the gateway").disabled(busy || remote::is_windows(&self.inst)).on_click(|_, _, cx| go_gateway(cx));
+                    if remote::is_windows(&self.inst) {
+                        div().id("r-go-gateway-why").flex_shrink_0().child(b).tooltip(crate::ui::tooltip(WINDOWS_REMOTE_INSTALL)).into_any_element()
+                    } else {
+                        b.into_any_element()
+                    }
+                },
                 gw_version,
             )
         });
@@ -1902,8 +1913,18 @@ impl RemotePages {
             let version = o.version.clone();
             let build = o.licence_build();
             let (o2, inst_v) = (o.clone(), installed.clone());
-            // Docker there, image not on Docker Hub yet: said instead of the button.
-            row = match o.blocker() {
+            // Docker there, image not on Docker Hub yet; or a native install
+            // whose glibc is older than the release needs: said instead of
+            // the button.
+            let det = self.inst.detected.clone().unwrap_or_default();
+            let native = !det.install.eq_ignore_ascii_case("docker") && !remote::is_windows(&self.inst);
+            let too_old = native
+                .then(|| {
+                    use sentient_installer_core::glibc;
+                    glibc::decide(&o.version, glibc::min_glibc(o.min_glibc.as_deref(), &o.version), &det.libc, &det.os_name, glibc::Here::Server).blocked().map(str::to_string)
+                })
+                .flatten();
+            row = match o.blocker().or(too_old) {
                 Some(why) => row.child(div().text_sm().text_color(theme.muted_foreground).child(why)),
                 None => row.child(crate::manager::licence_gate::pill(&theme, &licence, &build)).child(
                     crate::ui::button("r-update")
@@ -3140,7 +3161,7 @@ impl RemotePages {
         let offer = found.clone().and_then(|r| r.ok()).flatten();
         // Why Install cannot run (its tooltip): nothing the server runs, an
         // image not published yet, a release without its Windows installer.
-        let blocker = runs.clone().err().or_else(|| {
+        let blocker = windows.then(|| WINDOWS_REMOTE_INSTALL.to_string()).or_else(|| runs.clone().err()).or_else(|| {
             offer.as_ref().and_then(|o| {
                 if o.image_missing && !windows {
                     Some(sentient_installer_core::dockerhub::not_published(&o.version))
@@ -3582,6 +3603,7 @@ fn canned_offer() -> crate::updates::Offer {
         signing_started: true,
         image_missing: false,
         build_version: None,
+        min_glibc: None,
         between: vec![
             n("4.4.0.2", "2026-11-14", "Request a demo or buy a licence from inside SENTIENT, and editor fixes.", vec![
                 ("Added", vec!["Licence: Request demo licence and Buy licence open dialogs inside SENTIENT."]),
