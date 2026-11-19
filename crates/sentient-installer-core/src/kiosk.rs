@@ -1,4 +1,4 @@
-//! Kiosk launcher: detect an installed browser (Chrome/Firefox), install
+//! Kiosk launcher: detect an installed browser (Chrome/Firefox/Edge), install
 //! Chrome silently if none is found (Windows), and create Desktop + menu
 //! shortcuts that open SENTIENT full-screen (`--kiosk`) in that browser. On
 //! Linux the shortcuts are `.desktop` entries for whichever Chromium-family
@@ -6,6 +6,10 @@
 //! shortcut carries the SENTIENT icon (borrowed from the manager exe). Taskbar
 //! pinning is intentionally not attempted — Windows 10/11 block it for
 //! automation; the user can right-click → Pin to taskbar in one step.
+//!
+//! "Open SENTIENT" in a browser window never uses Internet Explorer (the
+//! default browser of Windows 10 LTSC, which cannot run the UI):
+//! [`choose_web_launch`].
 
 use std::path::{Path, PathBuf};
 
@@ -13,10 +17,12 @@ use crate::progress::{Progress, ProgressFn};
 #[cfg(windows)]
 use crate::sys;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Browser {
     Chrome,
     Firefox,
+    /// Microsoft Edge (Chromium): Chrome's switches, plus its own kiosk type.
+    Edge,
 }
 
 impl Browser {
@@ -24,6 +30,7 @@ impl Browser {
         match self {
             Browser::Chrome => "Chrome",
             Browser::Firefox => "Firefox",
+            Browser::Edge => "Microsoft Edge",
         }
     }
     /// Arguments that open `url`, full screen (`kiosk`) or in an ordinary
@@ -37,9 +44,12 @@ impl Browser {
     pub fn open_args(self, url: &str, kiosk: bool, profile: Option<&Path>) -> Vec<String> {
         let mut a: Vec<String> = Vec::new();
         match self {
-            Browser::Chrome => {
+            Browser::Chrome | Browser::Edge => {
                 if kiosk {
                     a.push("--kiosk".into());
+                    if self == Browser::Edge {
+                        a.push("--edge-kiosk-type=fullscreen".into());
+                    }
                     if let Some(dir) = profile {
                         a.push(format!("--user-data-dir={}", dir.display()));
                     }
@@ -148,33 +158,109 @@ fn app_paths(exe: &str) -> Option<PathBuf> {
     None
 }
 
-/// Find an installed Chrome or Firefox. Prefers Chrome.
+/// The order the kiosk takes an installed browser in: Chrome, Firefox,
+/// then Edge (before Setup installs Chrome).
+pub const KIOSK_ORDER: [Browser; 3] = [Browser::Chrome, Browser::Firefox, Browser::Edge];
+
+/// The order a browser window takes one in when the default browser cannot
+/// run SENTIENT ([`choose_web_launch`]): Edge, Chrome, Firefox.
+pub const WINDOW_ORDER: [Browser; 3] = [Browser::Edge, Browser::Chrome, Browser::Firefox];
+
+/// The first of `order` in `installed`.
+pub fn pick(order: &[Browser], installed: &[(Browser, PathBuf)]) -> Option<(Browser, PathBuf)> {
+    order.iter().find_map(|b| installed.iter().find(|(i, _)| i == b).cloned())
+}
+
+/// Find an installed browser for the kiosk ([`KIOSK_ORDER`]).
 pub fn detect() -> Option<(Browser, PathBuf)> {
     #[cfg(windows)]
     {
-        for rest in [
-            r"Google\Chrome\Application\chrome.exe",
-        ] {
-            for var in ["PROGRAMFILES", "ProgramFiles(x86)", "LOCALAPPDATA"] {
-                if let Some(p) = under(var, rest) {
-                    return Some((Browser::Chrome, p));
-                }
-            }
-        }
-        if let Some(p) = app_paths("chrome.exe") {
-            return Some((Browser::Chrome, p));
-        }
-        for var in ["PROGRAMFILES", "ProgramFiles(x86)"] {
-            if let Some(p) = under(var, r"Mozilla Firefox\firefox.exe") {
-                return Some((Browser::Firefox, p));
-            }
-        }
-        if let Some(p) = app_paths("firefox.exe") {
-            return Some((Browser::Firefox, p));
-        }
-        None
+        pick(&KIOSK_ORDER, &installed_browsers())
     }
     #[cfg(not(windows))]
+    detect_chrome_firefox()
+}
+
+/// Where `browser` is installed: its usual folders, else its App Paths
+/// entry.
+#[cfg(windows)]
+fn find(browser: Browser) -> Option<PathBuf> {
+    let (vars, rest, exe): (&[&str], &str, &str) = match browser {
+        Browser::Chrome => (&["PROGRAMFILES", "ProgramFiles(x86)", "LOCALAPPDATA"], r"Google\Chrome\Application\chrome.exe", "chrome.exe"),
+        Browser::Firefox => (&["PROGRAMFILES", "ProgramFiles(x86)"], r"Mozilla Firefox\firefox.exe", "firefox.exe"),
+        Browser::Edge => (&["ProgramFiles(x86)", "PROGRAMFILES"], r"Microsoft\Edge\Application\msedge.exe", "msedge.exe"),
+    };
+    vars.iter().find_map(|v| under(v, rest)).or_else(|| app_paths(exe))
+}
+
+/// The browsers that run SENTIENT's UI on this computer (Windows: Chrome,
+/// Firefox, Edge; one detection for the kiosk and for a browser window).
+pub fn installed_browsers() -> Vec<(Browser, PathBuf)> {
+    #[cfg(windows)]
+    {
+        KIOSK_ORDER.iter().filter_map(|b| find(*b).map(|p| (*b, p))).collect()
+    }
+    #[cfg(not(windows))]
+    Vec::new()
+}
+
+/// The ProgID of this user's default browser for `http` (Windows'
+/// UserChoice); None when none is chosen.
+#[cfg(windows)]
+pub fn default_http_progid() -> Option<String> {
+    let key = r"HKCU\Software\Microsoft\Windows\Shell\Associations\UrlAssociations\http\UserChoice";
+    let (ok, out, _) = sys::output("reg", &["query", key, "/v", "ProgId"])?;
+    if !ok {
+        return None;
+    }
+    sys::decode(&out).lines().find_map(|l| l.split_once("REG_SZ").map(|(_, v)| v.trim().to_string())).filter(|v| !v.is_empty())
+}
+
+/// A default browser that cannot run SENTIENT's UI: Internet Explorer
+/// (`IE.HTTP`, the default of Windows 10 LTSC) or the old EdgeHTML Edge;
+/// none chosen counts too (Windows then opens Internet Explorer).
+pub fn default_unsuitable(progid: Option<&str>) -> bool {
+    match progid.map(|p| p.trim().to_ascii_lowercase()) {
+        None => true,
+        Some(p) => p.is_empty() || p.starts_with("ie.") || p.contains("iexplore") || p == "appxq0fevzme2pys62n3e0fbqa7peapykr8v",
+    }
+}
+
+/// How a SENTIENT address is opened on Windows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WebLaunch {
+    /// The default browser (it runs the UI).
+    Default,
+    /// This browser, in a new window.
+    With(Browser, PathBuf),
+    /// No browser here runs it: [`no_browser_message`].
+    Missing,
+}
+
+/// [`WebLaunch`] from the default browser's ProgID and
+/// [`installed_browsers`]: the default unless it is Internet Explorer (or
+/// none is set), then Edge, Chrome, Firefox, whichever is found first.
+pub fn choose_web_launch(default_progid: Option<&str>, installed: &[(Browser, PathBuf)]) -> WebLaunch {
+    if !default_unsuitable(default_progid) {
+        return WebLaunch::Default;
+    }
+    pick(&WINDOW_ORDER, installed).map(|(b, p)| WebLaunch::With(b, p)).unwrap_or(WebLaunch::Missing)
+}
+
+/// [`choose_web_launch`] for this computer (Windows).
+#[cfg(windows)]
+pub fn web_launch() -> WebLaunch {
+    choose_web_launch(default_http_progid().as_deref(), &installed_browsers())
+}
+
+/// What is said when no browser here runs SENTIENT, with its address.
+pub fn no_browser_message(url: &str) -> String {
+    format!("SENTIENT needs Microsoft Edge, Google Chrome or Firefox. Install one of them, then open {url}.")
+}
+
+/// An installed Chromium-family browser, else Firefox (on PATH).
+#[cfg(not(windows))]
+fn detect_chrome_firefox() -> Option<(Browser, PathBuf)> {
     {
         for (bin, b) in [
             ("chromium", Browser::Chrome), ("chromium-browser", Browser::Chrome),
@@ -231,16 +317,18 @@ fn ensure_browser(sink: &ProgressFn, work_dir: &Path) -> Result<(Browser, PathBu
     let _ = std::fs::remove_file(&msi);
     // msiexec may return 3010 (success, reboot pending) which isn't success();
     // re-detect rather than trust the exit code.
-    detect().ok_or_else(|| {
-        let detail = res
-            .map(|(_, _, e)| sys::decode(&e).trim().to_string())
-            .unwrap_or_default();
-        if detail.is_empty() {
-            "Chrome could not be installed automatically.".into()
-        } else {
-            format!("Chrome could not be installed automatically: {detail}")
-        }
-    })
+    detect().ok_or_else(|| chrome_failed(res))
+}
+
+/// The message for a Chrome MSI that left no Chrome behind.
+#[cfg(windows)]
+fn chrome_failed(res: Option<(bool, Vec<u8>, Vec<u8>)>) -> String {
+    let detail = res.map(|(_, _, e)| sys::decode(&e).trim().to_string()).unwrap_or_default();
+    if detail.is_empty() {
+        "Chrome could not be installed automatically.".into()
+    } else {
+        format!("Chrome could not be installed automatically: {detail}")
+    }
 }
 
 #[cfg(windows)]
@@ -593,6 +681,61 @@ pub fn set_open_at_signin(sink: &ProgressFn, launcher: &Path, mode: Option<bool>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn internet_explorer_or_no_default_opens_edge_then_chrome_then_firefox() {
+        let edge = (Browser::Edge, PathBuf::from(r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"));
+        let chrome = (Browser::Chrome, PathBuf::from(r"C:\Program Files\Google\Chrome\Application\chrome.exe"));
+        let firefox = (Browser::Firefox, PathBuf::from(r"C:\Program Files\Mozilla Firefox\firefox.exe"));
+        let all = [firefox.clone(), chrome.clone(), edge.clone()];
+        // The default is Internet Explorer (Windows 10 LTSC), or none is set.
+        for default in [Some("IE.HTTP"), None, Some(""), Some("AppXq0fevzme2pys62n3e0fbqa7peapykr8v")] {
+            assert_eq!(choose_web_launch(default, &all), WebLaunch::With(Browser::Edge, edge.1.clone()), "{default:?}");
+            assert_eq!(choose_web_launch(default, &[firefox.clone(), chrome.clone()]), WebLaunch::With(Browser::Chrome, chrome.1.clone()), "{default:?}");
+            assert_eq!(choose_web_launch(default, &[firefox.clone()]), WebLaunch::With(Browser::Firefox, firefox.1.clone()), "{default:?}");
+            assert_eq!(choose_web_launch(default, &[]), WebLaunch::Missing, "{default:?}");
+        }
+        // A default that runs the UI is used: Edge, Chrome, Firefox, others.
+        for default in ["MSEdgeHTM", "ChromeHTML", "FirefoxURL-308046B0AF4A39CB", "BraveHTML"] {
+            assert_eq!(choose_web_launch(Some(default), &all), WebLaunch::Default, "{default}");
+            assert_eq!(choose_web_launch(Some(default), &[]), WebLaunch::Default, "{default}");
+        }
+        assert_eq!(
+            no_browser_message("http://localhost:8080"),
+            "SENTIENT needs Microsoft Edge, Google Chrome or Firefox. Install one of them, then open http://localhost:8080."
+        );
+    }
+
+    #[test]
+    fn each_browser_gets_its_kiosk_switches_and_its_own_profile() {
+        let profile = Some(Path::new("/p"));
+        let edge = Browser::Edge.open_args("u", true, profile);
+        assert_eq!(&edge[..3], ["--kiosk", "--edge-kiosk-type=fullscreen", "--user-data-dir=/p"]);
+        assert!(edge.contains(&"--no-first-run".to_string()) && edge.last().unwrap() == "u");
+        let chrome = Browser::Chrome.open_args("u", true, profile);
+        assert_eq!(&chrome[..2], ["--kiosk", "--user-data-dir=/p"]);
+        assert!(chrome.contains(&"--no-first-run".to_string()) && !chrome.iter().any(|a| a.starts_with("--edge")));
+        assert_eq!(Browser::Firefox.open_args("u", true, profile), ["--kiosk", "--new-instance", "--profile", "/p", "u"]);
+        // A browser window: the operator's own profile, no kiosk.
+        for b in [Browser::Edge, Browser::Chrome, Browser::Firefox] {
+            let w = b.open_args("u", false, None);
+            assert_eq!(w[0], "--new-window", "{b:?}");
+            assert!(!w.iter().any(|a| a == "--kiosk" || a.starts_with("--user-data-dir")), "{b:?}");
+        }
+    }
+
+    #[test]
+    fn the_kiosk_takes_chrome_then_firefox_then_edge() {
+        let at = |b: Browser| (b, PathBuf::from(format!("/{}", b.label())));
+        let all = [at(Browser::Edge), at(Browser::Firefox), at(Browser::Chrome)];
+        assert_eq!(pick(&KIOSK_ORDER, &all), Some(at(Browser::Chrome)));
+        assert_eq!(pick(&KIOSK_ORDER, &[at(Browser::Edge), at(Browser::Firefox)]), Some(at(Browser::Firefox)));
+        assert_eq!(pick(&KIOSK_ORDER, &[at(Browser::Edge)]), Some(at(Browser::Edge)));
+        assert_eq!(pick(&KIOSK_ORDER, &[]), None);
+        // A browser window (default browser unusable): Edge first.
+        assert_eq!(pick(&WINDOW_ORDER, &all), Some(at(Browser::Edge)));
+        assert_eq!(pick(&WINDOW_ORDER, &[at(Browser::Firefox), at(Browser::Chrome)]), Some(at(Browser::Chrome)));
+    }
 
     #[test]
     fn a_kiosk_gets_its_own_full_screen_browser_instance() {
