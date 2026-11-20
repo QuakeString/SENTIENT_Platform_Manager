@@ -443,7 +443,7 @@ impl StatusPage {
             panel,
             db,
             &disk_name(record),
-            Some(crate::dbstatus::growth_per_day()),
+            Some(crate::dbstatus::growth_per_day(&record.installed_at)),
             last_backup,
             DbActions {
                 move_data: (crate::movedata::unsupported(record).is_none()).then(|| -> std::rc::Rc<dyn Fn(&mut Window, &mut App)> {
@@ -550,7 +550,7 @@ impl StatusPage {
             .children(failed.map(|m| ui::outcome(theme, Tone::Bad, m)));
         for (i, c) in found.iter().enumerate() {
             let candidate = c.clone();
-            let from = c.facts().into_iter().find(|(l, _)| *l == "From" || *l == t!("From")).map(|(_, v)| v).unwrap_or_default();
+            let from = c.facts().into_iter().find(|(l, _)| *l == "From").map(|(_, v)| v).unwrap_or_default();
             let mut help = tf!("Started from: {from}");
             for n in &c.notes {
                 help.push_str("\n\n");
@@ -624,7 +624,7 @@ impl Render for StatusPage {
                     h_flex()
                         .gap_1()
                         .items_center()
-                        .child(div().min_w_0().text_sm().text_color(theme.muted_foreground).child(t!("No SENTIENT started some other way was found on this computer.")))
+                        .child(div().text_sm().text_color(theme.muted_foreground).child(t!("No SENTIENT started some other way was found on this computer.")))
                         .child(ui::info("looked-help".into(), looked_help(&self.looked).into())),
                 )
             });
@@ -676,11 +676,12 @@ impl Render for StatusPage {
                     .rounded(theme.radius)
                     .bg(theme.accent)
                     .text_sm()
-                    .child(div().flex_1().child(if waiting == 1 {
-                        tf!("{waiting} change from Platform Manager {} is waiting.", crate::updates::manager_version())
-                    } else {
-                        tf!("{waiting} changes from Platform Manager {} are waiting.", crate::updates::manager_version())
-                    }))
+                    .child(div().flex_1().child(tf!(
+                        "{waiting} change{} from Platform Manager {} {} waiting.",
+                        if waiting == 1 { "" } else { "s" },
+                        crate::updates::manager_version(),
+                        if waiting == 1 { "is" } else { "are" }
+                    )))
                     .child(crate::ui::button("changes-waiting").outline().label(t!("Apply")).on_click(cx.listener(|_, _, _, cx| cx.emit(OpenUpdate)))),
             )
         });
@@ -814,7 +815,7 @@ impl StatusPage {
         };
         let installed = self.gateway.as_ref().is_some_and(|g| g.installed || g.legacy.is_some());
         ui::panel(theme)
-            .child(h_flex().gap_2().items_center().child(ui::product_logo(ui::Product::Gateway, 24.)).child(div().font_weight(FontWeight::MEDIUM).child(t!("Sentient Gateway"))))
+            .child(h_flex().gap_2().items_center().child(ui::product_logo(ui::Product::Gateway, 24.)).child(div().font_weight(FontWeight::MEDIUM).child("Sentient Gateway")))
             .child(
                 h_flex()
                     .gap_3()
@@ -897,7 +898,7 @@ pub(crate) fn service_act(serving: bool, run: std::rc::Rc<dyn Fn(String, &'stati
 pub(crate) fn overall_state(serving: bool, services: &[(&str, bool, bool)], action: Option<&str>) -> (&'static str, Tone) {
     // The databases by name; the gateway counts for neither; the rest is
     // SENTIENT (a stack may name its containers freely).
-    let is_db = |n: &str| matches!(ui::service_label(n), Some(l) if l == t!("Database (PostgreSQL)") || l == "ClickHouse");
+    let is_db = |n: &str| matches!(ui::service_label(n), Some("Database (PostgreSQL)" | "ClickHouse"));
     let is_app = |n: &str| !is_db(n) && ui::service_label(n) != Some(t!("Gateway"));
     match action {
         Some("start") => return (t!("Starting"), Tone::Warn),
@@ -1180,15 +1181,10 @@ impl BrokenParts {
 fn summarize(out: &str, attach: bool) -> String {
     let ok = out.lines().filter(|l| l.starts_with("ok ")).count();
     let failed: Vec<&str> = out.lines().filter(|l| l.starts_with("failed ")).collect();
-    let mut s = match (attach, ok == 1) {
-        (true, true) => tf!("{ok} part restored."),
-        (true, false) => tf!("{ok} parts restored."),
-        (false, true) => tf!("{ok} part deleted."),
-        (false, false) => tf!("{ok} parts deleted."),
-    };
+    let verb = if attach { "restored" } else { "deleted" };
+    let mut s = tf!("{ok} part{} {verb}.", if ok == 1 { "" } else { "s" });
     if !failed.is_empty() {
-        let list = failed.iter().map(|l| l.trim_start_matches("failed ")).collect::<Vec<_>>().join("\n");
-        s.push_str(&if attach { tf!(" {} could not be restored:\n{}", failed.len(), list) } else { tf!(" {} could not be deleted:\n{}", failed.len(), list) });
+        s.push_str(&tf!(" {} could not be {verb}:\n{}", failed.len(), failed.iter().map(|l| l.trim_start_matches("failed ")).collect::<Vec<_>>().join("\n")));
     } else if ok == 0 && !out.trim().is_empty() {
         s = out.trim().to_string();
     }
@@ -1229,7 +1225,7 @@ impl Render for BrokenParts {
                             .text_sm()
                             .child(div().flex_1().min_w_0().overflow_hidden().text_ellipsis().child(table))
                             .child(div().w(px(80.)).child(month))
-                            .child(div().w(px(80.)).text_right().child(if n == 1 { tf!("{n} part") } else { tf!("{n} parts") }))
+                            .child(div().w(px(80.)).text_right().child(tf!("{n} part{}", if n == 1 { "" } else { "s" })))
                             .child(div().w(px(80.)).text_right().child(crate::dbstatus::bytes_label(bytes))),
                     );
                 }
@@ -1397,9 +1393,9 @@ pub(crate) fn db_details(
     }
     panel = panel
         .when_some(growth, |p, growth| p.child(ui::fact(theme, t!("Growth"), match growth {
-            Some((per_day, days)) if per_day > 0 => if days == 1 { tf!("about {} a day over the last {days} day", bytes_label(per_day as u64)) } else { tf!("about {} a day over the last {days} days", bytes_label(per_day as u64)) },
-            Some((_, days)) => if days == 1 { tf!("not growing over the last {days} day") } else { tf!("not growing over the last {days} days") },
-            None => t!("measured from tomorrow (one size reading a day)").into(),
+            Some((per_day, days)) if per_day > 0 => tf!("about {} a day over the last {days} day{}", bytes_label(per_day as u64), if days == 1 { "" } else { "s" }),
+            Some((_, days)) => tf!("not growing over the last {days} day{}", if days == 1 { "" } else { "s" }),
+            None => t!("shown once a day of size readings is kept").into(),
         })))
         .when_some(lasts.clone(), |p, l| p.child(ui::fact(theme, t!("Disk lasts"), tf!("{l} at this rate"))));
 
@@ -1519,7 +1515,7 @@ pub(crate) fn db_details(
                                     div()
                                         .id("broken-parts")
                                         .when(open.is_some(), |d| d.cursor_pointer())
-                                        .child(ui::pill(theme, Tone::Warn, if n == 1 { tf!("{n} damaged part set aside ›") } else { tf!("{n} damaged parts set aside ›") }))
+                                        .child(ui::pill(theme, Tone::Warn, tf!("{n} damaged part{} set aside ›", if n == 1 { "" } else { "s" })))
                                         .when_some(open, |d, f| d.on_click(move |_, _, cx| f(cx))),
                                 )
                                 .child(ui::info(

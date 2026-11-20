@@ -278,13 +278,19 @@ impl Render for AboutPage {
         let last = u.last_checked();
         // Only two pills: "Up to date" or "Update available". Before a check
         // has answered in this run there is no pill and the line says so.
+        // The Microsoft Store build is updated by the Store: no check, pill,
+        // channel or schedule for it here (SENTIENT's own updates keep
+        // theirs on the Update page).
+        let store = crate::store::is_store();
         let state: Option<(Tone, &str)> = match (&u.found, u.manager()) {
+            _ if store => None,
             (_, Some(_)) => Some((Tone::Warn, t!("Update available"))),
             (Some(f), None) if f.manager.is_ok() => Some((Tone::Good, t!("Up to date"))),
             _ => None,
         };
         // The version alone until a check has answered, then what it found.
         let checked_line = match (&u.found, u.manager()) {
+            _ if store => format!(". {}", crate::i18n::t(crate::updates::STORE_UPDATES)),
             _ if checking => t!(" · checking for updates…").to_string(),
             (_, Some(o)) => tf!(" · {} available", o.version),
             (Some(f), None) if f.manager.is_ok() => t!(" · up to date").to_string(),
@@ -314,17 +320,19 @@ impl Render for AboutPage {
                         .items_center()
                         .when_some(state, |r, (tone, text)| r.child(ui::pill(&theme, tone, text)))
                         .child(crate::ui::probed(crate::ui::button("about-notes").outline().label(t!("What's new")).on_click(cx.listener(|_, _, _, cx| cx.emit(ShowWhatsNew)))))
-                        .child(crate::ui::probed(
-                            crate::ui::button("about-check")
-                                .outline()
-                                .label(if checking { t!("Checking") } else { t!("Check for updates") })
-                                .disabled(checking)
-                                .on_click(cx.listener(|this, _, _, cx| this.updates.update(cx, |u, cx| u.check(cx)))),
-                        )),
+                        .when(!store, |r| {
+                            r.child(crate::ui::probed(
+                                crate::ui::button("about-check")
+                                    .outline()
+                                    .label(if checking { t!("Checking") } else { t!("Check for updates") })
+                                    .disabled(checking)
+                                    .on_click(cx.listener(|this, _, _, cx| this.updates.update(cx, |u, cx| u.check_now(cx)))),
+                            ))
+                        }),
                 ),
         );
         let channels = ui::seg_track(&theme).children(Channel::ALL.into_iter().map(|c| {
-            ui::seg_item(&theme, SharedString::from(format!("about-channel-{}", crate::i18n::t(c.label()))), crate::i18n::t(c.label()), c == channel)
+            ui::seg_item(&theme, SharedString::from(format!("about-channel-{}", c.label())), c.label(), c == channel)
                 .on_click(cx.listener(move |this, _, _, cx| this.updates.update(cx, |u, cx| u.set_channel(c, cx))))
         }));
         let checks = ui::seg_track(&theme)
@@ -334,7 +342,7 @@ impl Render for AboutPage {
         // the desktop behind the window where the desktop can blur it.
         let choice = crate::theme::Choice::saved();
         let themes = ui::seg_track(&theme).children(crate::theme::Choice::ALL.into_iter().map(|c| {
-            ui::seg_item_with(&theme, SharedString::from(format!("about-theme-{}", crate::i18n::t(c.label()))), crate::manager::shell::theme_icon(c), crate::i18n::t(c.label()), c == choice).on_click(cx.listener(move |_, _, window, cx| {
+            ui::seg_item_with(&theme, SharedString::from(format!("about-theme-{}", c.label())), crate::manager::shell::theme_icon(c), c.label(), c == choice).on_click(cx.listener(move |_, _, window, cx| {
                 crate::theme::choose(c, Some(window), cx);
                 cx.notify();
             }))
@@ -390,8 +398,10 @@ impl Render for AboutPage {
                         menu
                     }) }
             }).border_t_0())
-            .child(pref_row(&theme, t!("Update channel"), Some(t!("Release candidates arrive earlier and are less tested.")), channels))
-            .child(pref_row(&theme, t!("Check for updates"), None, checks))
+            .when(!store, |p| {
+                p.child(pref_row(&theme, t!("Update channel"), Some(t!("Release candidates arrive earlier and are less tested.")), channels))
+                    .child(pref_row(&theme, t!("Check for updates"), None, checks))
+            })
             .children(self.background_rows(&theme, cx));
         crate::ui::set_stacked(f32::from(_window.viewport_size().width) < crate::ui::ROW_STACK_W);
         let company = self.company_panel(&theme, cx);
@@ -436,7 +446,9 @@ impl Render for AboutPage {
         };
         let footer = v_flex()
             .gap_0p5()
-            .child(place("copy-installed", t!("Installed in"), crate::self_install::manager_dir().display().to_string()))
+            // The Microsoft Store build: the app is the Store's; the copy
+            // that does the work lives in ProgramData (crate::store).
+            .child(place("copy-installed", if crate::store::is_store() { t!("From the Microsoft Store; helper in") } else { t!("Installed in") }, crate::self_install::manager_dir().display().to_string()))
             .child(place("copy-data", t!("Data in"), crate::updates::prefs_dir().display().to_string()));
         v_flex()
             .id("about")
@@ -529,7 +541,7 @@ impl Render for Licences {
                     .gap_1()
                     .items_center()
                     .text_sm()
-                    .child(div().min_w_0().child(tf!("The Platform Manager is built with {count} open-source components.")))
+                    .child(tf!("The Platform Manager is built with {count} open-source components."))
                     .child(crate::ui::info(
                         "licences-help".into(),
                         t!("Each is used under the licence shown (where there is a choice, any one of them). A row opens the component's source, where its licence text is.\n\nThe list is made from the program's dependencies when it is built.").into(),

@@ -274,17 +274,29 @@ impl Render for RepairPage {
                 Some(m) => page.child(ui::panel(&theme).child(ui::outcome(&theme, Tone::Good, m))),
                 None => page.child(ui::not_installed(&theme)),
             };
+            // The Microsoft Store build: the Store uninstalls the app; this
+            // removes what it added outside the app (crate::store).
+            let store = crate::store::is_store();
+            let (title, text, help) = if store {
+                (
+                    t!("Remove the Platform Manager's helper"),
+                    t!("Removes what the Platform Manager added outside its app."),
+                    "Its administrator copy in ProgramData and its sign-in task go. To uninstall the app itself, right-click it in Start and choose Uninstall.",
+                )
+            } else {
+                (t!("Remove the Platform Manager"), t!("Removes this program from this computer."), t!("Its settings, saved servers and logs go too. SENTIENT, its database and backups are not touched."))
+            };
             return page.children(gw).children(gw_outcome).child(
                 ui::panel(&theme)
-                    .child(div().font_weight(FontWeight::MEDIUM).child(t!("Remove the Platform Manager")))
+                    .child(div().font_weight(FontWeight::MEDIUM).child(title))
                     .child(
                         h_flex()
                             .gap_1()
                             .items_center()
-                            .child(div().text_sm().text_color(theme.muted_foreground).child(t!("Removes this program from this computer.")))
-                            .child(ui::info("remove-manager-help".into(), t!("Its settings, saved servers and logs go too. SENTIENT, its database and backups are not touched.").into())),
+                            .child(div().text_sm().text_color(theme.muted_foreground).child(text))
+                            .child(ui::info("remove-manager-help".into(), help.into())),
                     )
-                    .child(ui::button_row(vec![crate::ui::button("remove-manager").outline().label(t!("Remove the Platform Manager")).on_click(|_, window, cx| crate::standalone::remove_manager(window, cx)).into_any_element()])),
+                    .child(ui::button_row(vec![crate::ui::button("remove-manager").outline().label(if store { t!("Remove the helper") } else { t!("Remove the Platform Manager") }).on_click(|_, window, cx| crate::standalone::remove_manager(window, cx)).into_any_element()])),
             );
         }
         let job = self.job.read(cx);
@@ -354,7 +366,7 @@ impl Render for RepairPage {
                     h_flex()
                         .gap_1()
                         .items_center()
-                        .child(div().text_sm().text_color(theme.muted_foreground).child(t!("Choose what to remove: SENTIENT, its databases, the shortcuts, the Platform Manager.")))
+                        .child(div().text_sm().text_color(theme.muted_foreground).child(if crate::store::is_store() { t!("Choose what to remove: SENTIENT, its databases, the shortcuts.") } else { t!("Choose what to remove: SENTIENT, its databases, the shortcuts, the Platform Manager.") }))
                         .child(ui::info("uninstall-help".into(), t!("Each part has its own switch, and each database a Keep its data switch, on by default. A database Setup did not install is never removed. Afterwards the Platform Manager checks that nothing is left and lists what is, with the command to remove it.").into())),
                 )
                 .child(ui::button_row(vec![crate::ui::button("uninstall").danger().label(t!("Uninstall")).disabled(done).on_click(cx.listener(|this, _, _, cx| this.open_uninstall(cx))).into_any_element()])),

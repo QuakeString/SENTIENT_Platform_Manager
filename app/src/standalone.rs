@@ -27,6 +27,19 @@ pub fn install_sentient(window: &mut Window, cx: &mut App) {
     }
 }
 
+/// Continue the install that stopped for the WSL restart: Setup opens on
+/// its install step with the saved plan (`--resume`, as the entry that runs
+/// after sign-in does). The manager closes, as for a new install.
+pub fn resume_install(window: &mut Window, cx: &mut App) {
+    let started = std::env::current_exe()
+        .map_err(|e| e.to_string())
+        .and_then(|me| std::process::Command::new(me).arg("--resume").spawn().map_err(|e| e.to_string()));
+    match started {
+        Ok(_) => cx.quit(),
+        Err(e) => window.push_notification(tf!("Could not open SENTIENT Setup: {e}"), cx),
+    }
+}
+
 /// Ask for an unpacked SENTIENT package and start its Setup (no internet).
 pub fn install_sentient_from_package(window: &mut Window, cx: &mut App) {
     let handle = window.window_handle();
@@ -57,9 +70,14 @@ pub fn install_sentient_from_package(window: &mut Window, cx: &mut App) {
 /// Confirm, then remove the Platform Manager and close it.
 pub fn remove_manager(window: &mut Window, cx: &mut App) {
     crate::modal::alert(window, cx, |dialog, _, _| {
+        let (title, text) = if crate::store::is_store() {
+            (t!("Remove the Platform Manager's helper?"), t!("Its administrator copy and its sign-in task are removed, and it closes. The app stays in Start until you uninstall it there."))
+        } else {
+            (t!("Remove the Platform Manager?"), t!("Its shortcuts and the program are removed from this computer. SENTIENT is not installed, so nothing else changes."))
+        };
         dialog
-            .title(t!("Remove the Platform Manager?"))
-            .description(t!("Its shortcuts and the program are removed from this computer. SENTIENT is not installed, so nothing else changes."))
+            .title(title)
+            .description(text)
             .confirm()
             .ok_text(t!("Remove"))
             .on_ok(|_, _, cx| {

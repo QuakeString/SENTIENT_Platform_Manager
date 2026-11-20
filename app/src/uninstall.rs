@@ -174,6 +174,15 @@ pub struct Facts {
     pub sizes: Sizes,
     /// What the rows name.
     pub names: Names,
+    /// The Microsoft Store build (crate::store): the app itself is
+    /// uninstalled from Start or Settings > Apps, so it has no row.
+    #[serde(default)]
+    pub store: bool,
+    /// Windows Docker: SENTIENT runs in the WSL distribution Setup made for
+    /// it, with Docker Engine that Setup installed there (not Docker
+    /// Desktop, not the operator's own distribution).
+    #[serde(default)]
+    pub own_distro: bool,
 }
 
 /// Bytes on disk, where known.
@@ -245,6 +254,39 @@ impl Choice {
 }
 
 const NOT_BY_SETUP: &str = n!("not installed by Setup");
+
+/// The row (and summary name) of the WSL distribution Setup made for
+/// SENTIENT in Docker on Windows ([`Facts::own_distro`]). It has no switch
+/// of its own: it goes when the data goes ([`own_distro_goes`]).
+pub const OWN_DISTRO: &str = n!("SENTIENT's WSL distribution with Docker Engine");
+
+/// A row whose switch follows the others (shown, never switched).
+pub fn follows(r: &Row) -> bool {
+    r.key == Key::Docker && r.name == OWN_DISTRO
+}
+
+/// Whether SENTIENT's own WSL distribution goes: with SENTIENT, when a
+/// database's data is not kept (uninstall::run unregisters the whole
+/// distribution then; otherwise it stops it and keeps it).
+pub fn own_distro_goes(c: &Choice, rows: &[Row]) -> bool {
+    let e = effective(c, rows);
+    e.has(Key::Sentient) && (pg_action(&e).is_some_and(|p| !p.keeps_data()) || ch_action(&e).is_some_and(|h| !h.keeps_data()))
+}
+
+/// A row's second line as it is now: the own distribution's says what
+/// happens to it.
+pub fn row_detail(r: &Row, c: &Choice, rows: &[Row]) -> String {
+    if !follows(r) {
+        return r.detail.clone();
+    }
+    if own_distro_goes(c, rows) {
+        t!("Removed with the data: the database's Keep volume switch is off").into()
+    } else if effective(c, rows).has(Key::Sentient) {
+        t!("Stays, stopped, with the kept volumes").into()
+    } else {
+        t!("Stays").into()
+    }
+}
 
 /// The dialog's rows for this computer (or server), in order.
 pub fn rows(f: &Facts) -> Vec<Row> {
@@ -379,27 +421,33 @@ pub fn rows(f: &Facts) -> Vec<Row> {
         g.help = Some(t!("Its service or container and its program go; its settings stay for a new install.").into());
         out.push(g);
     }
-    if docker {
+    if docker && f.own_distro {
+        // Setup made it: it goes with the data (row_detail says which).
+        let mut d = row(Key::Docker, None, OWN_DISTRO, String::new(), f.sizes.distro, false, OWN_DISTRO);
+        d.help = Some(t!("Setup made this WSL distribution (sentient) for SENTIENT and installed Docker Engine in it. It holds the containers and their volumes: it is removed when the database's Keep volume switch is off, and stays, stopped, while the database is kept. The task that starts it with Windows and its command file (docker-keepalive.cmd) go either way.").into());
+        out.push(d);
+    } else if docker {
         let mut d = row(Key::Docker, None, t!("Docker itself"), t!("Not installed by Setup").into(), None, false, t!("Docker"));
         d.why = Some(t!("Docker is never removed: other programs may use it.").into());
         out.push(d);
-    } else {
-        out.push(row(Key::Shortcuts, None, t!("Shortcuts"), if f.windows { t!("Start menu and desktop").into() } else { t!("Menu entry and desktop icon").into() }, None, true, "shortcuts"));
     }
-    let manager_detail = if f.windows { t!("Tray icon and program; removed last") } else { t!("Removed last") };
-    out.push(row(Key::Manager, None, "Platform Manager", manager_detail.into(), f.sizes.manager, false, "Platform Manager"));
+    out.push(row(Key::Shortcuts, None, t!("Shortcuts"), if f.windows { t!("SENTIENT on the desktop and in Start").into() } else { t!("Menu entry and desktop icon").into() }, None, true, "shortcuts"));
+    if !f.store {
+        let manager_detail = if f.windows { t!("Tray icon and program; removed last") } else { t!("Removed last") };
+        out.push(row(Key::Manager, None, "Platform Manager", manager_detail.into(), f.sizes.manager, false, "Platform Manager"));
+    }
     out
 }
 
 /// WSL can go only when Setup turned it on and no other distribution uses it.
 pub fn wsl_guard(origin: Origin, others: &[String]) -> Result<(), String> {
     match origin {
-        Origin::Before => return Err(n!("WSL was on before Setup ran.").into()),
-        Origin::Unknown => return Err(n!("Not recorded whether Setup turned WSL on, so it stays.").into()),
+        Origin::Before => return Err(t!("WSL was on before Setup ran.").into()),
+        Origin::Unknown => return Err(t!("Not recorded whether Setup turned WSL on, so it stays.").into()),
         Origin::Setup => {}
     }
     if !others.is_empty() {
-        return Err(nf!("Other WSL machines use it: {}.", others.join(", ")));
+        return Err(tf!("Other WSL machines use it: {}.", others.join(", ")));
     }
     Ok(())
 }
@@ -459,7 +507,14 @@ pub fn gone_and_kept(c: &Choice, rows: &[Row]) -> (Vec<String>, Vec<String>, u64
     for r in rows {
         let enabled = rule(r.key, c, rows).is_none();
         let picked = enabled && c.has(r.key);
-        if r.key.is_keep() {
+        if follows(r) {
+            if own_distro_goes(c, rows) {
+                gone.push(r.name.clone());
+                free += r.bytes.unwrap_or(0);
+            } else {
+                kept.push(r.name.clone());
+            }
+        } else if r.key.is_keep() {
             if !enabled {
                 continue;
             }
@@ -491,20 +546,8 @@ pub fn summary(c: &Choice, rows: &[Row]) -> (String, String) {
     } else {
         tf!("Removes: {}.", gone.join(", "))
     };
-    let keeps = tf!("Keeps: {}.", if kept.is_empty() { t!("nothing").to_string() } else { kept.join(", ") });
+    let keeps = tf!("Keeps: {}.", if kept.is_empty() { "nothing".to_string() } else { kept.join(", ") });
     (removes, keeps)
-}
-
-/// The result screen's first line: what was removed (and the space freed).
-fn summary_done(c: &Choice, rows: &[Row]) -> String {
-    let (gone, _, free) = gone_and_kept(c, rows);
-    if gone.is_empty() {
-        t!("Nothing picked.").to_string()
-    } else if free > 0 {
-        tf!("Removed: {}. Freed {}.", gone.join(", "), human(free))
-    } else {
-        tf!("Removed: {}.", gone.join(", "))
-    }
 }
 
 /// What a row's size column shows.
@@ -561,7 +604,7 @@ pub fn from_args(args: &[String]) -> Result<Choice, String> {
         Some(list) => {
             for id in list.split(',').map(str::trim).filter(|s| !s.is_empty()) {
                 let k = Key::PARTS.into_iter().find(|k| k.id() == id).ok_or_else(|| {
-                    nf!("unknown part {id}: use {}", Key::PARTS.iter().filter(|k| **k != Key::Docker).map(|k| k.id()).collect::<Vec<_>>().join(", "))
+                    tf!("unknown part {id}: use {}", Key::PARTS.iter().filter(|k| **k != Key::Docker).map(|k| k.id()).collect::<Vec<_>>().join(", "))
                 })?;
                 c.set(k, true);
             }
@@ -663,6 +706,8 @@ pub fn facts_quick(record: &InstallationRecord) -> Facts {
         other_distros: if ch_in_wsl { sentient_installer_core::wsl::other_distros() } else { Vec::new() },
         sizes: Sizes::default(),
         names,
+        store: crate::store::is_store(),
+        own_distro: windows && record.engine == Engine::Docker && st.wsl_distro.is_none() && st.external.is_none(),
     }
 }
 
@@ -1006,7 +1051,7 @@ pub fn run(record: InstallationRecord, c: Choice, facts: Facts, sink: ProgressFn
                         let script = removal::linux_postgres_script(pm, how, record.stack.pg_port, &record.stack.db_name, &record.stack.db_user, facts.timescale);
                         note(removal::run_root(&nested, &script), "PostgreSQL");
                     }
-                    _ => note(Err(n!("no supported package manager found (apt, pacman, dnf, zypper).").into()), "PostgreSQL"),
+                    _ => note(Err(t!("no supported package manager found (apt, pacman, dnf, zypper).").into()), "PostgreSQL"),
                 }
             }
             #[cfg(windows)]
@@ -1028,7 +1073,7 @@ pub fn run(record: InstallationRecord, c: Choice, facts: Facts, sink: ProgressFn
                 for d in ["data", "backups", "logs", "downloads"] {
                     let p = record.state_dir.join(d);
                     if p.exists() && std::fs::remove_dir_all(&p).is_err() {
-                        note(Err(nf!("{} could not be deleted", p.display())), t!("SENTIENT's files"));
+                        note(Err(tf!("{} could not be deleted", p.display())), t!("SENTIENT's files"));
                     }
                 }
             }
@@ -1104,7 +1149,7 @@ fn docker_out(args: &[&str]) -> Option<String> {
 }
 
 fn run_shell(sink: &ProgressFn, script: &str) -> Result<(), String> {
-    let out = sentient_installer_core::host::host_command("sh").arg("-c").arg(script).output().map_err(|e| nf!("run sh: {e}"))?;
+    let out = sentient_installer_core::host::host_command("sh").arg("-c").arg(script).output().map_err(|e| tf!("run sh: {e}"))?;
     for l in String::from_utf8_lossy(&out.stdout).lines().filter(|l| !l.trim().is_empty()) {
         log(sink, l.trim_start_matches(">> ").to_string());
     }
@@ -1194,9 +1239,10 @@ fn expect(record: &InstallationRecord, e: &Choice, facts: &Facts, pg: Option<DbR
 /// The job's last line.
 pub fn done_message(e: &Choice, rows: &[Row], checks: &[Check], problems: &[String]) -> String {
     let left = checks.iter().filter(|c| !c.ok).count();
-    let mut m = summary_done(e, rows);
+    let (removes, _) = summary(e, rows);
+    let mut m = removes.replacen("Removes: ", "Removed: ", 1).replacen(" Frees ", " Freed ", 1);
     if left > 0 {
-        m.push_str(&if left == 1 { tf!(" {left} thing is left: see the list.") } else { tf!(" {left} things are left: see the list.") });
+        m.push_str(&tf!(" {left} {} left: see the list.", if left == 1 { "thing is" } else { "things are" }));
     } else if !problems.is_empty() {
         m.push_str(t!(" Some steps reported a problem: see the log."));
     }
@@ -1276,6 +1322,8 @@ pub fn fixture(name: &str) -> Option<Facts> {
         gateway: false,
         other_distros: Vec::new(),
         sizes: Sizes { sentient: mb(420), files: mb(5100), pg_program: mb(160), pg_data: mb(38200), ch_program: mb(610), ch_data: mb(94100), distro: mb(1900), manager: mb(48) },
+        store: false,
+        own_distro: false,
         names: Names {
             install_dir: "/opt/sentient".into(),
             files: format!("/var/lib/sentient, {LINUX_BACKUPS}"),
@@ -1343,7 +1391,7 @@ mod tests {
         use Key::*;
         assert_eq!(keys(&rows(&fixture("lx-pg").unwrap())), [Sentient, Postgres, KeepPgData, KeepFiles, Gateway, Shortcuts, Manager]);
         assert_eq!(keys(&rows(&fixture("lx-ch").unwrap())), [Sentient, Postgres, KeepPgData, Clickhouse, KeepChData, KeepFiles, Shortcuts, Manager]);
-        assert_eq!(keys(&rows(&fixture("lx-dk").unwrap())), [Sentient, KeepFiles, Postgres, KeepPgData, Clickhouse, KeepChData, Docker, Manager]);
+        assert_eq!(keys(&rows(&fixture("lx-dk").unwrap())), [Sentient, KeepFiles, Postgres, KeepPgData, Clickhouse, KeepChData, Docker, Shortcuts, Manager]);
         assert_eq!(keys(&rows(&fixture("win-ch").unwrap())), [Sentient, Postgres, KeepPgData, Clickhouse, KeepChData, WslDistro, Wsl, KeepFiles, Shortcuts, Manager]);
         assert_eq!(rows(&fixture("lx-ts").unwrap())[1].title, "PostgreSQL and TimescaleDB");
         // Defaults: data kept, the Platform Manager and the Gateway stay.
@@ -1419,6 +1467,57 @@ mod tests {
         assert!(summary(&default_choice(&r), &r).1.contains("Docker (not installed by Setup)"));
     }
 
+    /// Windows Docker in the distribution Setup made (the Store build: no
+    /// Platform Manager row).
+    fn win_docker() -> Vec<Row> {
+        let mut f = fixture("lx-dk").unwrap();
+        f.windows = true;
+        f.has_clickhouse = false;
+        f.own_distro = true;
+        f.store = true;
+        rows(&f)
+    }
+
+    #[test]
+    fn setups_own_wsl_distribution_is_named_and_follows_the_data() {
+        let r = win_docker();
+        assert_eq!(keys(&r), [Key::Sentient, Key::KeepFiles, Key::Postgres, Key::KeepPgData, Key::Docker, Key::Shortcuts]);
+        let d = r.iter().find(|r| r.key == Key::Docker).unwrap();
+        assert_eq!(d.title, OWN_DISTRO);
+        assert!(follows(d) && d.why.is_none());
+        // Data kept (the default): the distribution stays, stopped.
+        let mut c = default_choice(&r);
+        assert!(!own_distro_goes(&c, &r));
+        assert_eq!(row_detail(d, &c, &r), "Stays, stopped, with the kept volumes");
+        let (rm, kp) = summary(&c, &r);
+        assert!(kp.contains(OWN_DISTRO) && !kp.contains("not installed by Setup"), "{kp}");
+        assert!(rm.contains("shortcuts"), "{rm}");
+        // A Keep volume switch off: it goes, and the summary says so.
+        c.set(Key::KeepPgData, false);
+        assert!(own_distro_goes(&c, &r));
+        assert_eq!(row_detail(d, &c, &r), "Removed with the data: the database's Keep volume switch is off");
+        let (gone, kept, _) = gone_and_kept(&c, &r);
+        assert!(gone.iter().any(|g| g == OWN_DISTRO) && !kept.iter().any(|k| k == OWN_DISTRO));
+        assert!(!kept.iter().any(|k| k.contains("Docker")));
+        // SENTIENT stays: so does the distribution.
+        c.set(Key::Sentient, false);
+        assert!(!own_distro_goes(&c, &r));
+        // Never a part of the job's arguments.
+        c.set(Key::Sentient, true);
+        assert!(!to_args(&c, &r)[2].split(',').any(|p| p == "docker"));
+    }
+
+    #[test]
+    fn a_docker_setup_did_not_make_stays_docker_itself() {
+        let mut f = fixture("lx-dk").unwrap();
+        f.windows = true;
+        let r = rows(&f);
+        let d = r.iter().find(|r| r.key == Key::Docker).unwrap();
+        assert_eq!(d.title, "Docker itself");
+        assert!(!follows(d));
+        assert!(summary(&default_choice(&r), &r).1.contains("Docker (not installed by Setup)"));
+    }
+
     #[test]
     fn the_wsl_guard() {
         assert!(wsl_guard(Origin::Setup, &[]).is_ok());
@@ -1457,6 +1556,20 @@ mod tests {
         let ext = rows(&fixture("lx-ext").unwrap());
         assert_eq!(pg_action(&effective(&wipe, &ext)), Some(DbRemoval::StopUsing { keep_data: false }));
         assert!(from_args(&["--parts".into(), "sentient,bogus".into()]).unwrap_err().contains("unknown part bogus"));
+    }
+
+    #[test]
+    fn the_store_build_has_no_platform_manager_row() {
+        let mut f = fixture("win-pg").unwrap();
+        f.store = true;
+        let back: Facts = serde_json::from_str(&serde_json::to_string(&f).unwrap()).unwrap();
+        assert!(back.store);
+        assert!(rows(&back).iter().all(|r| r.key != Key::Manager));
+        // A server's facts from an older agent: no store field, a row.
+        let mut v = serde_json::to_value(fixture("win-pg").unwrap()).unwrap();
+        v.as_object_mut().unwrap().remove("store");
+        let old: Facts = serde_json::from_value(v).unwrap();
+        assert!(!old.store && rows(&old).iter().any(|r| r.key == Key::Manager));
     }
 
     #[test]

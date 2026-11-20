@@ -59,6 +59,19 @@ pub struct Manifest {
     pub released: String,
     #[serde(default)]
     pub notes: String,
+    /// SENTIENT's build version (its `CARGO_PKG_VERSION`, e.g. "4.4.0" for
+    /// release 4.4.0.3): what a licence's allowed versions are compared
+    /// with. The release pipeline should fill it; without it the first three
+    /// components of `version` are used
+    /// (crate::licence_version::build_version).
+    #[serde(default)]
+    pub build_version: Option<String>,
+    /// The oldest glibc the Linux server binary runs on ("2.38"): the
+    /// newest non-weak `GLIBC_x.y` in its `objdump -T`. The release
+    /// pipeline should fill it; without it SENTIENT's major.minor picks it
+    /// from crate::glibc::MIN_GLIBC_BY_RELEASE.
+    #[serde(default)]
+    pub min_glibc: Option<String>,
     pub artifacts: Vec<Artifact>,
 }
 
@@ -207,6 +220,11 @@ pub fn download(sink: &ProgressFn, art: &Artifact, dir: &Path) -> Result<PathBuf
 }
 
 impl Manifest {
+    /// The glibc this release's Linux server needs (None: not known).
+    pub fn min_glibc(&self) -> Option<crate::glibc::GlibcVersion> {
+        crate::glibc::min_glibc(self.min_glibc.as_deref(), &self.version)
+    }
+
     /// The files a native install on this computer needs: what an offline
     /// package holds (crate::native::required_bundle_files), plus the Visual
     /// C++ runtime on Windows when the release carries it.
@@ -243,5 +261,20 @@ impl Manifest {
         }
         std::fs::write(dir.join("VERSION"), format!("{}\n", self.version)).map_err(|e| format!("write VERSION: {e}"))?;
         Ok(dir.to_path_buf())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::glibc::GlibcVersion;
+
+    #[test]
+    fn min_glibc_is_the_manifests_else_the_releases_table() {
+        let with = parse(r#"{"product":"SENTIENT","version":"4.4.0.9","min_glibc":"2.39","artifacts":[]}"#).unwrap();
+        assert_eq!(with.min_glibc(), Some(GlibcVersion { major: 2, minor: 39 }));
+        let without = parse(r#"{"product":"SENTIENT","version":"4.4.0.3","artifacts":[]}"#).unwrap();
+        assert_eq!(without.min_glibc, None);
+        assert_eq!(without.min_glibc(), Some(GlibcVersion { major: 2, minor: 43 }));
     }
 }

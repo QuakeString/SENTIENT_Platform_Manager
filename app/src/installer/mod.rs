@@ -7,9 +7,9 @@
 mod old_pg;
 mod pages;
 mod placement;
-mod plan;
+pub(crate) mod plan;
 
-pub(crate) use plan::{InstallPlan, run as run_install, run_manager_only};
+pub(crate) use plan::{Host as PlanHost, InstallPlan, InstallSecrets, Shortcuts, pinned_image, run as run_install, run_manager_only, steps_on as plan_steps_on};
 
 #[cfg(windows)]
 pub use plan::provision_clickhouse_wsl;
@@ -200,6 +200,10 @@ pub struct Installer {
     pub(crate) old_pg: Option<sentient_installer_core::old_pg::OldPgData>,
     pub(crate) old_pg_choice: sentient_installer_core::old_pg::OldPgChoice,
     old_pg_probing: bool,
+    /// Linux: this computer's C library and system, read once: a native
+    /// SENTIENT needs a glibc as new as its release says (native_glibc).
+    libc: sentient_installer_core::glibc::Libc,
+    os_name: String,
     _tasks: Vec<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
@@ -235,10 +239,19 @@ fn secret_with(window: &mut Window, cx: &mut Context<Installer>, value: &str) ->
     cx.new(|cx| InputState::new(window, cx).masked(true).default_value(value))
 }
 
+/// Set before the window opens when a plain start of the Platform Manager
+/// found an install saved for the restart (plan::pending_offer_now): Setup
+/// then continues it, as `--resume` does.
+pub static RESUME_AT_START: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn resume_requested() -> bool {
+    RESUME_AT_START.load(std::sync::atomic::Ordering::Relaxed) || std::env::args().any(|a| a == "--resume")
+}
+
 impl Installer {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         // After a restart for WSL2: the saved plan, to continue where it stopped.
-        let resumed = std::env::args().any(|a| a == "--resume").then(plan::take_pending).flatten();
+        let resumed = resume_requested().then(plan::take_pending).flatten();
         let mut d = DeployConfig::default();
         if let Some(p) = &resumed {
             d.http_port = p.stack.http_port;
@@ -315,6 +328,11 @@ impl Installer {
             if this.step == INSTALL && matches!(job.read(cx).state(), JobState::Done(_)) {
                 this.step = FINISH;
             }
+            // Stopped for the restart: the run after it starts where this
+            // one's bar got to (plan::take_pending_progress).
+            if matches!(job.read(cx).state(), JobState::Failed(m) if m.as_ref() == plan::RESTART_REQUIRED || m.as_ref() == crate::i18n::t(plan::RESTART_REQUIRED)) {
+                plan::save_pending_progress(job.read(cx).overall());
+            }
             cx.notify();
         });
         let bundle = native::bundled_payload_dir();
@@ -369,6 +387,8 @@ impl Installer {
             old_pg: None,
             old_pg_choice: Default::default(),
             old_pg_probing: false,
+            libc: if windows { Default::default() } else { sentient_installer_core::glibc::local() },
+            os_name: if windows { String::new() } else { sentient_installer_core::glibc::local_os_name() },
             earlier: None,
             earlier_done: resumed.is_some(),
             keep_existing: true,
@@ -401,6 +421,7 @@ impl Installer {
         // The WSL 2 facts first: a screen's engine (SPM_DEBUG_ENGINE_DOCKER)
         // picks the checks.
         this.read_docker_choice(cx);
+        this.fit_engine_to_glibc();
         this.run_checks(cx);
         // The error panel's page fixes: another port, or the password
         // prompt again (both run the install again).
@@ -416,7 +437,11 @@ impl Installer {
             this.engine = plan.engine;
             this.step = INSTALL;
             let steps = plan::steps(&plan);
-            this.install.update(cx, |job, _| job.set_plan(steps));
+            let from = plan::take_pending_progress();
+            this.install.update(cx, |job, _| {
+                job.set_plan(steps);
+                job.resume_from(from);
+            });
             this.install.update(cx, |job, cx| job.start(move |sink| plan::run(plan, sink), cx));
         }
         if this.bundle.is_none() {
@@ -427,6 +452,9 @@ impl Installer {
                         page.sentient_version = tf!("{} (downloaded)", m.version).into();
                     }
                     page.online = Some(found);
+                    if page.fit_engine_to_glibc() {
+                        page.run_checks(cx);
+                    }
                     cx.notify();
                 })
                 .ok();
@@ -783,6 +811,10 @@ impl Installer {
                 Some(Err(e)) => nf!("There is no SENTIENT package next to Setup and SENTIENT could not be found online ({e}). Connect to the internet, or unzip the SENTIENT package and run SENTIENT-Setup from that folder, or choose “Only the Platform Manager”."),
                 Some(Ok(_)) => String::new(),
             }),
+            // Still native after the switch to Docker: no Docker either.
+            1 if self.engine == Engine::Native && self.native_glibc().blocked().is_some() => {
+                Err(sentient_installer_core::glibc::and_no_docker(self.native_glibc().blocked().unwrap_or_default(), sentient_installer_core::glibc::Here::Computer))
+            }
             1 => match &self.checks {
                 None => Err(n!("The system check is still running.").into()),
                 Some(rows) if rows.iter().any(|r| r.status == Status::Fail) => {
@@ -906,6 +938,39 @@ impl Installer {
         }
     }
 
+    /// Whether a native SENTIENT (the version Setup installs) runs on this
+    /// Linux's glibc. Windows (and its screens) and "Only the Platform
+    /// Manager" are not checked.
+    pub(super) fn native_glibc(&self) -> sentient_installer_core::glibc::NativeGlibc {
+        use sentient_installer_core::glibc;
+        if cfg!(windows) || self.windows || self.manager_only {
+            return glibc::NativeGlibc::Allowed;
+        }
+        // The release's manifest when it was read online; a package names
+        // only its version (glibc::MIN_GLIBC_BY_RELEASE then).
+        let (version, field) = match (&self.bundle, &self.online) {
+            (None, Some(Ok(m))) => (m.version.clone(), m.min_glibc.clone()),
+            _ => (self.sentient_version.split(' ').next().unwrap_or_default().to_string(), None),
+        };
+        glibc::decide(&version, glibc::min_glibc(field.as_deref(), &version), &self.libc, &self.os_name, glibc::Here::Computer)
+    }
+
+    /// "In the system" cannot run here: Docker is chosen instead (its card
+    /// is off with the reason). True when the choice changed.
+    fn fit_engine_to_glibc(&mut self) -> bool {
+        if self.engine != Engine::Native || self.native_glibc().blocked().is_none() {
+            return false;
+        }
+        if self.windows && self.host().wsl == placement::Wsl::Unavailable {
+            return false;
+        }
+        self.engine = Engine::Docker;
+        if self.flavor.is_some_and(|f| !self.flavors().contains(&f)) {
+            self.flavor = None;
+        }
+        true
+    }
+
     /// Windows: read whether Docker in WSL 2 can run here (the engine
     /// cards). Screens: `SPM_DEBUG_WINDOWS_ENGINES` = ready, wsl or novirt
     /// shows the Windows cards on any system.
@@ -944,6 +1009,9 @@ impl Installer {
 
     fn set_engine(&mut self, engine: Engine, cx: &mut Context<Self>) {
         if engine == Engine::Docker && self.windows && self.host().wsl == placement::Wsl::Unavailable {
+            return;
+        }
+        if engine == Engine::Native && self.native_glibc().blocked().is_some() {
             return;
         }
         if self.engine != engine {
@@ -1194,6 +1262,7 @@ impl Installer {
             delete_existing: self.existing.is_some() && !self.keep_existing && self.delete_existing,
             old_pg: self.old_pg_choice,
             wsl_restarted: false,
+            remote: false,
             admin_email: self.value(&f.admin_email, cx),
             admin_password: self.value(&f.admin_password, cx),
             settings: self.chosen_settings(cx),
@@ -1246,6 +1315,9 @@ impl Installer {
                 .await;
             this.update(cx, |page, cx| {
                 page.online = Some(found);
+                if page.fit_engine_to_glibc() {
+                    page.run_checks(cx);
+                }
                 cx.notify();
             })
             .ok();

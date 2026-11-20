@@ -935,6 +935,16 @@ pub(crate) fn row(_theme: &gpui_kit::component::Theme, label: impl Into<SharedSt
 }
 
 /// A plain value in a wide row.
+/// "1 failed sign-in", "3 failed sign-ins": `n` and `one`, plural with an s.
+fn counted(n: i64, one: &str) -> String {
+    if n == 1 { format!("1 {one}") } else { format!("{n} {one}s") }
+}
+
+/// A retention in days for the list of changes: "forever" (0), "1 day", "30 days".
+fn kept_days(d: i64) -> String {
+    if d == 0 { "forever".into() } else { counted(d, "day") }
+}
+
 fn text_value(theme: &gpui_kit::component::Theme, text: impl Into<SharedString>) -> Div {
     ui::row_text(text).text_color(theme.foreground)
 }
@@ -1148,9 +1158,9 @@ impl SettingsPage {
                     let email = a.email.clone().unwrap_or_default();
                     let locked = a.locked_since.is_some();
                     let state = if locked {
-                        tf!("Locked after {} failed sign-ins", a.failed_sign_ins)
+                        tf!("Locked after {}", counted(a.failed_sign_ins, t!("failed sign-in")))
                     } else if a.failed_sign_ins > 0 {
-                        tf!("Not locked · {} failed sign-ins", a.failed_sign_ins)
+                        tf!("Not locked · {}", counted(a.failed_sign_ins, t!("failed sign-in")))
                     } else {
                         t!("Not locked").to_string()
                     };
@@ -1249,7 +1259,7 @@ impl SettingsPage {
         let open_custom = self.custom_db || current.is_none();
         let presets = ui::seg_track(theme)
             .children(Preset::ALL.into_iter().map(|p| {
-                ui::seg_item(theme, SharedString::from(format!("preset-{p:?}")), crate::i18n::t(p.label()), current == Some(p) && !self.custom_db)
+                ui::seg_item(theme, SharedString::from(format!("preset-{p:?}")), p.label(), current == Some(p) && !self.custom_db)
                     .on_click(cx.listener(move |this, _, window, cx| this.apply_preset(p, window, cx)))
             }))
             .child(ui::seg_item(theme, "preset-custom", t!("Custom"), open_custom).on_click(cx.listener(|this, _, _, cx| {
@@ -1315,13 +1325,13 @@ impl SettingsPage {
     }
 
     fn network(&self, theme: &gpui_kit::component::Theme, window: &Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
-        let mut ports: Vec<ui::SettingRow> = PORTS.into_iter().map(|(key, label)| self.port_row(key, crate::i18n::t(label), window, cx)).collect();
+        let mut ports: Vec<ui::SettingRow> = PORTS.into_iter().map(|(key, label)| self.port_row(key, label, window, cx)).collect();
         ports.extend(self.setting_row("EDGE_GRPC_PORT", None, window, cx));
         let certs: Vec<ui::SettingRow> = CERTS
             .into_iter()
             .filter_map(|(key, label)| {
                 let mut r = self.setting_row(key, None, window, cx)?;
-                r.label = crate::i18n::t(label).into();
+                r.label = label.into();
                 Some(r)
             })
             .collect();
@@ -1345,7 +1355,7 @@ impl SettingsPage {
     fn history_rows(&self, theme: &gpui_kit::component::Theme, cx: &mut Context<Self>) -> Vec<ui::SettingRow> {
         const DAYS: [(&str, i64); 5] = [(n!("Forever"), 0), (n!("30 days"), 30), (n!("90 days"), 90), (n!("1 year"), 365), (n!("3 years"), 1095)];
         let help = t!("For tenants that use the default tenant profile (a tenant with its own profile keeps its own). Older values are deleted by SENTIENT's nightly cleanup.");
-        let words = |d: i64| DAYS.iter().find(|(_, x)| *x == d).map(|(l, _)| crate::i18n::t(l).to_string()).unwrap_or_else(|| tf!("{d} days"));
+        let words = |d: i64| DAYS.iter().find(|(_, x)| *x == d).map(|(l, _)| l.to_string()).unwrap_or_else(|| counted(d, "day"));
         match &self.retention_now {
             None => vec![row(
                 theme,
@@ -1362,7 +1372,7 @@ impl SettingsPage {
             Some(Ok(now)) => {
                 let now = *now;
                 let edit = self.retention_edit;
-                let labels: Vec<&str> = DAYS.iter().map(|(l, _)| crate::i18n::t(l)).collect();
+                let labels: Vec<&str> = DAYS.iter().map(|(l, _)| *l).collect();
                 let mut out = Vec::new();
                 for (label, id, current, was, telemetry) in [(t!("Telemetry history"), "ret-tel", edit.telemetry_days, now.telemetry_days, true), (t!("Alarms"), "ret-alarm", edit.alarms_days, now.alarms_days, false)] {
                     let this = cx.entity().downgrade();
@@ -1518,22 +1528,22 @@ impl SettingsPage {
             match self.find(&k) {
                 Some(s) => out.push(change_line(s, &old, &new)),
                 None => {
-                    let label = PORTS.iter().find(|(p, _)| *p == k).map(|(_, l)| tf!("{} port", crate::i18n::t(l))).unwrap_or_else(|| k.clone());
+                    let label = PORTS.iter().find(|(p, _)| *p == k).map(|(_, l)| tf!("{l} port")).unwrap_or_else(|| k.clone());
                     out.push(tf!("{label}: {} to {}", if old.is_empty() { "not set" } else { &old }, if new.is_empty() { "not set" } else { &new }));
                 }
             }
         }
         if let Some(Ok(now)) = &self.retention_now {
             if self.retention_edit.telemetry_days != now.telemetry_days {
-                out.push(tf!("Telemetry history: {} to {} days", now.telemetry_days, self.retention_edit.telemetry_days));
+                out.push(tf!("Telemetry history: {} to {}", kept_days(now.telemetry_days), kept_days(self.retention_edit.telemetry_days)));
             }
             if self.retention_edit.alarms_days != now.alarms_days {
-                out.push(tf!("Alarms: {} to {} days", now.alarms_days, self.retention_edit.alarms_days));
+                out.push(tf!("Alarms: {} to {}", kept_days(now.alarms_days), kept_days(self.retention_edit.alarms_days)));
             }
         }
         let n = self.startup.read(cx).pending_count(cx);
         if n > 0 {
-            out.push(if n == 1 { tf!("Startup: {n} change") } else { tf!("Startup: {n} changes") });
+            out.push(tf!("Startup: {n} change{}", if n == 1 { "" } else { "s" }));
         }
         out
     }
@@ -1546,7 +1556,7 @@ impl SettingsPage {
         if let Some(k) = self.invalid_keys(cx).first() {
             let (label, number) = match self.find(k) {
                 Some(s) => first_invalid_of(s, &self.value(k, cx)),
-                None => (PORTS.iter().find(|(p, _)| p == k).map(|(_, l)| tf!("{} port", crate::i18n::t(l))).unwrap_or_else(|| k.clone()), self.value(k, cx).parse::<u64>().is_err()),
+                None => (PORTS.iter().find(|(p, _)| p == k).map(|(_, l)| tf!("{l} port")).unwrap_or_else(|| k.clone()), self.value(k, cx).parse::<u64>().is_err()),
             };
             return (ui::pending_line(changes, &[], restart, Some((&label, number))), restart);
         }
@@ -1555,7 +1565,7 @@ impl SettingsPage {
         }
         let mut names: Vec<String> = changed
             .iter()
-            .map(|k| self.find(k).map(|s| s.short_label()).or_else(|| PORTS.iter().find(|(p, _)| p == k).map(|(_, l)| tf!("{} port", crate::i18n::t(l)))).unwrap_or_else(|| k.clone()))
+            .map(|k| self.find(k).map(|s| s.short_label()).or_else(|| PORTS.iter().find(|(p, _)| p == k).map(|(_, l)| tf!("{l} port"))).unwrap_or_else(|| k.clone()))
             .collect();
         if let Some(Ok(now)) = &self.retention_now {
             if self.retention_edit.telemetry_days != now.telemetry_days {
@@ -1640,7 +1650,7 @@ impl Render for SettingsPage {
             Tab::Advanced => self.advanced(&theme, window, cx),
         };
 
-        let notices = (foreign.is_some() || !problems.is_empty()).then(|| v_flex().gap_2().children(foreign).children(problems.into_iter().map(|p| div().text_sm().text_color(theme.danger).child(crate::ui::shown(p)))));
+        let notices = (foreign.is_some() || !problems.is_empty()).then(|| v_flex().gap_2().children(foreign).children(problems.into_iter().map(|p| div().text_sm().text_color(theme.danger).child(p))));
         settings_page(&theme, t!("Platform settings"), self.tab.about(), notices, ui::settings_card(&theme, "settings-body", tabs, v_flex().pb(px(12.)).children(body), bar))
             .into_any_element()
     }
@@ -1671,7 +1681,17 @@ pub(crate) fn settings_page(theme: &gpui_kit::component::Theme, title: &'static 
 #[cfg(test)]
 mod tests {
     // Not `super::*`: gpui's own `test` attribute would shadow the standard one.
-    use super::{PRESET_KEYS, Preset, Retry, STOPPED_RETRY, StartHold, admin_reading, preset_values, stopped_retry};
+    use super::{PRESET_KEYS, Preset, Retry, STOPPED_RETRY, StartHold, admin_reading, counted, kept_days, preset_values, stopped_retry};
+
+    #[test]
+    fn counts_are_singular_for_one() {
+        assert_eq!(counted(1, "failed sign-in"), "1 failed sign-in");
+        assert_eq!(counted(0, "failed sign-in"), "0 failed sign-ins");
+        assert_eq!(counted(5, "failed sign-in"), "5 failed sign-ins");
+        assert_eq!(kept_days(1), "1 day");
+        assert_eq!(kept_days(30), "30 days");
+        assert_eq!(kept_days(0), "forever");
+    }
 
     #[test]
     fn starting_hands_over_to_the_accounts_with_no_stopped_frame() {

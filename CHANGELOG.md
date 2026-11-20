@@ -16,6 +16,94 @@ refreshes that repository's Downloads table.
 ## [Unreleased]
 
 ### Added
+- The Platform Manager can be published in the Microsoft Store. Windows
+  then trusts it without a warning, and the Store keeps it up to date. The
+  Store app works like the download: the same pages, the same UAC prompt,
+  and Setup still continues by itself after the WSL restart. The
+  differences: its Update page says "Updates come from the Microsoft Store"
+  for the Platform Manager (SENTIENT and gateway updates work as before),
+  it has no shortcuts or Apps & features entry of its own (the Store app
+  has them), and it is uninstalled from Start or Settings > Apps.
+  Uninstalling SENTIENT in the app also removes what the app added outside
+  the Store app. The download from GitHub stays as it is. See
+  docs/MICROSOFT_STORE.md.
+
+## [0.9.4] - 2026-11-19
+
+The gateway installs on remote Windows servers, the Platform Manager is code-signed by INVENIA SYSTEMS, Stable users get final releases, and Setup's progress, Windows ClickHouse disk use and self-update fixes.
+
+### Added
+- Install the gateway on a remote Windows server. "Install the gateway" on
+  a Windows server's page (and on an empty Windows server) now works as it
+  does on Linux: the same form, and the Platform Manager on the server
+  downloads the gateway's Windows installer from the SENTIENT releases
+  site, checks it against its published checksum, runs it silently and
+  starts the SentientGateway service. The access token and the page's
+  password reach the server on the agent's standard input and wait in a
+  file only SYSTEM and the Administrators can read until the install takes
+  them; they never appear on a command line or in a log. Installing
+  SENTIENT itself on a remote Windows server is still not supported.
+
+### Changed
+- The Platform Manager is code-signed by INVENIA SYSTEMS, with our own
+  certificate for now. 0.9.3 accepts an update signed with exactly that
+  certificate; Windows shows "Verified publisher: INVENIA SYSTEMS" where a
+  site trusts it (`Trust-INVENIA.ps1`), "Unknown publisher" elsewhere.
+- The access token and passwords an install keeps for a moment on a
+  Windows computer (a remote install's staged secrets, the gateway
+  installer's token file) are readable only by SYSTEM, the Administrators
+  and the account that wrote them, no longer by every user. A gateway
+  release without a `.sha256` file is checked against the checksum GitHub
+  records for its installer.
+
+### Fixed
+- Setup's progress bar no longer goes back across the restart that turns
+  on WSL 2 (18 % before it, 4 % after): the run after the restart starts
+  where the bar had got to.
+- Logs on a computer or server with only the gateway (no SENTIENT) said
+  "SENTIENT is not installed here". It now shows the gateway's log.
+- The Stable channel offers a final Platform Manager release (0.9.3) even
+  though the download repository marks it a pre-release; only a version
+  with a suffix (0.9.4-rc1) is a release candidate. The release script
+  publishes final versions as normal releases (never "Latest", which stays
+  SENTIENT's) and -rc versions as pre-releases.
+- ClickHouse on Windows no longer forces every write straight to the disk.
+  Since 0.8.0-rc11 it wrote each new part and each merge through to the
+  disk, which kept a hard disk 100 % busy. An update or Repair removes the
+  setting from existing installs (a copy of the old file is kept). Set
+  `SENTIENT_CH_FSYNC=1` to keep it on.
+- Updating the Platform Manager no longer fails with "Access is denied"
+  when its program file is still held for a moment or is read-only, and
+  the ClickHouse shutdown service is started again after the update.
+
+## [0.9.3] - 2026-11-19
+
+Updates read Docker Hub for Docker installs and check the licence before a SENTIENT update, SENTIENT and the gateway install on Linux servers, native installs check glibc, and many Windows and gateway fixes.
+
+### Added
+- Updates follow how SENTIENT and the gateway are installed: a Docker
+  install is offered a version only once its image is on Docker Hub, and
+  falls back to Docker Hub's tags when the release list cannot be read; a
+  native install needs its package and checksum on the release.
+- Before a SENTIENT update the Platform Manager reads the licence's allowed
+  versions (after a system administrator signs in; the password is never
+  stored). A version the licence does not cover needs a typed confirmation,
+  and the version list shows each version's licence label.
+- Servers: Install SENTIENT and Install the gateway (with or without
+  SENTIENT) on a Linux server, with the same steps as Setup. Remote install
+  on Windows servers is not supported yet and says so.
+- A native install checks the system's glibc against what the release
+  needs; below it only Docker is offered, with the reason.
+
+### Added
+- Code signing with INVENIA SYSTEMS' own (self-signed) certificate, until a
+  public one is bought. An update of the Platform Manager signed with exactly
+  that certificate is accepted on Windows even though no computer trusts it
+  by itself; any other untrusted signer is still refused. From 0.9.4 the
+  Platform Manager is signed; the SENTIENT server programs, the gateway
+  installer and the SENTIENT Client from their next releases.
+  `Trust-INVENIA.ps1` (optional, for managed sites) makes Windows show
+  "Verified publisher: INVENIA SYSTEMS".
 - Gateway: the older Python gateway in Docker is offered an update to the
   Sentient Gateway ("Update available" on the Gateway page here and on a
   server, on the Status card and in the notices). The update backs up its

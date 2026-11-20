@@ -7,7 +7,7 @@ use gpui_kit::component::{
     button::ButtonVariants as _,
     checkbox::Checkbox,
     input::{Input, InputState},
-    menu::{DropdownMenu as _, PopupMenuItem},
+    menu::PopupMenuItem,
     scroll::ScrollableElement as _,
 };
 use gpui_kit::prelude::FluentBuilder as _;
@@ -136,9 +136,9 @@ fn gb(mb: u64) -> u64 {
 fn sized_for(s: crate::catalog::Sizing, docker: bool) -> (String, Option<String>) {
     let Some(vm) = s.vm_mb else { return (tf!("Sized for this computer: {} GB of memory.", gb(s.host_mb)), None) };
     let source = if s.vm_from_wslconfig {
-        t!("the memory= line of .wslconfig in your user folder sets it").to_string()
+        "the memory= line of .wslconfig in your user folder sets it".to_string()
     } else {
-        t!("WSL 2 gives its VM half of the computer's memory unless .wslconfig sets memory=").to_string()
+        "WSL 2 gives its VM half of the computer's memory unless .wslconfig sets memory=".to_string()
     };
     if docker {
         (
@@ -179,7 +179,7 @@ fn ports_summary(p: [String; 5], coap_local_only: bool) -> String {
 /// every row a re-check can change (an action such as "Start Docker", a
 /// blocker, a busy port, the download servers).
 fn offers_check_again(id: &str, status: Status, pill: &str, fixes: &[Fix]) -> bool {
-    let will_be_installed = status == Status::Setup && pill == t!("Will be installed");
+    let will_be_installed = status == Status::Setup && pill == "Will be installed";
     let has_action = fixes.iter().any(|f| matches!(f, Fix::Action { .. }));
     !will_be_installed || has_action || id == "downloads"
 }
@@ -252,14 +252,11 @@ impl Installer {
         let this = cx.entity().downgrade();
         let label = if chosen == list[0].version { tf!("{chosen} (newest)") } else { chosen.clone() };
         Some(
-            crate::ui::button("sentient-version")
-                .outline()
-                
-                
-                .label(label)
-                .dropdown_caret(true)
-                .dropdown_menu(move |menu, _, _| {
-                    let mut menu = menu.max_h(px(320.)).scrollable(true);
+            crate::ui::fitted_dropdown(
+                "sentient-version",
+                crate::ui::button("sentient-version").outline().label(label).dropdown_caret(true),
+                move |menu, _, _| {
+                    let mut menu = menu;
                     for v in &list {
                         let this = this.clone();
                         let pick = v.version.clone();
@@ -270,7 +267,8 @@ impl Installer {
                         }));
                     }
                     menu
-                }),
+                },
+            ),
         )
     }
 
@@ -459,8 +457,17 @@ impl Installer {
         } else {
             (t!("Services from the distribution's packages, run by systemd."), t!("SENTIENT and its databases as containers. Every database type."))
         };
-        let native = choice_card(theme, "engine-native", choice_title(theme, t!("In the system"), true), sys_desc, self.engine == Engine::Native)
-            .on_click(cx.listener(|this, _, _, cx| this.set_engine(Engine::Native, cx)));
+        // Linux: a glibc older than the release needs (or musl) turns the
+        // card off; one that could not be read is a warning only.
+        let glibc = self.native_glibc();
+        let native = match glibc.blocked() {
+            Some(why) => {
+                let title = off_title(t!("In the system"), ui::info("engine-native-why".into(), tf!("Not on this system\n\n{why}").into()));
+                ui::radio_card_off(theme, "engine-native", title, t!("Not available on this computer.")).relative().child(ui::layout_probe("panel"))
+            }
+            None => choice_card(theme, "engine-native", choice_title(theme, t!("In the system"), true), sys_desc, self.engine == Engine::Native)
+                .on_click(cx.listener(|this, _, _, cx| this.set_engine(Engine::Native, cx))),
+        };
         let docker = if host.windows && host.wsl == Wsl::Unavailable {
             let title = off_title(t!("Docker"), ui::info("engine-docker-why".into(), tf!("Docker is not possible on this computer\n\n{}", self.wsl_detail()).into()));
             ui::radio_card_off(theme, "engine-docker", title, t!("Not available on this computer.")).relative().child(ui::layout_probe("panel"))
@@ -468,8 +475,14 @@ impl Installer {
             choice_card(theme, "engine-docker", choice_title(theme, t!("Docker"), false), docker_desc, self.engine == Engine::Docker)
                 .on_click(cx.listener(|this, _, _, cx| this.set_engine(Engine::Docker, cx)))
         };
+        let glibc_notice = match &glibc {
+            sentient_installer_core::glibc::NativeGlibc::Blocked(why) => Some(ui::notice(theme, Tone::Warn, tf!("“In the system” is not available\n{why}"))),
+            sentient_installer_core::glibc::NativeGlibc::Unknown(why) if self.engine == Engine::Native => Some(ui::notice(theme, Tone::Warn, tf!("The C library could not be checked\n{why}"))),
+            _ => None,
+        };
         column()
             .child(pair(native, docker))
+            .children(glibc_notice)
             .child(self.customise(theme, cx))
             .when(host.windows && self.engine == Engine::Docker && host.wsl == Wsl::TurnOn, |c| {
                 c.child(ui::notice(
@@ -508,6 +521,7 @@ impl Installer {
         let host = self.host();
         let current = Placement::preset(self.engine, host.windows);
         let detail = self.wsl_detail();
+        let glibc_off = self.native_glibc().blocked().map(|why| tf!("Not on this system\n\n{why}"));
         let rows = PARTS.into_iter().enumerate().map(|(i, part)| {
             let (name, sub, help): (&str, Option<&str>, Option<&str>) = match part {
                 Part::Server => (t!("SENTIENT server"), None, None),
@@ -521,6 +535,9 @@ impl Installer {
             };
             let seg = [(Place::System, t!("In the system")), (Place::Docker, t!("Docker"))].into_iter().fold(ui::seg_track(theme), |track, (place, label)| {
                 let id = SharedString::from(format!("part-{key}-{}", if place == Place::System { "system" } else { "docker" }));
+                if let (Place::System, Some(why)) = (place, &glibc_off) {
+                    return track.child(ui::seg_item_off(theme, id.clone(), label, ui::info(format!("{id}-why").into(), why.clone().into())));
+                }
                 match placement::segment(host, current, part, place) {
                     Ok(engine) => track.child(ui::seg_item(theme, id, label, current.get(part) == place).on_click(cx.listener(move |this, _, _, cx| this.set_engine(engine, cx)))),
                     Err(why) => track.child(ui::seg_item_off(theme, id.clone(), label, ui::info(format!("{id}-why").into(), why.text(&detail).into()))),
@@ -697,7 +714,7 @@ impl Installer {
             return column().child(ui::panel(&theme)
                 .child(field(&theme, t!("Program folder"), &program))
                 .child(div().text_sm().text_color(theme.muted_foreground).child(
-                    t!("PostgreSQL keeps its data where the distribution puts it (/var/lib/postgresql); SENTIENT's own files go to /var/lib/sentient."),
+                    "PostgreSQL keeps its data where the distribution puts it (/var/lib/postgresql); SENTIENT's own files go to /var/lib/sentient.",
                 )));
         }
         column().child(ui::panel(&theme)

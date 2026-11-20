@@ -18,11 +18,13 @@ pub(crate) mod migration;
 pub(crate) mod movedata;
 pub(crate) mod restore;
 pub(crate) mod remote_pages;
+pub(crate) mod remote_install;
 mod repair;
 mod takeover;
 pub(crate) mod jobview;
 mod licence;
 mod licence_card;
+pub(crate) mod licence_gate;
 pub(crate) mod settings;
 pub(crate) mod server_card;
 pub(crate) mod session;
@@ -91,6 +93,18 @@ impl Page {
         Page::Licence,
         Page::Settings,
     ];
+
+    /// SENTIENT's own pages: left out of the menu of a server that has
+    /// the gateway and no SENTIENT ([`Page::menu`]).
+    fn needs_sentient(self) -> bool {
+        matches!(self, Page::Backup | Page::Migration | Page::Repair | Page::Licence | Page::Settings)
+    }
+
+    /// The menu's pages for the open instance: a gateway-only server
+    /// (crate::remote::RemoteStatus::gateway_only) without SENTIENT's own.
+    fn menu(gateway_only: bool) -> Vec<Page> {
+        Page::ALL.into_iter().filter(|p| !(gateway_only && p.needs_sentient())).collect()
+    }
 
     fn id(self) -> &'static str {
         match self {
@@ -217,6 +231,9 @@ pub struct Manager {
     /// The pages of every remote instance opened in this run, by id: shown
     /// again with what they read, and read again behind it.
     remote_pages: HashMap<String, Entity<remote_pages::RemotePages>>,
+    /// The open server's Install SENTIENT flow, whose step rail stands in
+    /// for the menu: watched, so the rail follows its steps.
+    install_watch: Option<(EntityId, Subscription)>,
     /// Statistics, by instance (None: this computer), kept for the run.
     stats: HashMap<Option<String>, Entity<stats::StatsPage>>,
     /// The Licence page, by instance (None: this computer).
@@ -433,6 +450,7 @@ impl Manager {
             open_gen: 0,
             fresh: HashSet::new(),
             remote_pages: HashMap::new(),
+            install_watch: None,
             stats: HashMap::new(),
             licence: HashMap::new(),
             files: HashMap::new(),
@@ -1666,13 +1684,18 @@ impl Manager {
                 .items_center()
                 .bg(bg)
                 .text_color(fg)
-                .border_b_1()
+                .rounded(px(crate::ui::PANEL_RADIUS))
+                .border_1()
                 .border_color(theme.border)
                 .child(Icon::new(if matches!(tone, crate::ui::Tone::Good) { IconName::CircleCheck } else { IconName::Info }).small())
                 // The buttons never wrap: the text is cut instead.
                 .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_sm().child(text))
         };
-        let mut col = v_flex();
+        // Inset by the page gap like the cards, not a full-width strip from
+        // the menu's edge: there it met the menu's selected row where that
+        // row opens into the page, and its colour and bottom border stood
+        // as a line in the opening (Status, under the top bar).
+        let mut col = v_flex().gap_2().px(px(crate::theme::PAGE_GAP)).pt(px(crate::theme::PAGE_GAP));
         // B3/B4: this run follows a self-update.
         if let Some(from) = self.updated_from.clone() {
             let this = crate::updates::manager_version();
@@ -1982,8 +2005,18 @@ impl Manager {
         div().relative().child(button).children(popover)
     }
 
+    /// The open server has the gateway and no SENTIENT (its last status).
+    pub(super) fn open_gateway_only(&self) -> bool {
+        self.open_remote.as_ref().is_some_and(|id| matches!(crate::remote::status_cache::view(id).status, Some(Ok(s)) if s.gateway_only()))
+    }
+
     fn content(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let record = self.record.clone();
+        // A page left out of this server's menu (a gateway-only server)
+        // shows its Status instead.
+        if self.page.needs_sentient() && self.open_gateway_only() {
+            self.page = Page::Status;
+        }
         // A sub-flow in its parent page's place while open.
         if let Some(sub) = self.shown_sub().cloned() {
             match sub.kind {
@@ -2340,6 +2373,14 @@ impl Manager {
         if crate::logsource::take_go() {
             self.page = Page::Logs;
         }
+        // A server's page asked for its Gateway page.
+        if remote_pages::take_go_gateway() {
+            self.page = Page::Gateway;
+        }
+        // An install on a server finished: its Status.
+        if remote_pages::take_go_status() {
+            self.page = Page::Status;
+        }
         // Widened past the fold while the menu is open over the page: it
         // becomes the docked, unfolded menu.
         if self.menu_overlay && width >= shell::FOLD_BELOW {
@@ -2370,7 +2411,23 @@ impl Manager {
         }
         let menu_w = if Self::folded(width) { shell::MENU_FOLDED_W } else { shell::MENU_W };
         let top = self.top_bar(width - menu_w, window, cx);
-        let nav = self.shell_menu(width, window, cx);
+        // Install SENTIENT open on this server: Setup's step rail in the
+        // menu's place (the top bar and the switcher stay).
+        let server_page = matches!(self.page, Page::Status | Page::Logs | Page::Update | Page::Backup | Page::Settings | Page::Migration | Page::Repair | Page::Gateway);
+        let flow = self.open_remote.as_ref().filter(|_| server_page).and_then(|id| self.remote_pages.get(id)).and_then(|p| p.read(cx).install_flow());
+        let nav = match flow {
+            Some(flow) => {
+                if self.install_watch.as_ref().map(|(id, _)| *id) != Some(flow.entity_id()) {
+                    let sub = cx.observe(&flow, |_, _, cx| cx.notify());
+                    self.install_watch = Some((flow.entity_id(), sub));
+                }
+                flow.update(cx, |f, cx| f.rail(menu_w, cx))
+            }
+            None => {
+                self.install_watch = None;
+                self.shell_menu(width, window, cx)
+            }
+        };
         let notices = self.notices(cx);
         // Frame times while animating (SPM_DEBUG_FRAMES=1, also in release
         // builds, for measuring on a real desktop): the interval since the
@@ -2550,5 +2607,28 @@ mod perf_tests {
         assert_ne!(meter_step(0.5), meter_step(0.5 + 1.0 / METER_W));
         assert_eq!(meter_step(1.0), 1.0);
         assert_eq!(meter_step(0.0), 0.0);
+    }
+}
+
+#[cfg(test)]
+mod menu_tests {
+    use super::Page;
+
+    /// A server with the gateway and no SENTIENT: the gateway's and the
+    /// server's pages stay, SENTIENT's own are left out.
+    #[test]
+    fn a_gateway_only_server_has_no_sentient_pages() {
+        let menu = Page::menu(true);
+        for p in [Page::Status, Page::Statistics, Page::Logs, Page::Files, Page::Gateway] {
+            assert!(menu.contains(&p), "{} missing", p.id());
+        }
+        for p in [Page::Backup, Page::Migration, Page::Repair, Page::Licence, Page::Settings] {
+            assert!(!menu.contains(&p), "{} shown", p.id());
+        }
+        assert_eq!(Page::menu(false), Page::ALL.to_vec());
+        let s = crate::remote::RemoteStatus { gateway: Some(true), ..Default::default() };
+        assert!(s.gateway_only());
+        assert!(!crate::remote::RemoteStatus { installed: true, gateway: Some(true), ..Default::default() }.gateway_only());
+        assert!(!crate::remote::RemoteStatus::default().gateway_only());
     }
 }

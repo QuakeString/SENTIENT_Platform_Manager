@@ -17,12 +17,13 @@
 #
 # It never becomes that repository's "Latest" release: SENTIENT Setup and the
 # Platform Manager read releases/latest/download/manifest.json there, which
-# must stay SENTIENT's. Every Platform Manager release there is a
-# pre-release, final versions too (0.9.0 went out as a full release because
-# only -rc and nightly versions were marked). After publishing, the script
-# reads the release back and fails unless it is a pre-release, Latest is the
-# same SENTIENT release as before, and every file is there with the source
-# release's digest.
+# must stay SENTIENT's: every Platform Manager release is published with
+# make_latest=false. A final version (0.9.3) is a normal release, so the
+# Stable channel of installed Platform Managers offers it; a -rc or nightly
+# version is a pre-release (the Release candidate channel). After publishing,
+# the script reads the release back and fails unless it has the right kind,
+# Latest is the same SENTIENT release as before, and every file is there with
+# the source release's digest.
 #
 # The files are downloaded into a temporary folder under TMPDIR (default
 # /tmp, often a small tmpfs): the script checks the free space first.
@@ -37,7 +38,12 @@ dst=QuakeString/sentient-release
 tag=spm-v$version
 token=${GITHUB_TOKEN:-$(printf 'protocol=https\nhost=github.com\n\n' | git credential fill 2>/dev/null | sed -n 's/^password=//p')}
 [ -n "$token" ] || { echo "no GitHub token (set GITHUB_TOKEN)" >&2; exit 2; }
-auth=(-H "Authorization: Bearer $token" -H "Accept: application/vnd.github+json")
+# The token goes to curl in a private (0600) config file, never on its
+# command line, where other users could read it in the process list.
+authcfg=$(umask 077; mktemp)
+trap 'rm -f "$authcfg"' EXIT
+printf 'header = "Authorization: Bearer %s"\nheader = "Accept: application/vnd.github+json"\n' "$token" > "$authcfg"
+auth=(-K "$authcfg")
 
 python3 "$here/release-notes.py" check "$root/CHANGELOG.md" "$version"
 latest_before=$(curl -fsS "${auth[@]}" "https://api.github.com/repos/$dst/releases/latest" | python3 -c 'import json,sys; print(json.load(sys.stdin)["tag_name"])')
@@ -55,7 +61,7 @@ if old=$(curl -fs "${auth[@]}" "https://api.github.com/repos/$dst/releases/tags/
 fi
 
 work=$(mktemp -d)
-trap 'rm -rf "$work"' EXIT
+trap 'rm -rf "$work" "$authcfg"' EXIT
 curl -fsS "${auth[@]}" "https://api.github.com/repos/$src/releases/tags/v$version" > "$work/src.json"
 python3 - "$work/src.json" > "$work/assets.tsv" <<'PY'
 import json, sys
@@ -115,7 +121,9 @@ for f in "$work"/files/*; do
   table+="| \`$n\` | $(du -h "$f" | cut -f1) | \`$(sha256sum "$f" | cut -d' ' -f1)\` |"$'\n'
 done
 body="$notes"$'\n\n'"### Downloads"$'\n\n'"Windows: run \`SENTIENT-Setup-manager-*.exe\`. Linux: the \`.deb\` (Debian 12+, Ubuntu 22.04+), the \`.rpm\` (Fedora, RHEL, openSUSE), the Arch package, the AppImage, the Flatpak bundle, or the plain program \`SENTIENT-Setup-manager-*-linux-x86_64\`."$'\n\n'"$table"
-pre=true # every Platform Manager release on $dst; see the header
+# A final version is a normal release, a -rc (or other suffix) a pre-release;
+# never Latest either way (see the header).
+case "$version" in *-*) pre=true ;; *) pre=false ;; esac
 payload=$(python3 -c 'import json,sys; print(json.dumps({"tag_name": sys.argv[1], "target_commitish": "main", "name": "SENTIENT Platform Manager " + sys.argv[2], "body": sys.argv[3], "prerelease": sys.argv[4] == "true", "make_latest": "false"}))' "$tag" "$version" "$body" "$pre")
 release=$(curl -fsS "${auth[@]}" -X POST "https://api.github.com/repos/$dst/releases" -d "$payload")
 upload=$(printf '%s' "$release" | python3 -c 'import json,sys; print(json.load(sys.stdin)["upload_url"].split("{")[0])')
@@ -130,11 +138,12 @@ echo "published: https://github.com/$dst/releases/tag/$tag"
 # source release's digest (and a signature beside each installer and the
 # AppImage), and every kind of Linux package.
 curl -fsS "${auth[@]}" "https://api.github.com/repos/$dst/releases/tags/$tag" > "$work/dst.json"
-python3 - "$work/src.json" "$work/dst.json" <<'PY'
+python3 - "$work/src.json" "$work/dst.json" "$pre" <<'PY'
 import json, sys
 src, dst = (json.load(open(p)) for p in sys.argv[1:3])
+pre = sys.argv[3] == "true"
 bad = []
-if not dst["prerelease"]: bad.append("it is not a pre-release")
+if dst["prerelease"] != pre: bad.append("it is not a pre-release" if pre else "it is a pre-release (a final version must be a normal release)")
 if dst["draft"]: bad.append("it is a draft")
 got = {a["name"]: a for a in dst["assets"] if a["state"] == "uploaded"}
 for a in src["assets"]:
@@ -150,7 +159,7 @@ for kind in (".pkg.tar.zst", "_amd64.deb", ".x86_64.rpm", "-x86_64.AppImage", "-
     if not any(n.endswith(kind) for n in got):
         bad.append(f'no *{kind} file')
 if bad: sys.exit("published release is wrong: " + "; ".join(bad))
-print(f'checked: pre-release, {len(got)} files match the source release')
+print(f'checked: {"pre-release" if pre else "normal release, not Latest"}, {len(got)} files match the source release')
 PY
 latest=$(curl -fsS "${auth[@]}" "https://api.github.com/repos/$dst/releases/latest" | python3 -c 'import json,sys; print(json.load(sys.stdin)["tag_name"])')
 [ "$latest" = "$latest_before" ] || { echo "WARNING: $dst's latest release is now $latest, it was $latest_before" >&2; exit 1; }

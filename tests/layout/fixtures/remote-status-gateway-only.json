@@ -1,0 +1,4 @@
+{
+  "gw1": {"installed": false, "serving": false, "sentient_version": "", "database": "", "database_bytes": null, "disk_free": 464930000000, "last_backup": null, "uptime_secs": 86400, "manager_version": "0.9.3 (build 0000000)", "gateway": true},
+  "gw2": {"installed": false, "serving": false, "sentient_version": "", "database": "", "database_bytes": null, "disk_free": 464930000000, "last_backup": null, "uptime_secs": 86400, "manager_version": "0.9.3 (build 0000000)", "gateway": false}
+}

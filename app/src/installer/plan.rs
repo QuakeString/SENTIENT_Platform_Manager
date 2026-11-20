@@ -62,6 +62,30 @@ pub struct InstallPlan {
     /// does not run is an error now, not another restart.
     #[serde(default)]
     pub wsl_restarted: bool,
+    /// Installed on a server by a Platform Manager over SSH (crate::remote::
+    /// install): the agent that runs it is the server's Platform Manager
+    /// already, and a server has no desktop, so neither is put in place.
+    #[serde(default)]
+    pub remote: bool,
+}
+
+/// The passwords of a plan, apart from it: a plan sent to a server goes
+/// as a file without them, they go on the agent's standard input
+/// (crate::remote::install).
+#[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct InstallSecrets {
+    pub admin: String,
+    pub db: String,
+    pub pg_admin: String,
+    #[serde(default)]
+    pub clickhouse: String,
+}
+
+/// Never printed: a log line or a panic message must not carry them.
+impl std::fmt::Debug for InstallSecrets {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(t!("InstallSecrets { .. }"))
+    }
 }
 
 /// The image a new Docker install runs: `image` at the tag of `version`
@@ -75,6 +99,27 @@ pub fn pinned_image(image: &str, version: Option<&str>) -> String {
 }
 
 impl InstallPlan {
+    /// The plan without its passwords, and the passwords.
+    pub fn split_secrets(mut self) -> (InstallPlan, InstallSecrets) {
+        let secrets = InstallSecrets {
+            admin: std::mem::take(&mut self.admin_password),
+            db: std::mem::take(&mut self.stack.db_password),
+            pg_admin: std::mem::take(&mut self.pg_superuser_password),
+            clickhouse: std::mem::take(&mut self.stack.ch_password),
+        };
+        self.auto_signin_password.clear();
+        (self, secrets)
+    }
+
+    /// The passwords [`split_secrets`](Self::split_secrets) took, put back.
+    pub fn with_secrets(mut self, s: InstallSecrets) -> InstallPlan {
+        self.admin_password = s.admin;
+        self.stack.db_password = s.db;
+        self.pg_superuser_password = s.pg_admin;
+        self.stack.ch_password = s.clickhouse;
+        self
+    }
+
     /// The wizard's configuration with the chosen settings folded in:
     /// PostgreSQL parameters into `pg`, the licence server into its field,
     /// everything else into `tuning.extra_env`, which every engine writes
@@ -203,6 +248,11 @@ fn save_pending(plan: &InstallPlan) -> Result<(), String> {
         .map_err(|e| format!("write {}: {e}", path.display()))?;
     #[cfg(windows)]
     {
+        // This program's own path. In the Microsoft Store build that is the
+        // helper copy in ProgramData (crate::store), never the package's
+        // program: the elevated window always runs from the helper, outside
+        // the package, so this entry reaches the real registry and names a
+        // path that stays valid across Store updates.
         let exe = std::env::current_exe().map_err(|e| e.to_string())?;
         let value = format!("\"{}\" --resume", exe.display());
         let ok = std::process::Command::new("reg.exe")
@@ -214,13 +264,44 @@ fn save_pending(plan: &InstallPlan) -> Result<(), String> {
             .map(|s| s.success())
             .unwrap_or(false);
         if !ok {
-            return Err(n!("could not arrange for setup to continue after the restart").into());
+            return Err(t!("could not arrange for setup to continue after the restart").into());
         }
     }
     Ok(())
 }
 
-/// The plan saved before a restart, if there is one; removed once read.
+fn pending_progress_path() -> PathBuf {
+    crate::installation::record_path().with_file_name("pending-install-progress")
+}
+
+/// How far the install's bar had got when it stopped for the restart, so
+/// the run after it starts there instead of going back.
+pub fn save_pending_progress(percent: f32) {
+    if let Some(dir) = pending_progress_path().parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(pending_progress_path(), format!("{percent:.1}"));
+}
+
+/// [`save_pending_progress`]'s value; 0 without one. It stays until the
+/// plan is done with ([`discard_pending`]), so a continued run that stops
+/// again starts there once more.
+pub fn take_pending_progress() -> f32 {
+    std::fs::read_to_string(pending_progress_path()).ok().and_then(|s| s.trim().parse::<f32>().ok()).unwrap_or(0.)
+}
+
+/// The file a Setup continuing the saved plan writes its process id to:
+/// while it runs, the plan is not offered again; after it stopped without
+/// finishing, it is offered, but not opened by itself again.
+fn pending_started_path() -> PathBuf {
+    crate::installation::record_path().with_file_name("pending-install.started")
+}
+
+/// The plan saved before a restart, if there is one, with its passwords.
+/// It is not removed here: a run that is declined, cancelled or fails
+/// keeps it, so the install can still be continued from the Platform
+/// Manager. A finished install, or a new one started from the beginning,
+/// removes it ([`discard_pending`]).
 pub fn take_pending() -> Option<InstallPlan> {
     let path = pending_path();
     let mut plan: InstallPlan = serde_json::from_str(&std::fs::read_to_string(&path).ok()?).ok()?;
@@ -229,16 +310,117 @@ pub fn take_pending() -> Option<InstallPlan> {
     plan.pg_superuser_password = secrets.pg_admin;
     plan.admin_password = secrets.admin;
     plan.stack.ch_password = secrets.clickhouse;
-    let _ = std::fs::remove_file(&path);
-    crate::secrets::forget(Secret::PendingInstall);
+    let _ = std::fs::write(pending_started_path(), std::process::id().to_string());
     Some(plan)
+}
+
+/// Remove the saved plan, its passwords, its progress and the entry that
+/// continues it after sign-in.
+pub fn discard_pending() {
+    let had = pending_path().exists();
+    for path in [pending_path(), pending_progress_path(), pending_started_path()] {
+        let _ = std::fs::remove_file(path);
+    }
+    crate::secrets::forget(Secret::PendingInstall);
+    #[cfg(windows)]
+    if had {
+        let _ = std::process::Command::new("reg.exe")
+            .args(["delete", r"HKCU\Software\Microsoft\Windows\CurrentVersion\RunOnce", "/v", "SENTIENT Setup", "/f"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
+    #[cfg(not(windows))]
+    let _ = had;
+}
+
+/// What the Platform Manager offers for a plan saved before a restart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PendingOffer {
+    /// Nothing to continue.
+    None,
+    /// Saved, but Windows has not restarted since: the restart comes first.
+    AfterRestart,
+    /// A "Continue the SENTIENT install" button.
+    Button,
+    /// Open Setup on its install step and continue, as `--resume` does.
+    Resume,
+}
+
+/// A plan older than this is offered with a button only, never opened by
+/// itself.
+pub const RESUME_BY_ITSELF_SECS: u64 = 3 * 24 * 3600;
+
+/// What is known about a saved plan, for [`pending_offer`].
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PendingFacts {
+    /// When the plan was saved (seconds since 1970); None without one.
+    pub saved_at: Option<u64>,
+    /// Its passwords are in the secret store.
+    pub has_secrets: bool,
+    /// When Windows last started (seconds since 1970).
+    pub booted_at: u64,
+    pub now: u64,
+    /// SENTIENT is installed (its installation record is there).
+    pub installed: bool,
+    /// A Setup took the plan up already: Some(true) while it still runs,
+    /// Some(false) when it stopped without finishing.
+    pub started: Option<bool>,
+}
+
+pub fn pending_offer(f: &PendingFacts) -> PendingOffer {
+    let Some(saved_at) = f.saved_at else { return PendingOffer::None };
+    if !f.has_secrets || f.installed || f.started == Some(true) {
+        return PendingOffer::None;
+    }
+    if saved_at >= f.booted_at {
+        return PendingOffer::AfterRestart;
+    }
+    if f.started == Some(false) || f.now.saturating_sub(saved_at) > RESUME_BY_ITSELF_SECS {
+        return PendingOffer::Button;
+    }
+    PendingOffer::Resume
+}
+
+/// [`pending_offer`] for this computer now. Cheap (file dates, and one
+/// process looked up while a Setup has the plan), so a page may ask on
+/// every paint.
+pub fn pending_offer_now() -> PendingOffer {
+    let secs = |t: std::time::SystemTime| t.duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let saved_at = std::fs::metadata(pending_path()).and_then(|m| m.modified()).ok().map(secs);
+    if saved_at.is_none() {
+        return PendingOffer::None;
+    }
+    let started = std::fs::read_to_string(pending_started_path()).ok().map(|pid| {
+        pid.trim().parse::<u32>().is_ok_and(|pid| {
+            let mut sys = sysinfo::System::new();
+            let pid = sysinfo::Pid::from_u32(pid);
+            sys.refresh_processes(sysinfo::ProcessesToUpdate::Some(&[pid]), true);
+            sys.process(pid).is_some()
+        })
+    });
+    pending_offer(&PendingFacts {
+        saved_at,
+        has_secrets: crate::secrets::has(Secret::PendingInstall),
+        booted_at: sysinfo::System::boot_time(),
+        now: secs(std::time::SystemTime::now()),
+        installed: crate::installation::record_path().exists(),
+        started,
+    })
+}
+
+/// A start of the Platform Manager with no request of its own (from Start,
+/// a shortcut, or the Store package's hand-over): the one that may open
+/// Setup to continue a saved install instead.
+pub fn plain_start(args: &[String]) -> bool {
+    args.iter().skip(1).all(|a| a == "--manager")
 }
 
 /// Restart Windows in a few seconds.
 pub fn restart_now() {
     #[cfg(windows)]
     let _ = std::process::Command::new("shutdown.exe")
-        .args(["/r", "/t", "5", "/c", n!("Restarting to finish installing SENTIENT")])
+        .args(["/r", "/t", "5", "/c", t!("Restarting to finish installing SENTIENT")])
         .spawn();
 }
 
@@ -257,7 +439,7 @@ fn turn_on_wsl(plan: &InstallPlan, sink: &ProgressFn) -> Result<(), String> {
     }
     if plan.wsl_restarted {
         let status = wsl::facts().status;
-        return Err(nf!(
+        return Err(tf!(
             "WSL 2 still does not run after the restart. {}",
             wsl::vm_error(&status).unwrap_or_else(|| status.trim().lines().last().unwrap_or("wsl --status gave no answer").to_string())
         ));
@@ -304,11 +486,11 @@ fn provision_clickhouse_wsl_with(stack: &DeployConfig, manager: &std::path::Path
     let config = clickhouse_wsl::work_dir().join("config.json");
     std::fs::write(&config, serde_json::to_string(&ch).map_err(|e| e.to_string())?)
         .map_err(|e| format!("write {}: {e}", config.display()))?;
-    step(sink, n!("Installing WSL2, Docker and ClickHouse as the service account"));
+    step(sink, t!("Installing WSL2, Docker and ClickHouse as the service account"));
     clickhouse_wsl::run_as_account(sink, &password, manager, if reuse_kept { "provision-reuse" } else { "provision" }, None)?;
-    step(sink, n!("Starting ClickHouse at every boot"));
+    step(sink, t!("Starting ClickHouse at every boot"));
     clickhouse_wsl::register_keepalive(&password)?;
-    step(sink, n!("Stopping ClickHouse cleanly when Windows shuts down"));
+    step(sink, t!("Stopping ClickHouse cleanly when Windows shuts down"));
     if let Err(e) = clickhouse_wsl::install_guard(manager, ch.ch_http_port) {
         sink(Progress::Log { line: nf!("note: the ClickHouse shutdown service was not set up: {e}") });
     }
@@ -321,7 +503,7 @@ fn provision_clickhouse_wsl_with(stack: &DeployConfig, manager: &std::path::Path
         std::thread::sleep(std::time::Duration::from_secs(2));
     }
     if !answering {
-        return Err(nf!("ClickHouse is installed but does not answer on 127.0.0.1:{}", ch.ch_http_port));
+        return Err(tf!("ClickHouse is installed but does not answer on 127.0.0.1:{}", ch.ch_http_port));
     }
     if !reuse_kept {
         set_aside_clickhouse_history(&ch, delete_old, sink)?;
@@ -350,13 +532,13 @@ fn set_aside_clickhouse_history(ch: &DeployConfig, delete: bool, sink: &Progress
     }
     if delete {
         conn.text(&format!("DROP DATABASE {} SYNC", ch.ch_db))
-            .map_err(|e| nf!("delete the earlier ClickHouse history: {e}"))?;
+            .map_err(|e| format!("delete the earlier ClickHouse history: {e}"))?;
         sink(Progress::Log { line: n!("The earlier install's ClickHouse history was deleted.").into() });
         return Ok(());
     }
     let aside = format!("{}_before_install_{}", ch.ch_db, chrono::Local::now().format("%Y%m%d%H%M"));
     conn.text(&format!("RENAME DATABASE {} TO {}", ch.ch_db, aside))
-        .map_err(|e| nf!("set the earlier ClickHouse history aside: {e}"))?;
+        .map_err(|e| tf!("set the earlier ClickHouse history aside: {e}"))?;
     sink(Progress::Log { line: nf!("ClickHouse already held SENTIENT history from an earlier install; it is kept as {aside} (listed under Kept)") });
     Ok(())
 }
@@ -370,16 +552,16 @@ fn hash_password(password: &str) -> Result<String, String> {
     argon2::Argon2::default()
         .hash_password(password.as_bytes(), &salt)
         .map(|h| h.to_string())
-        .map_err(|e| nf!("hash the administrator password: {e}"))
+        .map_err(|e| tf!("hash the administrator password: {e}"))
 }
 
 /// Install the Platform Manager alone, without SENTIENT: the program, its
 /// shortcuts and (Windows) its Apps & features entry. No installation
 /// record: the manager then offers to install SENTIENT.
 pub fn run_manager_only(shortcuts: Shortcuts, sink: ProgressFn) -> Result<(), String> {
-    step(&sink, n!("Installing the Platform Manager"));
+    step(&sink, t!("Installing the Platform Manager"));
     let manager = self_install::install_manager()?;
-    step(&sink, n!("Creating shortcuts"));
+    step(&sink, t!("Creating shortcuts"));
     self_install::create_manager_shortcuts(&manager, &shortcuts)?;
     self_install::register_manager_entry(&manager);
     sink(Progress::Done { message: n!("The Platform Manager is installed.").into() });
@@ -433,7 +615,7 @@ pub fn steps_on(plan: &InstallPlan, host: Host) -> Vec<sentient_installer_core::
     }
     // Setup's own step: from the installed Platform Manager there is
     // nothing to put in place.
-    if !host.manager_in_place {
+    if !host.manager_in_place && !plan.remote {
         v.push(PlanStep::new(n!("Installing the Platform Manager")).weight(0.5));
     }
     let docker_wsl = host.windows && plan.engine == Engine::Docker;
@@ -462,7 +644,9 @@ pub fn steps_on(plan: &InstallPlan, host: Host) -> Vec<sentient_installer_core::
         Engine::Native => n!("PostgreSQL, the SENTIENT service and its schema"),
     }).weight(6.));
     v.push(PlanStep::new(n!("Setting the administrator sign-in")).detail(plan.admin_email.clone()).weight(0.5));
-    v.push(PlanStep::new(n!("Creating shortcuts")).weight(0.5));
+    if !plan.remote {
+        v.push(PlanStep::new(n!("Creating shortcuts")).weight(0.5));
+    }
     v.push(PlanStep::new(n!("Saving the installation record")).weight(0.3));
     v
 }
@@ -487,16 +671,25 @@ pub fn manager_only_steps() -> Vec<sentient_installer_core::progress::PlanStep> 
 }
 
 pub fn run(mut plan: InstallPlan, sink: ProgressFn) -> Result<(), String> {
+    let began = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    // A new install from the beginning replaces a plan an earlier one saved
+    // for its restart (a continued plan has `wsl_restarted`).
+    if !plan.wsl_restarted && !plan.remote {
+        discard_pending();
+    }
     if plan.bundle.is_none() && plan.engine == Engine::Native {
         if let Some(version) = plan.download.clone() {
             let (_, dir) = crate::online::download(Some(&version), &sink)?;
             plan.bundle = Some(dir);
         }
     }
-    let manager = if self_install::manager_in_place() {
+    // On a server the agent itself is the Platform Manager there.
+    let manager = if plan.remote {
+        std::env::current_exe().map_err(|e| tf!("locate this program: {e}"))?
+    } else if self_install::manager_in_place() {
         self_install::manager_exe()
     } else {
-        step(&sink, n!("Installing the Platform Manager"));
+        step(&sink, t!("Installing the Platform Manager"));
         self_install::install_manager()?
     };
     // What is already here, before anything is installed (uninstall removes only what Setup put here).
@@ -553,7 +746,7 @@ pub fn run(mut plan: InstallPlan, sink: ProgressFn) -> Result<(), String> {
             if let Err(e) = native::open_firewall(&cfg) {
                 sink(Progress::Log { line: nf!("note: SENTIENT's ports were not opened in Windows Firewall: {e}") });
             }
-            step(&sink, n!("Setting the administrator sign-in"));
+            step(&sink, t!("Setting the administrator sign-in"));
             native::set_admin_account(&cfg, &plan.admin_email, &admin_hash)?;
             // An operator screen needs SENTIENT running after every boot.
             self_install::set_autostart(plan.shortcuts.autostart || plan.shortcuts.open_at_signin, plan.shortcuts.start_delay)?;
@@ -580,14 +773,16 @@ pub fn run(mut plan: InstallPlan, sink: ProgressFn) -> Result<(), String> {
                 distro::setup(sink.clone(), &plan.install_dir)?;
             }
             distro::deploy_with(sink.clone(), &stack, plan.existing)?;
-            step(&sink, n!("Setting the administrator sign-in"));
+            step(&sink, t!("Setting the administrator sign-in"));
             distro::set_admin_account(&stack, &plan.admin_email, &admin_hash)?;
         }
     }
 
-    step(&sink, n!("Creating shortcuts"));
     let url = format!("http://localhost:{}", plan.stack.http_port);
-    self_install::create_shortcuts(&manager, &url, &plan.shortcuts)?;
+    if !plan.remote {
+        step(&sink, t!("Creating shortcuts"));
+        self_install::create_shortcuts(&manager, &url, &plan.shortcuts)?;
+    }
     if plan.shortcuts.kiosk {
         sentient_installer_core::kiosk::create_shortcut(&sink, &manager, &plan.state_dir())?;
         crate::shortcuts::note(crate::shortcuts::Owner::Sentient, sentient_installer_core::kiosk::shortcut_paths());
@@ -611,10 +806,18 @@ pub fn run(mut plan: InstallPlan, sink: ProgressFn) -> Result<(), String> {
 
     // SENTIENT's Apps & features entry covers the manager installed alone before.
     self_install::remove_manager_entry();
-    step(&sink, n!("Saving the installation record"));
+    step(&sink, t!("Saving the installation record"));
     let json = serde_json::to_string_pretty(&plan.record()).map_err(|e| e.to_string())?;
     self_install::write_record(&crate::installation::record_path(), &json)?;
 
+    if !plan.remote {
+        discard_pending();
+    }
+    // Installing the WSL package opens Microsoft's welcome window, which
+    // would stay behind Setup's Finish page.
+    if cfg!(windows) && (plan.engine == Engine::Docker || plan.stack.flavor == Flavor::Clickhouse) {
+        sentient_installer_core::wsl::close_welcome_window(&sink, began);
+    }
     sink(Progress::Done { message: nf!("SENTIENT is running at {url}") });
     Ok(())
 }
@@ -622,6 +825,55 @@ pub fn run(mut plan: InstallPlan, sink: ProgressFn) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn facts() -> PendingFacts {
+        // Saved an hour before the restart, looked at a minute after it.
+        PendingFacts { saved_at: Some(10_000), has_secrets: true, booted_at: 13_600, now: 13_660, installed: false, started: None }
+    }
+
+    #[test]
+    fn a_plan_saved_before_the_restart_is_continued() {
+        assert_eq!(pending_offer(&facts()), PendingOffer::Resume);
+    }
+
+    #[test]
+    fn no_plan_or_no_passwords_or_installed_offers_nothing() {
+        assert_eq!(pending_offer(&PendingFacts { saved_at: None, ..facts() }), PendingOffer::None);
+        assert_eq!(pending_offer(&PendingFacts { has_secrets: false, ..facts() }), PendingOffer::None);
+        assert_eq!(pending_offer(&PendingFacts { installed: true, ..facts() }), PendingOffer::None);
+    }
+
+    #[test]
+    fn before_the_restart_the_restart_comes_first() {
+        // Setup that stopped may still show its restart panel.
+        assert_eq!(pending_offer(&PendingFacts { booted_at: 9_000, ..facts() }), PendingOffer::AfterRestart);
+        assert_eq!(pending_offer(&PendingFacts { booted_at: 10_000, ..facts() }), PendingOffer::AfterRestart);
+    }
+
+    #[test]
+    fn a_setup_continuing_it_now_is_left_alone() {
+        assert_eq!(pending_offer(&PendingFacts { started: Some(true), ..facts() }), PendingOffer::None);
+    }
+
+    #[test]
+    fn a_continued_run_that_stopped_or_an_old_plan_gets_a_button_only() {
+        // No loop of Setup opening by itself on every start.
+        assert_eq!(pending_offer(&PendingFacts { started: Some(false), ..facts() }), PendingOffer::Button);
+        let old = PendingFacts { now: 10_000 + RESUME_BY_ITSELF_SECS + 1, ..facts() };
+        assert_eq!(pending_offer(&old), PendingOffer::Button);
+        let edge = PendingFacts { now: 10_000 + RESUME_BY_ITSELF_SECS, ..facts() };
+        assert_eq!(pending_offer(&edge), PendingOffer::Resume);
+    }
+
+    #[test]
+    fn only_a_plain_start_continues_an_install() {
+        let a = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert!(plain_start(&a(&["spm"])));
+        assert!(plain_start(&a(&["spm", "--manager"])));
+        assert!(!plain_start(&a(&["spm", "--manager", "--background"])));
+        assert!(!plain_start(&a(&["spm", "--request", "show"])));
+        assert!(!plain_start(&a(&["spm", "--job", "package-identity"])));
+    }
 
     fn plan(engine: Engine, flavor: Flavor) -> InstallPlan {
         InstallPlan {
@@ -642,6 +894,7 @@ mod tests {
             delete_existing: false,
             old_pg: Default::default(),
             wsl_restarted: false,
+            remote: false,
         }
     }
 
@@ -680,7 +933,7 @@ mod tests {
         assert_eq!(names(&plan(Engine::Native, Flavor::Stock), Host { wsl_ready: false, ..WINDOWS })[0], STEP_SENTIENT);
     }
 
-    // placement is part of the window build only (not the server agent's)
+    // The wizard's placement module is GUI-only; the agent build has none.
     #[cfg(feature = "gui")]
     /// The wizard's choice (a card on System check, a database) as the
     /// plan it builds (Installer::plan → placement::plan_engine), and the

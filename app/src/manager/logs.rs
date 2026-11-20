@@ -50,8 +50,8 @@ thread_local! {
     static KEPT: std::cell::RefCell<Option<Kept>> = const { std::cell::RefCell::new(None) };
 }
 
-fn record_key(record: &InstallationRecord) -> String {
-    serde_json::to_string(record).unwrap_or_default()
+fn record_key(record: Option<&InstallationRecord>) -> String {
+    serde_json::to_string(&record).unwrap_or_default()
 }
 
 /// What this computer's Logs draws first for `key`: the lines this run
@@ -170,12 +170,13 @@ impl LogView {
         v
     }
 
-    /// This computer's logs.
-    pub fn local(record: InstallationRecord, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let key = record_key(&record);
+    /// This computer's logs: SENTIENT's when it is installed, the
+    /// gateway's when one runs here (also on a gateway-only computer).
+    pub fn local(record: Option<InstallationRecord>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let key = record_key(record.as_ref());
         let r1 = record.clone();
-        let load: LoadFn = Arc::new(move |s, n, today| Ok(logsource::read(&r1, s, n, today)));
-        let sources: SourcesFn = Arc::new(move || Ok(logsource::available(&record)));
+        let load: LoadFn = Arc::new(move |s, n, today| Ok(logsource::read(r1.as_ref(), s, n, today)));
+        let sources: SourcesFn = Arc::new(move || Ok(logsource::available(record.as_ref())));
         let mut v = Self::new(load, sources, window, cx);
         v.shown_on = Some(super::Page::Logs);
         // A window opened again: the lines shown before, at once (the
@@ -354,7 +355,7 @@ impl LogView {
         };
         let n = text.len();
         cx.write_to_clipboard(ClipboardItem::new_string(text.join("\n")));
-        self.status = Some(if n == 1 { tf!("{n} line copied.") } else { tf!("{n} lines copied.") }.into());
+        self.status = Some(tf!("{n} line{} copied.", if n == 1 { "" } else { "s" }).into());
         cx.notify();
     }
 
@@ -467,7 +468,7 @@ impl Render for LogView {
         // Source: each one the install has, then All.
         let mut sources = ui::seg_track(&theme);
         for s in self.sources.clone() {
-            sources = sources.child(ui::seg_item(&theme, SharedString::from(format!("log-src-{}", s.key())), crate::i18n::t(s.label()), self.pick == Some(s)).on_click(cx.listener(move |v, _, _, cx| {
+            sources = sources.child(ui::seg_item(&theme, SharedString::from(format!("log-src-{}", s.key())), s.label(), self.pick == Some(s)).on_click(cx.listener(move |v, _, _, cx| {
                 v.pick = Some(s);
                 v.selected.clear();
                 v.start(cx);
@@ -552,7 +553,7 @@ impl Render for LogView {
                 .child(div().w(px(150.)).flex_shrink_0().text_color(muted).child(l.time.clone()))
                 .when(all, |r| {
                     let c = tag_colour(l.source);
-                    r.child(h_flex().w(px(84.)).flex_shrink_0().child(div().px(px(6.)).rounded(px(4.)).bg(c.opacity(0.14)).text_color(c).text_size(px(11.5)).font_weight(FontWeight::MEDIUM).child(crate::i18n::t(l.source.label()))))
+                    r.child(h_flex().w(px(84.)).flex_shrink_0().child(div().px(px(6.)).rounded(px(4.)).bg(c.opacity(0.14)).text_color(c).text_size(px(11.5)).font_weight(FontWeight::MEDIUM).child(l.source.label())))
                 })
                 .when(level_w > 0., |r| r.child(div().w(px(level_w)).flex_shrink_0().font_weight(FontWeight::MEDIUM).text_color(colour(l.level)).child(level_word(l.level))));
             let message = div().flex_1().min_w_0().text_color(if l.level == Level::Error { theme.danger } else if l.level == Level::Debug { muted } else { theme.foreground }).child(shown_message(&l, level_w));
@@ -590,7 +591,7 @@ impl Render for LogView {
                     let c = tag_colour(l.source);
                     r.child(
                         h_flex().w(px(84.)).flex_shrink_0().child(
-                            div().px(px(6.)).rounded(px(4.)).bg(c.opacity(0.14)).text_color(c).text_size(px(11.5)).font_weight(FontWeight::MEDIUM).child(crate::i18n::t(l.source.label())),
+                            div().px(px(6.)).rounded(px(4.)).bg(c.opacity(0.14)).text_color(c).text_size(px(11.5)).font_weight(FontWeight::MEDIUM).child(l.source.label()),
                         ),
                     )
                 })
@@ -636,7 +637,7 @@ impl Render for LogView {
                     .when_some(self.error.clone().filter(|_| total == 0), |p, e| {
                         p.child(
                             v_flex().flex_1().items_center().justify_center().gap_3().font_family(theme.font_family.clone()).text_sm().child(div().text_color(theme.muted_foreground).child(t!("The log could not be read."))).child(
-                                div().max_w(px(560.)).text_color(theme.danger).child(crate::ui::shown(e)),
+                                div().max_w(px(560.)).text_color(theme.danger).child(e),
                             )
                             .child(crate::ui::button("log-retry").outline().label(t!("Try again")).on_click(cx.listener(|v, _, _, cx| {
                                 v.error = None;
@@ -660,7 +661,6 @@ impl Render for LogView {
 
 /// This computer's Logs page.
 pub struct LogsPage {
-    record: Option<InstallationRecord>,
     view: Option<Entity<LogView>>,
 }
 
@@ -672,8 +672,9 @@ impl LogsPage {
     }
 
     pub fn new(record: Option<InstallationRecord>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let view = record.clone().map(|r| cx.new(|cx| LogView::local(r, window, cx)));
-        Self { record, view }
+        // A gateway-only computer still has the gateway's log.
+        let view = (record.is_some() || logsource::gateway_here()).then(|| cx.new(|cx| LogView::local(record.clone(), window, cx)));
+        Self { view }
     }
 }
 
@@ -681,9 +682,9 @@ impl Render for LogsPage {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
         let page = ui::page(&theme, t!("Logs"), t!("SENTIENT's log and its database's, newest at the bottom."));
-        match (&self.record, &self.view) {
-            (Some(_), Some(v)) => page.child(v.clone()),
-            _ => page.child(ui::not_installed(&theme)),
+        match &self.view {
+            Some(v) => page.child(v.clone()),
+            None => page.child(ui::not_installed(&theme)),
         }
     }
 }

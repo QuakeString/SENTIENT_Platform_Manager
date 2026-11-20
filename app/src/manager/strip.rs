@@ -217,7 +217,7 @@ impl Strip {
                 self.finished_at = Some(Instant::now());
                 // Backups, restores, updates and takeovers that finish are
                 // worth a line in the bell; a start or stop is not.
-                if let Some(l) = self.label.clone().filter(|l| ["Backing up", "Restoring", "Updating", "Taking over", "Moving", "Changing the database"].iter().any(|w| crate::i18n::label_starts(l, w))) {
+                if let Some(l) = self.label.clone().filter(|l| [t!("Backing up"), t!("Restoring"), t!("Updating"), t!("Taking over"), t!("Moving"), t!("Changing the database")].iter().any(|w| crate::i18n::label_starts(l, w))) {
                     let inst = job.read(cx).instance();
                     self.push_event(inst, false, tf!("{l}: done"), m.to_string(), m.to_string());
                 }

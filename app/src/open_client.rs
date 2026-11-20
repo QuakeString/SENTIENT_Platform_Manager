@@ -41,8 +41,32 @@ pub fn run(args: &[String]) -> i32 {
             .args(browser.open_args(&url, kiosk_mode, Some(&dir.join("kiosk-browser"))))
             .spawn()
             .is_ok(),
-        None if cfg!(windows) => std::process::Command::new("cmd").args(["/c", "start", "", &url]).spawn().is_ok(),
+        // No Chrome, Firefox or Edge: the default browser, unless it is
+        // Internet Explorer (Windows 10 LTSC's) or none is set; that is
+        // never started, a message says what is needed.
+        #[cfg(windows)]
+        None => match kiosk::web_launch() {
+            kiosk::WebLaunch::Default => std::process::Command::new("cmd").args(["/c", "start", "", &url]).spawn().is_ok(),
+            kiosk::WebLaunch::With(browser, exe) => std::process::Command::new(exe).args(browser.open_args(&url, false, None)).spawn().is_ok(),
+            kiosk::WebLaunch::Missing => {
+                message_box("SENTIENT", &kiosk::no_browser_message(&format!("http://localhost:{port}")));
+                false
+            }
+        },
+        #[cfg(not(windows))]
         None => std::process::Command::new("xdg-open").arg(&url).spawn().is_ok(),
     };
     if spawned { 0 } else { 1 }
+}
+
+/// A plain message (this command has no window of its own).
+#[cfg(windows)]
+fn message_box(title: &str, text: &str) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONINFORMATION, MB_OK};
+    let wide = |s: &str| s.encode_utf16().chain(std::iter::once(0)).collect::<Vec<u16>>();
+    let (text, title) = (wide(text), wide(title));
+    // SAFETY: both strings are NUL-terminated UTF-16 that outlive the call.
+    unsafe {
+        MessageBoxW(std::ptr::null_mut(), text.as_ptr(), title.as_ptr(), MB_OK | MB_ICONINFORMATION);
+    }
 }

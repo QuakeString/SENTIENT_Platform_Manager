@@ -222,6 +222,9 @@ pub struct Offer {
     /// The Windows installer and its `.sha256`, when the release has them.
     pub installer: Option<releases::Asset>,
     pub checksum: Option<releases::Asset>,
+    /// Its image ({IMAGE}:<version>) is not on Docker Hub yet: a gateway in
+    /// Docker cannot take it ([`offer_blocker`]). False when not known.
+    pub image_missing: bool,
 }
 
 /// The gateway's releases in the SENTIENT releases repository.
@@ -234,13 +237,56 @@ pub fn version_of(r: &Release) -> String {
     r.tag_name.trim_start_matches("gateway-").to_string()
 }
 
-/// The newest gateway release on `channel` (any, when nothing is installed).
+/// The newest gateway release on `channel` (any, when nothing is installed),
+/// for a gateway the way this computer runs it (Docker except on Windows).
 pub fn newest(channel: releases::Channel) -> Result<Option<Offer>, String> {
-    let all = releases::fetch(releases::SENTIENT_REPO)?;
-    let mut candidates = releases::on_channel(&all, channel, is_gateway);
+    newest_with(channel, !cfg!(windows), false)
+}
+
+/// The newest gateway release on `channel`. Its image is looked up on
+/// Docker Hub (`image_missing`). `docker`: the gateway runs in Docker, so
+/// when GitHub's list cannot be had at all, the newest image tag on the
+/// channel stands in (no notes). `force`: an explicit check.
+pub fn newest_with(channel: releases::Channel, docker: bool, force: bool) -> Result<Option<Offer>, String> {
+    let all = match releases::list(releases::SENTIENT_REPO, force) {
+        Ok(l) => l.value,
+        Err(e) if docker => {
+            let tags = crate::dockerhub::tags(IMAGE, force).map_err(|_| e)?;
+            return Ok(crate::dockerhub::newest(&tags.value, channel).map(|version| Offer {
+                version,
+                date: String::new(),
+                notes: String::new(),
+                page: String::new(),
+                installer: None,
+                checksum: None,
+                image_missing: false,
+            }));
+        }
+        Err(e) => return Err(e),
+    };
+    let Some(mut offer) = newest_in(&all, channel) else { return Ok(None) };
+    // Unknown (Docker Hub not reachable): not held against it.
+    offer.image_missing = crate::dockerhub::tag_exists(IMAGE, &offer.version, force) == Ok(false);
+    Ok(Some(offer))
+}
+
+/// The newest gateway release on `channel` in `all`.
+pub fn newest_in(all: &[Release], channel: releases::Channel) -> Option<Offer> {
+    let mut candidates = releases::on_channel(all, channel, is_gateway);
     // on_channel sorts by the tag; gateway-4.10 vs 4.9 needs the version.
     candidates.sort_by(|a, b| releases::compare(&version_of(b), &version_of(a)));
-    Ok(candidates.first().map(|r| offer_of(r)))
+    candidates.first().map(|r| offer_of(r))
+}
+
+/// Why `offer` cannot go to the gateway found as `s` (None: it can): its
+/// image is not published yet for a gateway in Docker, else
+/// [`update_blocker`]'s reasons.
+pub fn offer_blocker(s: &Status, offer: &Offer, windows: bool) -> Option<String> {
+    let docker = s.kind() == "docker" || (!s.installed && s.legacy.is_some());
+    if offer.image_missing && docker && !windows {
+        return Some(crate::dockerhub::not_published(&offer.version));
+    }
+    update_blocker(s, &offer.version, offer.installer.is_some(), windows)
 }
 
 pub fn status() -> Status {
@@ -293,7 +339,7 @@ pub fn update(sink: &ProgressFn, offer: &Offer) -> Result<(), String> {
         if s.container.is_none() {
             // A service or a program: said, never attempted.
             let _ = sink;
-            return Err(update_blocker(&s, &offer.version, offer.installer.is_some(), false).unwrap_or_else(|| "There is no gateway container to update.".into()));
+            return Err(offer_blocker(&s, offer, false).unwrap_or_else(|| "There is no gateway container to update.".into()));
         }
         crate::distro::gateway_docker::update(sink, &offer.version)
     }
@@ -311,7 +357,7 @@ fn offer_of(r: &Release) -> Offer {
     let v = version_of(r);
     let installer = r.assets.iter().find(|a| a.name == format!("SentientGatewaySetup-{v}.exe")).cloned();
     let checksum = r.assets.iter().find(|a| a.name == format!("SentientGatewaySetup-{v}.exe.sha256")).cloned();
-    Offer { version: v, date: r.date(), notes: r.summary(), page: r.html_url.clone(), installer, checksum }
+    Offer { version: v, date: r.date(), notes: r.summary(), page: r.html_url.clone(), installer, checksum, image_missing: false }
 }
 
 /// Where the Windows service writes its log files, as the gateway resolves
@@ -499,6 +545,14 @@ pub fn host_of(gateway_file: &str) -> (Option<String>, Option<u16>) {
     (host, port)
 }
 
+/// The Windows installer's SHA-256 to check it against: the first word of
+/// its `.sha256` file, else the digest GitHub recorded for it
+/// (`sha256:<hex>`). None: the release publishes neither.
+pub fn installer_sha256(sum_file: Option<&str>, digest: Option<&str>) -> Option<String> {
+    let from_file = sum_file.and_then(|t| t.split_whitespace().next()).map(str::to_ascii_lowercase).filter(|h| !h.is_empty());
+    from_file.or_else(|| digest.and_then(|d| d.trim().strip_prefix("sha256:")).map(str::to_ascii_lowercase).filter(|h| !h.is_empty()))
+}
+
 fn step(sink: &ProgressFn, name: &str) {
     sink(Progress::Step { name: name.into() });
 }
@@ -571,20 +625,31 @@ mod windows {
             .ok_or_else(|| format!("Gateway {} has no Windows installer.", offer.version))?;
         let dir = std::env::temp_dir().join(format!("sentient-gateway-{}", offer.version));
         std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
+        // The token and the page's password are written here for the
+        // installer: the folder is for SYSTEM, the Administrators and this
+        // account only (as a server's agent, SYSTEM's temp folder).
+        let has_secrets = settings.is_some_and(|s| !s.token.is_empty() || !s.ui_password.is_empty());
+        if let Err(e) = crate::private_acl::make_private(&dir, true) {
+            if has_secrets {
+                return Err(format!("The gateway's access token has no private folder to wait in: {e}"));
+            }
+        }
         let file = dir.join(&asset.name);
         step(sink, &format!("Downloading Sentient Gateway {} ({} MB)", offer.version, asset.size >> 20));
         download(&asset.browser_download_url, &file)?;
-        if let Some(sum) = &offer.checksum {
-            let expected = fetch_text(&sum.browser_download_url)?
-                .split_whitespace()
-                .next()
-                .unwrap_or_default()
-                .to_ascii_lowercase();
-            let actual = crate::manifest::sha256_file(&file)?;
-            if expected != actual {
-                let _ = std::fs::remove_file(&file);
-                return Err(format!("The gateway installer did not match its checksum ({actual} instead of {expected})."));
+        let sum_file = match &offer.checksum {
+            Some(sum) => Some(fetch_text(&sum.browser_download_url)?),
+            None => None,
+        };
+        match installer_sha256(sum_file.as_deref(), asset.digest.as_deref()) {
+            Some(expected) => {
+                let actual = crate::manifest::sha256_file(&file)?;
+                if expected != actual {
+                    let _ = std::fs::remove_file(&file);
+                    return Err(format!("The gateway installer did not match its checksum ({actual} instead of {expected})."));
+                }
             }
+            None => sink(Progress::Log { line: format!("Gateway {} publishes no checksum for its installer; it is used as downloaded.", offer.version) }),
         }
         let mut args: Vec<String> = vec!["/VERYSILENT".into(), "/SUPPRESSMSGBOXES".into(), "/NORESTART".into()];
         let log = dir.join("setup.log");
@@ -595,12 +660,16 @@ mod windows {
             args.push(format!("/PORT={}", s.port));
             if !s.token.is_empty() {
                 let f = dir.join("token.txt");
+                // A fresh file takes the folder's private access (an old
+                // one would keep its own).
+                let _ = std::fs::remove_file(&f);
                 std::fs::write(&f, &s.token).map_err(|e| format!("write the token file: {e}"))?;
                 args.push(format!("/TOKENFILE={}", f.display()));
                 secrets.push(f);
             }
             if !s.ui_password.is_empty() {
                 let f = dir.join("page.txt");
+                let _ = std::fs::remove_file(&f);
                 std::fs::write(&f, &s.ui_password).map_err(|e| format!("write the password file: {e}"))?;
                 args.push(format!("/UIPASSWORDFILE={}", f.display()));
                 secrets.push(f);
@@ -624,9 +693,21 @@ mod windows {
             None => return Err("Could not start the gateway installer.".into()),
         }
         let _ = std::fs::remove_file(&file);
-        match status().version {
+        let now = status();
+        match now.version {
             Some(v) if v == offer.version => {
-                sink(Progress::Done { message: format!("Sentient Gateway {v} is installed.") });
+                // A first install sends at once: the service runs (the
+                // installer starts it; else it is started here).
+                let mut running = now.running;
+                if settings.is_some() && !running {
+                    step(sink, "Starting the gateway service");
+                    running = control(&crate::progress::noop(), "start").is_ok();
+                    if !running {
+                        sink(Progress::Log { line: "The gateway service did not start within 30 seconds; its log says why (Gateway, Logs).".into() });
+                    }
+                }
+                let message = if running || settings.is_none() { format!("Sentient Gateway {v} is installed.") } else { format!("Sentient Gateway {v} is installed, but its service is not running.") };
+                sink(Progress::Done { message });
                 Ok(())
             }
             Some(v) => Err(format!("The installer finished, but the gateway reports {v}, not {}.", offer.version)),
@@ -901,6 +982,18 @@ mod windows {
 mod tests {
     use super::*;
 
+    /// The installer is checked against its .sha256 file, else GitHub's digest.
+    #[test]
+    fn the_installers_checksum_comes_from_its_file_else_the_digest() {
+        let h = "a".repeat(64);
+        let file = format!("{}  SentientGatewaySetup-4.16.3.exe\n", h.to_ascii_uppercase());
+        assert_eq!(installer_sha256(Some(&file), Some("sha256:bbbb")), Some(h.clone()));
+        assert_eq!(installer_sha256(None, Some(&format!("sha256:{h}"))), Some(h.clone()));
+        assert_eq!(installer_sha256(Some("  \n"), Some(&format!("sha256:{h}"))), Some(h));
+        assert_eq!(installer_sha256(None, Some("md5:abc")), None);
+        assert_eq!(installer_sha256(None, None), None);
+    }
+
     #[test]
     fn windows_service_program() {
         let qc = "SERVICE_NAME: SentientGateway\r\n        TYPE               : 10  WIN32_OWN_PROCESS\r\n        BINARY_PATH_NAME   : \"C:\\Program Files\\Sentient Gateway\\sentient-gateway.exe\" --service\r\n";
@@ -986,6 +1079,43 @@ mod tests {
         let older = Status { legacy: Some("st-gateway".into()), legacy_image: Some("quakestring/sentient-gateway:latest".into()), ..Status::default() };
         assert_eq!(update_blocker(&older, "4.16.3", false, false), None);
         assert!(update_blocker(&older, "4.16.3", false, true).unwrap().contains("Windows service"));
+    }
+
+    #[test]
+    fn a_release_without_its_image_is_not_offered_to_docker() {
+        let r = Release {
+            tag_name: "gateway-4.16.3".into(),
+            name: None,
+            body: Some("Faster polling.".into()),
+            html_url: String::new(),
+            prerelease: false,
+            draft: false,
+            published_at: Some("2026-11-18T10:00:00Z".into()),
+            assets: vec![],
+        };
+        let all = vec![r, Release { tag_name: "gateway-4.16.2".into(), ..Release::clone(&all_one()) }];
+        let mut offer = newest_in(&all, releases::Channel::Stable).unwrap();
+        assert_eq!(offer.version, "4.16.3");
+        offer.image_missing = true;
+        let ours = Status { installed: true, container: Some(CONTAINER.into()), managed: true, ..Status::default() };
+        assert_eq!(offer_blocker(&ours, &offer, false).as_deref(), Some("4.16.3 is released; its Docker image is not published yet."));
+        // The older Python gateway goes to the image too.
+        let older = Status { legacy: Some("st-gateway".into()), ..Status::default() };
+        assert_eq!(offer_blocker(&older, &offer, false).as_deref(), Some("4.16.3 is released; its Docker image is not published yet."));
+        // A compose container: the image first, not "set it in the file".
+        let compose = Status { managed: false, compose_dir: Some("/srv/example".into()), ..ours.clone() };
+        assert!(offer_blocker(&compose, &offer, false).unwrap().contains("not published"));
+        // A Windows service does not use the image; on Windows the Docker reason stays.
+        let win = Status { installed: true, managed: true, ..Status::default() };
+        assert!(offer_blocker(&win, &offer, true).unwrap().contains("no Windows installer"));
+        assert!(offer_blocker(&ours, &offer, true).unwrap().contains("Windows service"));
+        // Published: the usual answer.
+        offer.image_missing = false;
+        assert_eq!(offer_blocker(&ours, &offer, false), None);
+    }
+
+    fn all_one() -> Release {
+        Release { tag_name: String::new(), name: None, body: None, html_url: String::new(), prerelease: false, draft: false, published_at: None, assets: vec![] }
     }
 
     #[test]

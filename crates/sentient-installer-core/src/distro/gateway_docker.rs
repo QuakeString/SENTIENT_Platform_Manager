@@ -136,20 +136,31 @@ pub(crate) fn serial_devices() -> Vec<SerialDevice> {
 }
 
 /// The `docker run` line for the Platform Manager's gateway container:
-/// the host network, the named volumes, the image's env contract, and each
-/// serial adapter at the same path inside (a by-id path stays the one a
-/// Modbus RTU connector names) with its group added, so the image's
-/// non-root user may open it.
-pub fn run_command(image: &str, host: &str, port: u16, token: &str, devices: &[SerialDevice]) -> String {
+/// the host network, the named volumes, the image's env contract read from
+/// `env_file` (see [`env_lines`]: the access token never goes on a
+/// command line, where the process list and an error message would show
+/// it), and each serial adapter at the same path inside (a by-id path stays
+/// the one a Modbus RTU connector names) with its group added, so the
+/// image's non-root user may open it.
+pub fn run_command(image: &str, env_file: &str, devices: &[SerialDevice]) -> String {
     let q = super::shell_quote;
     let volumes: String = VOLUMES.iter().map(|(v, p)| format!(" -v {v}:{p}")).collect();
     format!(
-        "docker run -d --name {CONTAINER} --restart unless-stopped --network host{volumes}{} -e host={} -e port={port} -e accessToken={} {}",
+        "docker run -d --name {CONTAINER} --restart unless-stopped --network host{volumes}{} --env-file {} {}",
         device_flags(devices),
-        q(host),
-        q(token),
+        q(env_file),
         q(image)
     )
+}
+
+/// The image's env contract (`host`, `port`, `accessToken`), the lines of
+/// a Docker env file ([`write_env_file`]). Err: a value an env file cannot
+/// carry (a line break).
+pub fn env_lines(host: &str, port: u16, token: &str) -> Result<Vec<String>, String> {
+    if host.contains(['\n', '\r']) || token.contains(['\n', '\r']) {
+        return Err("The platform host and the access token are one line each.".into());
+    }
+    Ok(vec![format!("host={host}"), format!("port={port}"), format!("accessToken={token}")])
 }
 
 /// ` --device X:X … --group-add <gid> …` for the serial adapters.
@@ -462,7 +473,13 @@ fn start(sink: &ProgressFn, version: &str, host: &str, port: u16, token: &str) -
         if !devices.is_empty() {
             sink(Progress::Log { line: format!("Serial adapters for the gateway: {}", devices.iter().map(|d| d.path.as_str()).collect::<Vec<_>>().join(", ")) });
         }
-        super::run(sink, &run_command(&image, host, port, token, &devices))?;
+        // The settings in a file only this account reads, for the one
+        // `docker run`: Docker keeps them in the container's own
+        // configuration (root's), and the file goes at once.
+        let env = write_env_file(&env_lines(host, port, token)?)?;
+        let r = super::run(sink, &run_command(&image, &env.to_string_lossy(), &devices));
+        let _ = std::fs::remove_file(&env);
+        r?;
         wait_running(sink, version)
     }
 }
@@ -1001,6 +1018,8 @@ mod tests {
         assert_eq!(image_version(&all[2]), None);
     }
 
+    // std::os::unix and the #[cfg(unix)] serial_devices_in: Unix only (it
+    // broke the core tests on windows-latest).
     #[cfg(unix)]
     #[test]
     fn serial_adapters_prefer_their_stable_names() {
@@ -1025,7 +1044,7 @@ mod tests {
 
     #[test]
     fn the_run_line_passes_serial_adapters_with_their_group() {
-        let none = run_command("quakestring/sentient-gateway-rs:4.16.2", "127.0.0.1", 1883, "tok", &[]);
+        let none = run_command("quakestring/sentient-gateway-rs:4.16.2", "/tmp/gw.env", &[]);
         assert!(!none.contains("--device") && !none.contains("--group-add"));
         assert!(none.contains("--network host -v st-gw-config:/sentient_gateway/config"));
         let devs = [
@@ -1033,13 +1052,23 @@ mod tests {
             SerialDevice { path: "/dev/ttyACM0".into(), gid: 986 },
             SerialDevice { path: "/dev/ttyUSB3".into(), gid: 0 },
         ];
-        let line = run_command("quakestring/sentient-gateway-rs:4.16.2", "127.0.0.1", 1883, "tok", &devs);
+        let line = run_command("quakestring/sentient-gateway-rs:4.16.2", "/tmp/gw.env", &devs);
         assert!(line.contains(" --device '/dev/serial/by-id/usb-Example_RS485_A1-if00-port0:/dev/serial/by-id/usb-Example_RS485_A1-if00-port0'"), "{line}");
         assert!(line.contains(" --device '/dev/ttyACM0:/dev/ttyACM0'") && line.contains(" --device '/dev/ttyUSB3:/dev/ttyUSB3'"));
         // One group, once; root's group never.
         assert_eq!(line.matches("--group-add").count(), 1);
         assert!(line.contains(" --group-add 986 ") && !line.contains("--group-add 0"));
         assert!(line.ends_with("'quakestring/sentient-gateway-rs:4.16.2'"));
+    }
+
+    #[test]
+    fn the_run_line_carries_no_token() {
+        let line = run_command("quakestring/sentient-gateway-rs:4.16.2", "/tmp/gw.env", &[]);
+        assert!(line.contains(" --env-file '/tmp/gw.env' "), "{line}");
+        assert!(!line.contains("accessToken") && !line.contains("-e "), "{line}");
+        let lines = env_lines("10.0.0.5", 1883, "Xk7pQ2mW9rTzL4vB8nYd").unwrap();
+        assert_eq!(lines, vec!["host=10.0.0.5", "port=1883", "accessToken=Xk7pQ2mW9rTzL4vB8nYd"]);
+        assert!(env_lines("h", 1883, "a\nb=c").is_err());
     }
 
     #[test]

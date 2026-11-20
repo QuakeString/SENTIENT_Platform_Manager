@@ -347,7 +347,7 @@ impl LicencePage {
             job.start(
                 move |sink| match target {
                     Target::Local(Some(r)) => r.platform().control(sink, "start"),
-                    Target::Local(None) => Err(n!("SENTIENT isn't installed on this computer.").into()),
+                    Target::Local(None) => Err(t!("SENTIENT isn't installed on this computer.").into()),
                     Target::Remote(inst) => {
                         let args = ["control", "start"];
                         crate::remote::start_job(&inst, &args).and_then(|id| crate::remote::follow(&inst, &id, &sink))
@@ -466,7 +466,7 @@ impl LicencePage {
             let name = file.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "licence.key".into());
             let read = std::fs::metadata(&file).map_err(|e| e.to_string()).and_then(|m| {
                 if m.len() > 1024 * 1024 {
-                    Err(n!("The file is larger than 1 MB: not a licence key file.").to_string())
+                    Err(t!("The file is larger than 1 MB: not a licence key file.").to_string())
                 } else {
                     std::fs::read(&file).map_err(|e| e.to_string())
                 }
@@ -614,11 +614,11 @@ impl Render for ActionDialog {
         let click = cx.listener(|d, _, _, cx| d.go(cx));
         let ok_button: AnyElement = if danger {
             let busy = self.busy;
-            ui::solid_button("licence-act-ok", (if busy { t!("Working…") } else { ok }).into(), theme.danger, gpui_kit::white(), move |e, w, cx| if !busy { click(e, w, cx) })
+            ui::solid_button("licence-act-ok", ok.into(), theme.danger, gpui_kit::white(), move |e, w, cx| if !busy { click(e, w, cx) })
                 .when(busy, |b| b.opacity(0.6))
                 .into_any_element()
         } else {
-            ui::button("licence-act-ok").primary().label(if self.busy { t!("Working") } else { ok }).disabled(self.busy).on_click(click).into_any_element()
+            ui::button("licence-act-ok").primary().label(ok).disabled(self.busy).on_click(click).into_any_element()
         };
         body.child(
             h_flex()
@@ -638,7 +638,7 @@ fn centred(el: Div) -> Div {
 }
 
 fn name_or_this(name: &str) -> String {
-    if name == "this computer" { t!("this computer").into() } else { name.to_string() }
+    if name == "this computer" { "this computer".into() } else { name.to_string() }
 }
 
 /// "All limits…": every limit SENTIENT has, with the usage where it counts it.
@@ -867,7 +867,7 @@ impl LicencePage {
         let local = matches!(self.target, Target::Local(_));
         let days = match (st.days_remaining, crate::licence::day_label(st.expiration_date.as_deref())) {
             (_, None) => t!("No end date").to_string(),
-            (Some(d), Some(day)) if d > 0 => if d == 1 { tf!("{d} day, until {day}") } else { tf!("{d} days, until {day}") },
+            (Some(d), Some(day)) if d > 0 => tf!("{d} day{}, until {day}", if d == 1 { "" } else { "s" }),
             (_, Some(day)) => tf!("Ended on {day}"),
         };
         let row = |label: &'static str, value: AnyElement, first: bool| kv_row(theme, first).child(div().w(px(150.)).flex_shrink_0().text_color(theme.muted_foreground).child(label)).child(h_flex().flex_1().min_w_0().gap_2().items_center().flex_wrap().child(value));
@@ -1071,17 +1071,17 @@ impl LicencePage {
         let what = st.over_limit_entities.first().cloned().or_else(|| r.usage.as_ref().and_then(|u| u.over_limit.first().cloned()))?;
         let (noun, nouns) = crate::licence::entity_noun(&what);
         let days = st.days_over_limit.unwrap_or(0);
-        let lead = if days == 1 { tf!("Over the {noun} limit for {days} day.") } else { tf!("Over the {noun} limit for {days} days.") };
+        let lead = if days == 1 { tf!("Over the {noun} limit for 1 day.") } else { tf!("Over the {noun} limit for {days} days.") };
         let lkey = crate::licence::ALL_LIMITS.iter().find(|(_, _, u)| *u == Some(what.as_str())).map(|(_, k, _)| *k).unwrap_or("");
         let max = r.status.limits.as_ref().and_then(|l| l.get(lkey)).and_then(serde_json::Value::as_i64);
         let used = r.usage.as_ref().and_then(|u| u.usage.get(&what)).and_then(serde_json::Value::as_i64);
         let mut text = match (used, max) {
-            (Some(u), Some(m)) => tf!("{} {nouns} on a {}-{noun} licence. ", crate::licence::grouped(u), crate::licence::grouped(m)),
+            (Some(u), Some(m)) => tf!("{} {nouns} on a licence for {} {nouns}. ", crate::licence::grouped(u), crate::licence::grouped(m)),
             _ => String::new(),
         };
         text += &match st.days_until_blocked {
             Some(0) => tf!("SENTIENT blocks new {nouns} now, until {nouns} are removed or the licence is raised."),
-            Some(d) => if d == 1 { tf!("SENTIENT is blocked in {d} day unless {nouns} are removed or the licence is raised.") } else { tf!("SENTIENT is blocked in {d} days unless {nouns} are removed or the licence is raised.") },
+            Some(d) => if d == 1 { tf!("SENTIENT is blocked in 1 day unless {nouns} are removed or the licence is raised.") } else { tf!("SENTIENT is blocked in {d} days unless {nouns} are removed or the licence is raised.") },
             None => tf!("Remove {nouns} or raise the licence."),
         };
         let buy = ui::button("licence-over-buy").outline().icon(icon("cart")).label(t!("Buy a licence")).on_click(|_, _, cx| ui::open_url(crate::licence::BUY_URL, cx)).into_any_element();

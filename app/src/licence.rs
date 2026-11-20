@@ -24,6 +24,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::installation::InstallationRecord;
+use sentient_installer_core::licence_version::{self, Licence};
 
 /// Where SENTIENT's licence portal takes a demo request and a purchase
 /// (SENTIENT's Licence page opens the same two).
@@ -358,15 +359,17 @@ pub fn agent_job(file: &str) -> i32 {
     agent_job_text(text.map_err(|e| e.to_string()))
 }
 
-/// [`agent_job`] with the request given inline (`--request-b64`): one ssh
-/// call per request instead of four (no request file to write and remove).
+/// [`agent_job`] with the request given inline (`--request-b64`), as
+/// Platform Managers up to 0.9.2 sent it: accepted for one release more.
+/// It put the request, password included, on the server's command line;
+/// this version sends it on standard input (`--request-stdin`).
 pub fn agent_job_b64(b64: &str) -> i32 {
     use base64::Engine as _;
     let text = base64::engine::general_purpose::STANDARD.decode(b64.trim()).map_err(|e| e.to_string()).and_then(|b| String::from_utf8(b).map_err(|e| e.to_string()));
     agent_job_text(text)
 }
 
-fn agent_job_text(text: Result<String, String>) -> i32 {
+pub(crate) fn agent_job_text(text: Result<String, String>) -> i32 {
     let req: Request = match text.and_then(|t| serde_json::from_str(&t).map_err(|e| e.to_string())) {
         Ok(r) => r,
         Err(e) => {
@@ -791,8 +794,28 @@ const TILE_SQL: &str = "SELECT json_build_object(\
 const TILE_LICENCE_SQL: &str = "SELECT json_build_object('type', license_type, 'expires', expiration_date)::text FROM license WHERE active = true LIMIT 1";
 const TILE_STATE_SQL: &str = "SELECT json_build_object('since', over_limit_since)::text FROM license_state LIMIT 1";
 
+/// The active licence's signed payload (its allowed versions; plain JSON
+/// SENTIENT keeps beside the signature).
+const VERSIONS_SQL: &str = "SELECT json_build_object('data', license_data)::text FROM license WHERE active = true LIMIT 1";
+
 /// Read the tile's state. Blocking; None when the database cannot be read.
 pub fn read_tile(record: &InstallationRecord) -> Option<TileLicence> {
+    read_db(record).map(|(tile, _)| tile)
+}
+
+/// Which SENTIENT versions the installed licence covers, read-only from the
+/// database without a sign-in (crate::manager::licence_gate labels the
+/// offered versions with it). Blocking; None when it cannot be read.
+///
+/// The payload is read as stored, its signature not checked here: SENTIENT
+/// checks it and refuses a licence that does not verify, so this only says
+/// in advance what SENTIENT will decide after an update.
+pub fn read_versions(record: &InstallationRecord) -> Option<Licence> {
+    read_db(record).and_then(|(_, versions)| versions)
+}
+
+/// The tile's state and the licence's versions, from one read-only session.
+pub fn read_db(record: &InstallationRecord) -> Option<(TileLicence, Option<Licence>)> {
     let password = crate::dbstatus::db_password(record).ok()?;
     let st = &record.stack;
     let conn = sentient_backup_core::db::ConnConfig { host: "127.0.0.1".into(), port: st.pg_port, dbname: st.db_name.clone(), user: st.db_user.clone(), password };
@@ -803,7 +826,7 @@ pub fn read_tile(record: &InstallationRecord) -> Option<TileLicence> {
         db.batch("SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY; SET statement_timeout = 3000").await.ok()?;
         let has: Value = serde_json::from_str(&db.text(TILE_SQL).await.ok()??).ok()?;
         if has.get("has_license").and_then(Value::as_bool) != Some(true) {
-            return Some(TileLicence::None);
+            return Some((TileLicence::None, Some(Licence::NotInstalled)));
         }
         let row = db.text(TILE_LICENCE_SQL).await.ok()?.and_then(|t| serde_json::from_str::<Value>(&t).ok());
         let active = row.map(|v| (v.get("type").and_then(Value::as_str).unwrap_or("").to_string(), v.get("expires").and_then(Value::as_i64)));
@@ -812,8 +835,96 @@ pub fn read_tile(record: &InstallationRecord) -> Option<TileLicence> {
         } else {
             false
         };
-        Some(TileLicence::from_row(active, over, chrono::Utc::now().timestamp_millis()))
+        let versions = if active.is_none() {
+            Some(Licence::NotInstalled)
+        } else {
+            let data = db.text(VERSIONS_SQL).await.ok().flatten().and_then(|t| serde_json::from_str::<Value>(&t).ok());
+            versions_of_row(data.as_ref().and_then(|v| v.get("data")).and_then(Value::as_str))
+        };
+        Some((TileLicence::from_row(active, over, chrono::Utc::now().timestamp_millis()), versions))
     })
+}
+
+/// An active licence's versions from its stored payload: None when it has
+/// none or it is not a licence payload (then a sign-in asks SENTIENT).
+pub fn versions_of_row(license_data: Option<&str>) -> Option<Licence> {
+    licence_version::allowed_in_payload(license_data?).map(Licence::Allowed)
+}
+
+// ---------------------------------------------------------------------------
+// Update's licence check: a sign-in kept in memory for one read
+// ---------------------------------------------------------------------------
+
+/// The email and password typed for one licence check. Not Serialize, not
+/// Clone, no Debug output of the password: it lives only while the check
+/// runs, and its bytes are overwritten when it is dropped. Never stored.
+pub struct Credentials {
+    email: String,
+    password: String,
+}
+
+#[cfg(test)]
+static CREDENTIALS_DROPPED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+impl Credentials {
+    pub fn new(email: String, password: String) -> Self {
+        Self { email, password }
+    }
+
+    /// Overwrite both strings' bytes, then empty them.
+    fn wipe(&mut self) {
+        for s in [&mut self.email, &mut self.password] {
+            let mut bytes = std::mem::take(s).into_bytes();
+            for b in bytes.iter_mut() {
+                // Volatile, so the write is not optimised away as dead.
+                unsafe { std::ptr::write_volatile(b, 0) };
+            }
+            std::sync::atomic::compiler_fence(std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+}
+
+impl Drop for Credentials {
+    fn drop(&mut self) {
+        self.wipe();
+        #[cfg(test)]
+        CREDENTIALS_DROPPED.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+impl std::fmt::Debug for Credentials {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Credentials { .. }")
+    }
+}
+
+/// The licence's versions from SENTIENT's status (`GET /api/license/status`).
+pub fn licence_of(status: &Status) -> Result<Licence, String> {
+    if !status.activated {
+        return Ok(Licence::NotInstalled);
+    }
+    status
+        .license_allowed_versions
+        .clone()
+        .map(Licence::Allowed)
+        .ok_or_else(|| t!("SENTIENT did not say which versions its licence covers (an older SENTIENT, or a licence it refused).").to_string())
+}
+
+impl Target {
+    /// `GET /api/license/status` with `token`. Blocking.
+    pub fn status(&self, token: &str) -> Result<Status, String> {
+        self.get::<Status>(token, "GET", "/api/license/status", None)
+    }
+
+    /// Sign in with `creds`, read the licence's versions, and forget both:
+    /// `creds` is consumed (and wiped) here, and the token is not kept.
+    /// Blocking.
+    pub fn check_licence(&self, creds: Credentials) -> Result<Licence, String> {
+        let signed = self.sign_in(&creds.email, &creds.password);
+        drop(creds);
+        let (token, _refresh) = signed?;
+        self.status(&token).and_then(|s| licence_of(&s))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -899,6 +1010,59 @@ mod tests {
         assert_eq!(TileLicence::from_row(Some(("DEMO".into(), Some(now - day))), true, now), TileLicence::Expired);
         assert_eq!(TileLicence::from_row(Some(("BASIC".into(), Some(now + 200 * day))), true, now), TileLicence::OverLimit);
         assert_eq!(serde_json::to_string(&TileLicence::EndsIn(3)).unwrap(), r#"{"kind":"ends_in","days":3}"#);
+    }
+
+    #[test]
+    fn versions_from_the_stored_row() {
+        assert_eq!(versions_of_row(Some(r#"{"allowed_versions":["4.4"]}"#)), Some(Licence::Allowed(vec!["4.4".into()])));
+        assert_eq!(versions_of_row(Some(r#"{"id":"x"}"#)), Some(Licence::Allowed(vec![])));
+        assert_eq!(versions_of_row(None), None);
+        assert_eq!(versions_of_row(Some("garbage")), None);
+    }
+
+    #[test]
+    fn status_gives_the_versions() {
+        let mut st = Status::default();
+        assert_eq!(licence_of(&st), Ok(Licence::NotInstalled));
+        st.activated = true;
+        assert!(licence_of(&st).is_err());
+        st.license_allowed_versions = Some(vec!["4.4".into()]);
+        assert_eq!(licence_of(&st), Ok(Licence::Allowed(vec!["4.4".into()])));
+    }
+
+    /// Whether `T` is Serialize, decided at compile time (autoref).
+    struct Probe<T>(std::marker::PhantomData<T>);
+    trait IsSerialize {
+        fn is_serialize(&self) -> bool {
+            true
+        }
+    }
+    impl<T: serde::Serialize> IsSerialize for Probe<T> {}
+    trait NotSerialize {
+        fn is_serialize(&self) -> bool {
+            false
+        }
+    }
+    impl<T> NotSerialize for &Probe<T> {}
+
+    #[test]
+    fn credentials_are_not_kept() {
+        // Not Serialize (the probe answers true for a type that is).
+        assert!(!(&Probe::<Credentials>(std::marker::PhantomData)).is_serialize());
+        assert!((&Probe::<Status>(std::marker::PhantomData)).is_serialize());
+        // Nothing of the password in Debug output.
+        let c = Credentials::new("a@b".into(), "s3cret".into());
+        assert!(!format!("{c:?}").contains("s3cret"));
+        // Wiped.
+        let mut w = Credentials::new("a@b".into(), "s3cret".into());
+        w.wipe();
+        assert!(w.email.is_empty() && w.password.is_empty());
+        drop(c);
+        // Consumed and dropped by the check, whatever its outcome.
+        let before = CREDENTIALS_DROPPED.load(std::sync::atomic::Ordering::SeqCst);
+        let got = Target::Local(None).check_licence(Credentials::new("a@b".into(), "s3cret".into()));
+        assert!(got.is_err());
+        assert!(CREDENTIALS_DROPPED.load(std::sync::atomic::Ordering::SeqCst) > before);
     }
 
     #[test]

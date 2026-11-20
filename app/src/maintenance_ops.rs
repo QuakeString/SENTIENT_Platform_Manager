@@ -39,11 +39,11 @@ pub(crate) fn run_repair(record: InstallationRecord, sink: ProgressFn) -> Result
             // This version of the program does the work as the account, so
             // it is put in place first (repair restores it anyway).
             let _ = self_install::install_manager();
-            step(&sink, n!("Making ClickHouse safe against unclean stops"));
-            if let Err(e) = clickhouse_wsl::run_as_account(&sink, &password, &self_install::manager_exe(), "harden", Some(std::time::Duration::from_secs(240))) {
+            step(&sink, t!("Making ClickHouse safe against unclean stops"));
+            if let Err(e) = clickhouse_wsl::run_as_account(&sink, &password, &self_install::manager_exe(), clickhouse_wsl::harden_job(), Some(std::time::Duration::from_secs(240))) {
                 sink(Progress::Log { line: nf!("note: {e}") });
             }
-            step(&sink, n!("Stopping ClickHouse cleanly when Windows shuts down"));
+            step(&sink, t!("Stopping ClickHouse cleanly when Windows shuts down"));
             match clickhouse_wsl::register_keepalive(&password)
                 .and_then(|()| clickhouse_wsl::install_guard(&self_install::manager_exe(), record.stack.ch_http_port))
             {
@@ -99,16 +99,16 @@ pub(crate) fn run_repair(record: InstallationRecord, sink: ProgressFn) -> Result
         saved.changes_done = crate::changes::all_ids();
         let _ = save_record(&saved);
     }
-    step(&sink, n!("Restoring the Platform Manager"));
+    step(&sink, t!("Restoring the Platform Manager"));
     let message = match self_install::install_manager() {
         Ok(manager) => {
             self_install::restore_menu_entry(&manager);
             self_install::refresh_operator_screen(&sink);
-            n!("Repaired: SENTIENT is running.").to_string()
+            t!("Repaired: SENTIENT is running.").to_string()
         }
         Err(e) => {
             sink(Progress::Log { line: nf!("The Platform Manager's files were not restored: {e}") });
-            n!("SENTIENT is running again; the Platform Manager's own files were not restored (see the log). Run Repair again to restore them.").to_string()
+            t!("SENTIENT is running again; the Platform Manager's own files were not restored (see the log). Run Repair again to restore them.").to_string()
         }
     };
     sink(Progress::Done { message });
@@ -143,7 +143,7 @@ pub(crate) fn run_uninstall(record: InstallationRecord, keep_data: bool, sink: P
     }
     // The Platform Manager stays (removing it is its own action): only
     // SENTIENT's shortcuts go.
-    step(&sink, n!("Removing SENTIENT's shortcuts"));
+    step(&sink, t!("Removing SENTIENT's shortcuts"));
     self_install::remove_sentient_shortcuts();
     // The kiosk shortcuts (shared and, from earlier managers, per account),
     // and what opening SENTIENT left in each account.
@@ -175,16 +175,19 @@ pub(crate) fn run_uninstall(record: InstallationRecord, keep_data: bool, sink: P
 /// What an uninstall says when it is done. The Platform Manager stays.
 pub(crate) fn uninstall_done(keep_data: bool) -> &'static str {
     if keep_data {
-        n!("SENTIENT is removed. The database was kept and can be reused by a new install. The Platform Manager stays.")
+        t!("SENTIENT is removed. The database was kept and can be reused by a new install. The Platform Manager stays.")
     } else {
-        n!("SENTIENT and its data are removed. The Platform Manager stays.")
+        t!("SENTIENT and its data are removed. The Platform Manager stays.")
     }
 }
 
 /// Remove a Platform Manager installed without SENTIENT: shortcuts, its Apps
 /// & features entry and the program itself (once this process exits).
 pub(crate) fn run_remove_manager(sink: ProgressFn) -> Result<(), String> {
-    step(&sink, n!("Removing the Platform Manager"));
+    if crate::store::is_store() {
+        return run_remove_store_helper(sink);
+    }
+    step(&sink, t!("Removing the Platform Manager"));
     self_install::remove_shortcuts();
     // Its menu entry, icons and tray autostart.
     crate::shortcuts::remove(crate::shortcuts::Owner::Manager, &[], &sink);
@@ -197,6 +200,42 @@ pub(crate) fn run_remove_manager(sink: ProgressFn) -> Result<(), String> {
     self_install::remove_manager_entry();
     self_install::remove_manager_later();
     sink(Progress::Done { message: n!("The Platform Manager is removed.").into() });
+    Ok(())
+}
+
+/// The Microsoft Store build: what the Platform Manager put outside its
+/// package (the helper copy, the tray's sign-in task, its shortcuts). The
+/// app itself is the Store's to uninstall. The helper stays while anything
+/// still starts it: SENTIENT, or a ClickHouse kept with its data (its
+/// shutdown service runs the helper).
+fn run_remove_store_helper(sink: ProgressFn) -> Result<(), String> {
+    step(&sink, t!("Removing what the Platform Manager added outside its app"));
+    #[cfg(windows)]
+    let clickhouse_kept = sentient_installer_core::clickhouse_wsl::is_installed();
+    #[cfg(not(windows))]
+    let clickhouse_kept = false;
+    if crate::installation::InstallationRecord::load().is_some() || clickhouse_kept {
+        log_line(t!("The Platform Manager's helper stays: SENTIENT's services on this computer still use it"));
+        sink(Progress::Done { message: n!("The Platform Manager's helper stays: SENTIENT's services on this computer still use it.").into() });
+        return Ok(());
+    }
+    log_line(t!("Removing what the Platform Manager added outside its app"));
+    crate::shortcuts::remove(crate::shortcuts::Owner::Manager, &[], &sink);
+    let _ = crate::background::set_autostart(false);
+    crate::shortcuts::remove(crate::shortcuts::Owner::Sentient, &[], &sink);
+    // The staging folder in this account's profile (empty unless a staged
+    // copy was left), and its parent when nothing else is in it.
+    let staging = crate::store::staging_dir();
+    if staging.exists() {
+        let _ = std::fs::remove_dir_all(&staging);
+        if let Some(parent) = staging.parent() {
+            let _ = std::fs::remove_dir(parent);
+        }
+        log_line(&tf!("Removed {}", staging.display()));
+    }
+    // The helper is this very program: it goes once it has closed.
+    self_install::remove_manager_later();
+    sink(Progress::Done { message: n!("Done. To uninstall the Platform Manager itself, right-click it in Start and choose Uninstall.").into() });
     Ok(())
 }
 
@@ -223,7 +262,7 @@ pub(crate) const INSTALL_MANAGER: &str = n!("Installing the Platform Manager");
 pub(crate) const SHORTCUTS: &str = n!("Adding the Start menu and desktop shortcuts");
 
 pub(crate) fn updating_sentient(version: &str) -> String {
-    nf!("Updating SENTIENT to {version}")
+    tf!("Updating SENTIENT to {version}")
 }
 
 

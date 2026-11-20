@@ -1148,6 +1148,7 @@ pub fn uninstall(sink: ProgressFn, cfg: &DeployConfig) -> Result<(), String> {
             let _ = sys::output("wsl.exe", &["--terminate", DISTRO]);
             let _ = sys::output("wsl.exe", &["--unregister", DISTRO]);
         } else {
+            remove_keepalive(&forwarded_ports(cfg));
             sink(Progress::Log { line: "No SENTIENT distro found. Nothing to remove.".into() });
         }
         sink(Progress::Done { message: "SENTIENT and its Docker environment were removed.".into() });
@@ -1421,9 +1422,15 @@ pub fn keepalive_command(distro: &str, ports: &[u16]) -> String {
         s.push_str(&format!("netsh interface portproxy delete v4tov4 listenport={p} listenaddress=0.0.0.0 >nul 2>&1\r\n"));
         s.push_str(&format!("if defined SENTIENT_IP netsh interface portproxy add v4tov4 listenport={p} listenaddress=0.0.0.0 connectport={p} connectaddress=%SENTIENT_IP% >nul\r\n"));
     }
-    s.push_str(&format!("wsl.exe -d {distro} -u root -- sh -c \"{DOCKER_START}; exec sleep infinity\"\r\n"));
+    s.push_str(&format!("wsl.exe -d {distro} -u root -- sh -c \"{DOCKER_START}; {KEEPALIVE_HOLD}\"\r\n"));
     s
 }
+
+/// The process that holds the distro up, once: a second keep-alive (the
+/// task run again while one runs) finds the lock taken and ends at once
+/// instead of holding the distro a second time. `flock` is in every
+/// Ubuntu (util-linux); without it the holder runs unguarded.
+pub const KEEPALIVE_HOLD: &str = "if command -v flock >/dev/null; then exec flock -n /run/sentient-keepalive.lock sleep infinity; fi; exec sleep infinity";
 
 /// The firewall rule that lets other computers reach a forwarded port
 /// (no spaces: one netsh argument).
@@ -1602,12 +1609,13 @@ pub fn wake_keepalive(sink: &ProgressFn, cfg: &DeployConfig) {
 #[cfg(not(windows))]
 pub fn wake_keepalive(_sink: &ProgressFn, _cfg: &DeployConfig) {}
 
-/// Remove [`register_keepalive`]'s task, end what it runs, and remove its
-/// forwarding and firewall rules for `ports`.
+/// Remove [`register_keepalive`]'s task and the command file it runs, end
+/// what it runs, and remove its forwarding and firewall rules for `ports`.
 #[cfg(windows)]
 pub fn remove_keepalive(ports: &[u16]) {
     let _ = sys::output("schtasks.exe", &["/end", "/tn", KEEPALIVE_TASK]);
     let _ = sys::output("schtasks.exe", &["/delete", "/tn", KEEPALIVE_TASK, "/f"]);
+    let _ = std::fs::remove_file(keepalive_cmd_path());
     for p in ports {
         let port = format!("listenport={p}");
         let _ = sys::output("netsh.exe", &["interface", "portproxy", "delete", "v4tov4", &port, "listenaddress=0.0.0.0"]);
@@ -2331,7 +2339,10 @@ mod keepalive_tests {
         assert!(!cmd.contains("timeout "));
         assert!(cmd.contains(&format!("listenport={} listenaddress=0.0.0.0 connectport={} connectaddress=%SENTIENT_IP%", cfg.http_port, cfg.http_port)));
         // The holder comes last: the cmd never ends while the distro runs.
-        assert!(cmd.trim_end().ends_with(&format!("{DOCKER_START}; exec sleep infinity\"")));
+        assert!(cmd.trim_end().ends_with(&format!("{DOCKER_START}; {KEEPALIVE_HOLD}\"")));
+        // One holder: a second run finds the lock taken and ends.
+        assert!(KEEPALIVE_HOLD.contains("exec flock -n /run/sentient-keepalive.lock sleep infinity"));
+        assert!(!KEEPALIVE_HOLD.contains('"') && !KEEPALIVE_HOLD.contains('%') && !KEEPALIVE_HOLD.contains('&'));
         assert!(cmd.lines().all(|l| !l.contains('\n')));
         // In order: the address read (with its retry), then every forward,
         // then Docker and the holder.
@@ -2340,7 +2351,7 @@ mod keepalive_tests {
         let retry = at("goto address");
         let first_forward = at("netsh interface portproxy delete");
         let last_forward = cmd.rfind("connectaddress=%SENTIENT_IP%").unwrap();
-        let holder = at("exec sleep infinity");
+        let holder = at("sleep infinity");
         assert!(read < retry && retry < first_forward && first_forward < last_forward && last_forward < holder);
         for p in &ports {
             let del = at(&format!("delete v4tov4 listenport={p} "));
@@ -2451,7 +2462,7 @@ mod tests {
         // installer's own job that hardens ClickHouse right after setup,
         // and the gateway page's password: an action the user presses
         // (Linux only; Windows runs Docker Desktop's docker.exe there).
-        let allowed = ["fn wsl_bash_args", "fn docker_exec_args", "\"harden\" =>", "pub fn set_ui_password"];
+        let allowed = ["fn wsl_bash_args", "fn docker_exec_args", "\"harden\" | \"harden-fsync\" =>", "pub fn set_ui_password"];
         let mut found = Vec::new();
         let mut files = Vec::new();
         let mut dirs: Vec<std::path::PathBuf> = roots.iter().filter(|r| r.is_dir()).cloned().collect();

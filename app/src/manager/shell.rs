@@ -434,13 +434,13 @@ pub(crate) fn selection(active: &'static str, page: Hsla, line: Hsla, motion: bo
 
 /// The product's name beside its logo on top of the menu: "SENTIENT" and
 /// the app under it (the Platform Manager's menu, Setup's steps).
-pub(crate) fn brand_name(theme: &gpui_kit::component::Theme, app: &'static str) -> Div {
+pub(crate) fn brand_name(theme: &gpui_kit::component::Theme, app: impl Into<SharedString>) -> Div {
     v_flex()
         .flex_1()
         .min_w_0()
         .line_height(px(17.))
         .child(div().text_size(px(15.)).font_weight(FontWeight::BOLD).child("SENTIENT"))
-        .child(div().text_size(px(10.)).font_weight(FontWeight::SEMIBOLD).text_color(theme.primary).whitespace_nowrap().child(app))
+        .child(div().text_size(px(10.)).font_weight(FontWeight::SEMIBOLD).text_color(theme.primary).whitespace_nowrap().text_ellipsis().overflow_hidden().child(app.into()))
 }
 
 /// The brand logo, the footer's logo and the preferences button.
@@ -517,7 +517,7 @@ impl Manager {
                 .when(!rail, |r| r.child(div().relative().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().opacity(names).child(title.clone()).child(ui::layout_probe(if on { "menu-label-on" } else { "menu-label" }))))
                 .when(rail || title.chars().count() > 22, move |r| r.tooltip(crate::ui::tooltip(title.clone())))
         };
-        let items = Page::ALL.into_iter().map(|page| {
+        let items = Page::menu(self.open_gateway_only()).into_iter().map(|page| {
             row(page.id(), page.icon(), page.title().into(), page == current)
                 // Files is new in this release (the mockup's pill).
                 .when(page == Page::Files && !rail, |r| {

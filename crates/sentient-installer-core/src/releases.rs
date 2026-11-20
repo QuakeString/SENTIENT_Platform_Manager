@@ -54,7 +54,7 @@ impl Channel {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Asset {
     pub name: String,
     pub browser_download_url: String,
@@ -66,7 +66,7 @@ pub struct Asset {
 }
 
 /// One GitHub release, as the API returns it.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Release {
     pub tag_name: String,
     #[serde(default)]
@@ -125,8 +125,29 @@ impl Release {
     }
 }
 
-/// The repository's releases, newest first (the API's order).
+/// What GitHub says when it refuses an anonymous request (the UI looks for
+/// "limiting").
+pub const LIMITED: &str = "GitHub is limiting requests from this network; try again in an hour.";
+
+/// Every repository's release list, shared by the whole process
+/// (crate::fetch_cache: once per 30 minutes, last good list when refused).
+static LISTS: crate::fetch_cache::Cache<Vec<Release>> = crate::fetch_cache::Cache::new("GitHub", "Release list", "github");
+
+/// The repository's releases, newest first (the API's order). Cached; an
+/// old list when GitHub refuses ([`list`] says whether it is).
 pub fn fetch(repo: &str) -> Result<Vec<Release>, String> {
+    list(repo, false).map(|l| l.value)
+}
+
+/// The repository's releases, and whether they are an old list GitHub's
+/// refusal left. `force`: an explicit "Check for updates" (at most one
+/// request a minute).
+pub fn list(repo: &str, force: bool) -> Result<crate::fetch_cache::Listed<Vec<Release>>, String> {
+    LISTS.get(repo, force, || request(repo))
+}
+
+fn request(repo: &str) -> Result<Vec<Release>, crate::fetch_cache::Failure> {
+    use crate::fetch_cache::Failure;
     let url = format!("https://api.github.com/repos/{repo}/releases?per_page=50");
     let body = crate::net::agent()
         .get(&url)
@@ -134,14 +155,12 @@ pub fn fetch(repo: &str) -> Result<Vec<Release>, String> {
         .set("User-Agent", "SENTIENT-Platform-Manager")
         .call()
         .map_err(|e| match e {
-            ureq::Error::Status(403, _) | ureq::Error::Status(429, _) => {
-                "GitHub is limiting requests from this network; try again in an hour.".to_string()
-            }
-            e => format!("the release site could not be reached: {e}"),
+            ureq::Error::Status(403, _) | ureq::Error::Status(429, _) => Failure::Limited(LIMITED.to_string()),
+            e => Failure::Other(format!("the release site could not be reached: {e}")),
         })?
         .into_string()
-        .map_err(|e| format!("could not read the release list: {e}"))?;
-    serde_json::from_str(&body).map_err(|e| format!("the release list is not valid JSON: {e}"))
+        .map_err(|e| Failure::Other(format!("could not read the release list: {e}")))?;
+    serde_json::from_str(&body).map_err(|e| Failure::Other(format!("the release list is not valid JSON: {e}")))
 }
 
 /// The releases a channel offers, best first. `belongs` filters out another
@@ -153,7 +172,7 @@ pub fn on_channel<'a>(releases: &'a [Release], channel: Channel, belongs: impl F
         .filter(|r| match channel {
             Channel::Nightly => r.is_nightly(),
             Channel::Candidate => !r.is_nightly(),
-            Channel::Stable => !r.is_nightly() && !r.prerelease,
+            Channel::Stable => is_stable(r),
         })
         .collect();
     out.sort_by(|a, b| compare(&b.version(), &a.version()));
@@ -176,6 +195,21 @@ pub fn is_manager(r: &Release) -> bool {
 /// `spm-v0.8.0-rc11` → `0.8.0-rc11`.
 pub fn manager_version_of(r: &Release) -> String {
     r.tag_name.trim_start_matches(MANAGER_TAG_PREFIX).to_string()
+}
+
+/// Whether the Stable channel offers `r`. A Platform Manager release is
+/// stable by its version: a final version (`spm-v0.9.3`) is, a suffixed one
+/// (`spm-v0.9.4-rc1`) is a candidate, whatever GitHub's pre-release flag
+/// says (the shared repository's releases were all marked pre-release up to
+/// 0.9.3, so SENTIENT keeps "Latest"). Every other release goes by the flag.
+pub fn is_stable(r: &Release) -> bool {
+    if r.is_nightly() {
+        return false;
+    }
+    if is_manager(r) {
+        return !manager_version_of(r).contains('-');
+    }
+    !r.prerelease
 }
 
 /// A plain release number such as `4.4.0.1`: digits in at least three
@@ -331,6 +365,20 @@ mod tests {
             published_at: None,
             assets: vec![],
         }
+    }
+
+    #[test]
+    fn a_final_platform_manager_release_is_stable_even_when_marked_pre_release() {
+        let all = vec![rel("spm-v0.9.1", true), rel("spm-v0.9.3", true), rel("spm-v0.9.4-rc1", true), rel("4.4.1.0", false), rel("4.4.1.1-rc1", true)];
+        let stable: Vec<&str> = on_channel(&all, Channel::Stable, is_manager).iter().map(|r| r.tag_name.as_str()).collect();
+        assert_eq!(stable, ["spm-v0.9.3", "spm-v0.9.1"]);
+        let candidate: Vec<&str> = on_channel(&all, Channel::Candidate, is_manager).iter().map(|r| r.tag_name.as_str()).collect();
+        assert_eq!(candidate[0], "spm-v0.9.4-rc1");
+        // A normal (not pre-release) rc is still a candidate.
+        assert!(!is_stable(&rel("spm-v0.9.4-rc2", false)));
+        // SENTIENT's own releases still go by the flag.
+        let sentient: Vec<&str> = on_channel(&all, Channel::Stable, is_sentient).iter().map(|r| r.tag_name.as_str()).collect();
+        assert_eq!(sentient, ["4.4.1.0"]);
     }
 
     #[test]
