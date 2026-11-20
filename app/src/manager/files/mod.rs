@@ -202,7 +202,7 @@ impl Pane {
 
     fn label(&self) -> String {
         match &self.place {
-            Place::Local => "This computer".into(),
+            Place::Local => t!("This computer").into(),
             Place::Remote(i) => i.name.clone(),
         }
     }
@@ -334,7 +334,7 @@ impl FilesPage {
                     }
                     let g = conn.lock();
                     waiting.fetch_sub(1, SeqCst);
-                    let mut g = g.map_err(|_| "The connection is busy.".to_string())?;
+                    let mut g = g.map_err(|_| t!("The connection is busy.").to_string())?;
                     if g.is_none() {
                         *g = Some(fs::open(&place, admin)?);
                     }
@@ -638,7 +638,7 @@ impl FilesPage {
             return;
         }
         if !self.panes[to].writable() {
-            ui::show_error("This folder is read only", read_only_text(&self.panes[to]), cx);
+            ui::show_error(t!("This folder is read only"), read_only_text(&self.panes[to]), cx);
             return;
         }
         let (f, t) = (&self.panes[from], &self.panes[to]);
@@ -679,7 +679,7 @@ impl FilesPage {
         let windows = matches!(&p.place, Place::Remote(i) if crate::remote::is_windows(i));
         let paths: Vec<String> = names.iter().map(|n| os_path(&p.place.join(&p.path, n), windows)).collect();
         cx.write_to_clipboard(ClipboardItem::new_string(paths.join("\n")));
-        let text = if paths.len() == 1 { "Location copied".to_string() } else { format!("{} locations copied", paths.len()) };
+        let text = if paths.len() == 1 { t!("Location copied").to_string() } else { tf!("{} locations copied", paths.len()) };
         self.show_toast(text, cx);
     }
 
@@ -703,7 +703,7 @@ impl FilesPage {
         let Some(c) = cx.try_global::<ClipSlot>().and_then(|c| c.0.clone()) else { return };
         let t = &self.panes[side];
         if !t.writable() {
-            ui::show_error("This folder is read only", read_only_text(t), cx);
+            ui::show_error(t!("This folder is read only"), read_only_text(t), cx);
             return;
         }
         // A cut on the same computer and account: move by renaming.
@@ -720,15 +720,15 @@ impl FilesPage {
                     for n in &names {
                         let (a, b) = (place.join(&from_dir, n), place.join(&to_dir, n));
                         if f.meta(&b)?.is_some() {
-                            return Err(format!("{n} is already in this folder."));
+                            return Err(nf!("{n} is already in this folder."));
                         }
-                        f.rename(&a, &b).map_err(|e| if e.contains("cross-device") || e.contains("os error 18") { format!("{n} is on another disk: use Copy and Paste, then delete the original.") } else { e })?;
+                        f.rename(&a, &b).map_err(|e| if e.contains("cross-device") || e.contains("os error 18") { nf!("{n} is on another disk: use Copy and Paste, then delete the original.") } else { e })?;
                     }
                     Ok(())
                 },
                 move |this, r: Result<(), String>, cx| {
                     if let Err(e) = r {
-                        ui::show_error("Not moved", e, cx);
+                        ui::show_error(t!("Not moved"), e, cx);
                     }
                     this.load(side, back, None, cx);
                 },
@@ -739,7 +739,7 @@ impl FilesPage {
         let r = Request { from: c.place, from_admin: c.admin, from_dir: c.dir, names: c.names, to: t.place.clone(), to_admin: t.admin, to_dir: t.path.clone() };
         self.transfers.update(cx, |q, cx| q.add(r, cx));
         if c.cut {
-            self.toast = Some(("Copied: between two computers the originals stay".into(), std::time::Instant::now()));
+            self.toast = Some((t!("Copied: between two computers the originals stay").into(), std::time::Instant::now()));
         }
     }
 
@@ -779,13 +779,13 @@ impl FilesPage {
             side,
             move |f| {
                 if f.meta(&b)?.is_some() {
-                    return Err(format!("{to} is already there."));
+                    return Err(nf!("{to} is already there."));
                 }
                 f.rename(&a, &b).map(|_| to)
             },
             move |this, r, cx| match r {
                 Ok(to) => this.load(side, path, Some(to), cx),
-                Err(e) => ui::show_error("Not renamed", e, cx),
+                Err(e) => ui::show_error(t!("Not renamed"), e, cx),
             },
             cx,
         );
@@ -795,7 +795,7 @@ impl FilesPage {
         if !self.panes[side].writable() {
             return;
         }
-        let input = cx.new(|cx| InputState::new(window, cx).placeholder("Folder name"));
+        let input = cx.new(|cx| InputState::new(window, cx).placeholder(t!("Folder name")));
         let sub = cx.subscribe_in(&input, window, move |this: &mut Self, input, e: &InputEvent, _, cx| {
             if let InputEvent::PressEnter { .. } = e {
                 let name = input.read(cx).value().trim().to_string();
@@ -820,7 +820,7 @@ impl FilesPage {
             move |f| f.mkdir(&path).map(|_| name),
             move |this, r, cx| match r {
                 Ok(name) => this.load(side, dir, Some(name), cx),
-                Err(e) => ui::show_error("No new folder", e, cx),
+                Err(e) => ui::show_error(t!("No new folder"), e, cx),
             },
             cx,
         );
@@ -835,8 +835,8 @@ impl FilesPage {
         let rows: Vec<Entry> = p.rows().into_iter().filter(|r| p.selected.contains(&r.name)).collect();
         let n = rows.len();
         let on = if p.place.is_remote() { p.label() } else { "this computer".into() };
-        let title = if n == 1 { format!("Delete {} on {on}?", rows[0].name) } else { format!("Delete {n} items on {on}?") };
-        let note = if p.place.is_remote() { "The server has no recycle bin; they are gone for good." } else { "They are deleted for good, not moved to the recycle bin." };
+        let title = if n == 1 { tf!("Delete {} on {on}?", rows[0].name) } else { tf!("Delete {n} items on {on}?") };
+        let note = if p.place.is_remote() { t!("The server has no recycle bin; they are gone for good.") } else { t!("They are deleted for good, not moved to the recycle bin.") };
         let me = cx.entity().downgrade();
         let body = cx.new(|_| DeleteBody { rows, note });
         let footer = cx.new(|_| DeleteFooter { me, side });
@@ -860,7 +860,7 @@ impl FilesPage {
             move |this, r, cx| {
                 crate::manager::strip::quiet(false, cx);
                 if let Err(e) = r {
-                    ui::show_error("Not everything was deleted", e, cx);
+                    ui::show_error(t!("Not everything was deleted"), e, cx);
                 }
                 this.panes[side].selected.clear();
                 this.load(side, dir, None, cx);
@@ -929,7 +929,7 @@ fn opens_on_press(click_count: usize, m: Modifiers) -> bool {
 
 fn read_only_text(p: &Pane) -> String {
     let owner = p.listing.as_ref().map(|l| l.owner.clone()).filter(|o| !o.is_empty()).unwrap_or_else(|| "another account".into());
-    format!("This folder belongs to {owner}. You can view, but not change anything.")
+    tf!("This folder belongs to {owner}. You can view, but not change anything.")
 }
 
 fn folder_color() -> Hsla {
@@ -943,7 +943,7 @@ fn file_icon(dir: bool) -> Icon {
 /// "16 Nov 06:40" in this computer's time.
 fn when(t: Option<i64>) -> String {
     use chrono::TimeZone as _;
-    t.and_then(|t| chrono::Local.timestamp_opt(t, 0).single()).map(|d| d.format("%-d %b %H:%M").to_string()).unwrap_or_default()
+    t.and_then(|t| chrono::Local.timestamp_opt(t, 0).single()).map(|d| crate::i18n::date(&d, "%-d %b %H:%M")).unwrap_or_default()
 }
 
 fn shortcut_icon(name: &str) -> Icon {
@@ -984,17 +984,17 @@ impl FilesPage {
                 Place::Remote(i) => div().size(px(10.)).rounded_full().bg(rgb(u32::from_str_radix(i.color.trim_start_matches('#'), 16).unwrap_or(0x1f9d55))).into_any_element(),
             })
             .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().font_weight(FontWeight::MEDIUM).child(p.label()))
-            .when(p.admin, |r| r.child(ui::pill(&theme, Tone::Warn, "Administrator").text_size(px(12.))))
+            .when(p.admin, |r| r.child(ui::pill(&theme, Tone::Warn, t!("Administrator")).text_size(px(12.))))
             .child(crate::ui::probed(
                 crate::ui::button(SharedString::from(format!("f-new-{side}")))
                     .ghost()
                     
                     .icon(Icon::empty().path("icons/folder-plus.svg"))
-                    .tooltip("New folder")
+                    .tooltip(t!("New folder"))
                     .disabled(!writable)
                     .on_click(cx.listener(move |this, _, window, cx| this.start_new_folder(side, window, cx))),
             ))
-            .child(crate::ui::probed(crate::ui::button(SharedString::from(format!("f-reload-{side}"))).ghost().icon(IconName::RefreshCw).tooltip("Read again").on_click(cx.listener(move |this, _, _, cx| this.reload(side, cx)))));
+            .child(crate::ui::probed(crate::ui::button(SharedString::from(format!("f-reload-{side}"))).ghost().icon(IconName::RefreshCw).tooltip(t!("Read again")).on_click(cx.listener(move |this, _, _, cx| this.reload(side, cx)))));
 
         // Where: the path's parts, each a way back.
         let crumbs = p.place.crumbs(&p.path);
@@ -1068,7 +1068,7 @@ impl FilesPage {
                 .child(Icon::empty().path("icons/lock.svg").size_4().flex_shrink_0().text_color(amber))
                 .child(div().flex_1().min_w_0().text_sm().text_color(amber).child(read_only_text(p)))
                 .when(matches!(&p.place, Place::Remote(i) if !crate::remote::is_windows(i)), |b| {
-                    b.child(crate::ui::button(SharedString::from(format!("f-admin-{side}"))).outline().label("Open as administrator").on_click(cx.listener(move |this, _, _, cx| this.open_as_admin(side, cx))))
+                    b.child(crate::ui::button(SharedString::from(format!("f-admin-{side}"))).outline().label(t!("Open as administrator")).on_click(cx.listener(move |this, _, _, cx| this.open_as_admin(side, cx))))
                 })
         });
 
@@ -1143,7 +1143,7 @@ impl FilesPage {
             .border_color(theme.border)
             .text_size(px(12.5))
             .text_color(theme.muted_foreground)
-            .child(cols(div().child("Name").into_any_element(), handle(0, "Size", true), handle(1, "Modified", true), Some(handle(2, "Owner", false))))
+            .child(cols(div().child(t!("Name")).into_any_element(), handle(0, t!("Size"), true), handle(1, t!("Modified"), true), Some(handle(2, t!("Owner"), false))))
             .on_drag_move::<ColDrag>(cx.listener(move |this, e: &DragMoveEvent<ColDrag>, _, cx| {
                 let d = e.drag(cx).clone();
                 if d.side != side {
@@ -1174,11 +1174,11 @@ impl FilesPage {
                     .items_center()
                     .child(file_icon(true).size_4().text_color(folder_color()))
                     .child(div().flex_1().child(Input::new(input)))
-                    .child(crate::ui::probed(crate::ui::button(SharedString::from(format!("f-make-{side}"))).primary().label("Make").on_click(cx.listener(move |this, _, _, cx| {
+                    .child(crate::ui::probed(crate::ui::button(SharedString::from(format!("f-make-{side}"))).primary().label(t!("Make")).on_click(cx.listener(move |this, _, _, cx| {
                         let name = this.panes[side].new_folder.as_ref().map(|i| i.read(cx).value().trim().to_string()).unwrap_or_default();
                         this.make_folder(side, name, cx);
                     }))))
-                    .child(crate::ui::probed(crate::ui::button(SharedString::from(format!("f-make-no-{side}"))).ghost().label("Cancel").on_click(cx.listener(move |this, _, _, cx| {
+                    .child(crate::ui::probed(crate::ui::button(SharedString::from(format!("f-make-no-{side}"))).ghost().label(t!("Cancel")).on_click(cx.listener(move |this, _, _, cx| {
                         this.panes[side].new_folder = None;
                         cx.notify();
                     })))),
@@ -1189,10 +1189,10 @@ impl FilesPage {
                 list = list.child(h_flex().h(px(ROW_H)).px(px(PANE_PX)).gap_3().items_center().child(crate::ui::skeleton_line(&theme, format!("f-sk-{side}-{i}"), 180.)).child(div().flex_1()).child(crate::ui::skeleton_line(&theme, format!("f-sk2-{side}-{i}"), 60.)));
             }
         } else if p.listing.is_some() && rows.is_empty() && p.new_folder.is_none() && self.transfers.read(cx).copying_into(&p.place.key(), &p.path).is_empty() {
-            list = list.child(div().px(px(PANE_PX)).py_3().text_sm().text_color(theme.muted_foreground).child("Nothing here."));
+            list = list.child(div().px(px(PANE_PX)).py_3().text_sm().text_color(theme.muted_foreground).child(t!("Nothing here.")));
         }
         let me = cx.entity().downgrade();
-        let other_label = if self.panes[other].place.is_remote() { format!("Copy to {}", self.panes[other].label()) } else { "Copy to this computer".to_string() };
+        let other_label = if self.panes[other].place.is_remote() { tf!("Copy to {}", self.panes[other].label()) } else { t!("Copy to this computer").to_string() };
         for (i, r) in rows.iter().enumerate() {
             let on = p.selected.contains(&r.name);
             let renaming = p.rename.as_ref().filter(|(n, _)| *n == r.name).map(|(_, i)| i.clone());
@@ -1248,14 +1248,14 @@ impl FilesPage {
                         })))
                         .separator()
                     })
-                    .item(PopupMenuItem::new("Copy").icon(IconName::Copy).on_click(act(|p, side, _, cx| p.clip_copy(side, cx))))
-                    .item(PopupMenuItem::new("Cut").icon(Icon::empty().path("icons/scissors.svg")).disabled(!writable).on_click(act(|p, side, _, cx| p.clip_cut(side, cx))))
-                    .item(PopupMenuItem::new("Copy location").icon(Icon::empty().path("icons/link.svg")).on_click(act(|p, side, _, cx| p.copy_location(side, cx))))
-                    .item(PopupMenuItem::new("Paste").icon(Icon::empty().path("icons/clipboard.svg")).disabled(!writable).on_click(act(|p, side, _, cx| p.clip_paste(side, cx))))
-                    .item(PopupMenuItem::new("Rename").icon(Icon::empty().path("icons/pencil.svg")).disabled(!writable).on_click(act(|p, side, w, cx| p.start_rename(side, w, cx))))
-                    .item(PopupMenuItem::new("New folder").icon(Icon::empty().path("icons/folder-plus.svg")).disabled(!writable).on_click(act(|p, side, w, cx| p.start_new_folder(side, w, cx))))
+                    .item(PopupMenuItem::new(t!("Copy")).icon(IconName::Copy).on_click(act(|p, side, _, cx| p.clip_copy(side, cx))))
+                    .item(PopupMenuItem::new(t!("Cut")).icon(Icon::empty().path("icons/scissors.svg")).disabled(!writable).on_click(act(|p, side, _, cx| p.clip_cut(side, cx))))
+                    .item(PopupMenuItem::new(t!("Copy location")).icon(Icon::empty().path("icons/link.svg")).on_click(act(|p, side, _, cx| p.copy_location(side, cx))))
+                    .item(PopupMenuItem::new(t!("Paste")).icon(Icon::empty().path("icons/clipboard.svg")).disabled(!writable).on_click(act(|p, side, _, cx| p.clip_paste(side, cx))))
+                    .item(PopupMenuItem::new(t!("Rename")).icon(Icon::empty().path("icons/pencil.svg")).disabled(!writable).on_click(act(|p, side, w, cx| p.start_rename(side, w, cx))))
+                    .item(PopupMenuItem::new(t!("New folder")).icon(Icon::empty().path("icons/folder-plus.svg")).disabled(!writable).on_click(act(|p, side, w, cx| p.start_new_folder(side, w, cx))))
                     .separator()
-                    .item(PopupMenuItem::new("Delete").icon(Icon::empty().path("icons/trash.svg")).disabled(!writable).on_click(act(|p, side, _, cx| p.confirm_delete(side, cx))))
+                    .item(PopupMenuItem::new(t!("Delete")).icon(Icon::empty().path("icons/trash.svg")).disabled(!writable).on_click(act(|p, side, _, cx| p.confirm_delete(side, cx))))
                 });
             list = list.child(row);
         }
@@ -1274,7 +1274,7 @@ impl FilesPage {
                     .child(cols(
                         h_flex().gap(px(10.)).items_center().min_w_0().child(file_icon(false).size_4().text_color(theme.muted_foreground)).child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(name)).into_any_element(),
                         div().text_color(theme.muted_foreground).child(bytes_label(done)).into_any_element(),
-                        div().text_color(theme.muted_foreground).child("copying…").into_any_element(),
+                        div().text_color(theme.muted_foreground).child(t!("copying…")).into_any_element(),
                         None,
                     )),
             );
@@ -1286,12 +1286,13 @@ impl FilesPage {
         let n = rows.len();
         let foot_text = if drop_here {
             let k = if self.drag_count > 0 { self.drag_count } else { self.panes[other].selected.len().max(1) };
-            format!("Drop to copy {k} item{} into {}", if k == 1 { "" } else { "s" }, p.path)
+            if k == 1 { tf!("Drop to copy {k} item into {}", p.path) } else { tf!("Drop to copy {k} items into {}", p.path) }
         } else if !p.selected.is_empty() {
-            if selected_bytes > 0 { format!("{} selected · {}", p.selected.len(), bytes_label(selected_bytes)) } else { format!("{} selected", p.selected.len()) }
+            if selected_bytes > 0 { tf!("{} selected · {}", p.selected.len(), bytes_label(selected_bytes)) } else { tf!("{} selected", p.selected.len()) }
         } else {
-            let free = p.listing.as_ref().and_then(|l| l.free).filter(|_| p.place.is_remote()).map(|f| format!(" · {} free", crate::manager::backup::free_label(f))).unwrap_or_default();
-            format!("{n} item{}{}{}", if n == 1 { "" } else { "s" }, if read_only { " · read only" } else { &free }, "")
+            let free = p.listing.as_ref().and_then(|l| l.free).filter(|_| p.place.is_remote()).map(|f| tf!(" · {} free", crate::manager::backup::free_label(f))).unwrap_or_default();
+            let rest = if read_only { t!(" · read only") } else { &free };
+            if n == 1 { tf!("{n} item{}", rest) } else { tf!("{n} items{}", rest) }
         };
         let foot = h_flex()
             .min_h(px(56.))
@@ -1302,7 +1303,7 @@ impl FilesPage {
             .border_color(theme.border)
             .child(div().flex_1().min_w_0().text_sm().text_color(if drop_here { theme.primary } else { theme.muted_foreground }).overflow_hidden().whitespace_nowrap().text_ellipsis().child(foot_text))
             .when(!self.single && !p.selected.is_empty() && !drop_here, |r| {
-                let label = if self.panes[other].place.is_remote() { "Copy to server".to_string() } else if p.place.is_remote() { "Copy to this computer".to_string() } else { "Copy to the other side".to_string() };
+                let label = if self.panes[other].place.is_remote() { t!("Copy to server").to_string() } else if p.place.is_remote() { t!("Copy to this computer").to_string() } else { t!("Copy to the other side").to_string() };
                 r.child(crate::ui::button(SharedString::from(format!("f-copy-{side}"))).primary().icon(IconName::ArrowRight).label(label).disabled(!self.panes[other].writable()).on_click(cx.listener(move |this, _, _, cx| {
                     let names = this.panes[side].selected.iter().cloned().collect();
                     this.copy(side, names, 1 - side, cx);
@@ -1465,7 +1466,7 @@ impl Render for FilesPage {
             .gap(px(ui::GAP))
             .bg(theme.muted)
             .when(narrow, |p| p.overflow_y_scroll())
-            .child(h_flex().min_h(px(32.)).items_center().child(div().flex_1().text_size(px(22.)).font_weight(FontWeight::MEDIUM).child("Files")).child(h_flex().gap_3().items_center().children(stale).child(crate::ui::probed(refresh))))
+            .child(h_flex().min_h(px(32.)).items_center().child(div().flex_1().text_size(px(22.)).font_weight(FontWeight::MEDIUM).child(t!("Files"))).child(h_flex().gap_3().items_center().children(stale).child(crate::ui::probed(refresh))))
             .child(panes);
         // The short note, bottom centre over the page (fades in).
         let toast = self.toast.as_ref().map(|(text, _)| {
@@ -1620,7 +1621,7 @@ impl Render for DeleteFooter {
             .w_full()
             .gap(crate::ui::button_gap())
             .justify_end()
-            .child(crate::ui::probed(crate::ui::button("del-cancel").outline().label("Cancel").on_click(|_, _, cx| crate::modal::close(cx))))
+            .child(crate::ui::probed(crate::ui::button("del-cancel").outline().label(t!("Cancel")).on_click(|_, _, cx| crate::modal::close(cx))))
             // The mockup's solid red (the kit's danger is a tint).
             .child(crate::ui::probed(
                 div()
@@ -1637,7 +1638,7 @@ impl Render for DeleteFooter {
                     .text_sm()
                     .font_weight(FontWeight::MEDIUM)
                     .cursor_pointer()
-                    .child("Delete")
+                    .child(t!("Delete"))
                     .on_click(move |_, _, cx| {
                         crate::modal::close(cx);
                         me.update(cx, |p, cx| p.delete(side, cx)).ok();

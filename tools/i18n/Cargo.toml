@@ -1,0 +1,16 @@
+# Finds the Platform Manager's on-screen texts, wraps them in t!/tf!, and
+# collects the catalogue the translations are made from. Its own workspace.
+[workspace]
+
+[package]
+name = "spm-i18n-tool"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+authors = ["The SENTIENT Authors"]
+publish = false
+
+[dependencies]
+proc-macro2 = { version = "1", features = ["span-locations"] }
+syn = { version = "2", features = ["full"] }
+serde_json = { version = "1", features = ["preserve_order"] }

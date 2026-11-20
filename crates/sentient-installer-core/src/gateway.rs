@@ -738,12 +738,16 @@ mod windows {
         let want = action != "stop";
         for _ in 0..30 {
             if status().running == want {
-                sink(Progress::Done { message: format!("The gateway is {}.", if want { "running" } else { "stopped" }) });
+                sink(Progress::Done { message: if want { "The gateway is running.".into() } else { "The gateway is stopped.".into() } });
                 return Ok(());
             }
             std::thread::sleep(std::time::Duration::from_secs(1));
         }
-        Err(format!("The gateway service did not {action} within 30 seconds."))
+        Err(match action {
+            "start" => "The gateway service did not start within 30 seconds.".into(),
+            "stop" => "The gateway service did not stop within 30 seconds.".into(),
+            _ => "The gateway service did not restart within 30 seconds.".into(),
+        })
     }
 
     /// The gateway's own uninstaller (Inno Setup's), else the service and

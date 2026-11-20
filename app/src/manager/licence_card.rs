@@ -130,7 +130,7 @@ fn background_svg(t: Tier) -> String {
 fn rgba_to_rgb(c: &str) -> String {
     let inner = c.trim_start_matches("rgba(").trim_end_matches(')');
     let parts: Vec<&str> = inner.split(',').collect();
-    format!("rgb({},{},{})", parts[0], parts[1], parts[2])
+    tf!("rgb({},{},{})", parts[0], parts[1], parts[2])
 }
 
 fn rgba_alpha(c: &str) -> String {
@@ -209,7 +209,7 @@ pub fn card(status: &Status, w: f32, mono: SharedString) -> Div {
         .child(
             v_flex()
                 .child(spaced("INVENIA SYSTEMS", s(18.), s(3.), FontWeight::BOLD))
-                .child(div().mt(px(s(2.))).opacity(0.7).child(spaced("SENTIENT LICENSE", s(9.), s(3.), FontWeight::MEDIUM))),
+                .child(div().mt(px(s(2.))).opacity(0.7).child(spaced(t!("SENTIENT LICENSE"), s(9.), s(3.), FontWeight::MEDIUM))),
         )
         .child(
             div()
@@ -248,20 +248,20 @@ pub fn card(status: &Status, w: f32, mono: SharedString) -> Div {
         .mt_auto()
         .pt(px(s(18.)))
         .child(
-            v_flex().flex_1().min_w_0().child(label("Licensed to")).child(
+            v_flex().flex_1().min_w_0().child(label(t!("Licensed to"))).child(
                 div().mt(px(s(4.))).text_size(px(s(15.))).line_height(px(s(15.) * 1.2)).font_weight(FontWeight::SEMIBOLD).child(company),
             ),
         )
-        .when(!versions.is_empty(), |r| r.child(v_flex().flex_shrink_0().child(label("Versions")).child(value(format!("v{}", versions.join("  v"))))))
-        .child(v_flex().flex_shrink_0().child(label("Valid through")).child(value(crate::licence::valid_through(status.expiration_date.as_deref(), typ))))
+        .when(!versions.is_empty(), |r| r.child(v_flex().flex_shrink_0().child(label(t!("Versions"))).child(value(format!("v{}", versions.join("  v"))))))
+        .child(v_flex().flex_shrink_0().child(label(t!("Valid through"))).child(value(crate::licence::valid_through(status.expiration_date.as_deref(), typ))))
         .child(
-            v_flex().flex_shrink_0().child(label("Status")).child(
+            v_flex().flex_shrink_0().child(label(t!("Status"))).child(
                 h_flex()
                     .gap(px(s(6.)))
                     .items_center()
                     .mt(px(s(4.)))
                     .child(div().size(px(s(8.))).rounded_full().bg(rgb(if valid { 0x34d399 } else { 0xef4444 })))
-                    .child(div().text_size(px(s(15.))).line_height(px(s(15.) * LH)).font_weight(FontWeight::SEMIBOLD).whitespace_nowrap().child(if valid { "Active" } else { "Expired" })),
+                    .child(div().text_size(px(s(15.))).line_height(px(s(15.) * LH)).font_weight(FontWeight::SEMIBOLD).whitespace_nowrap().child(if valid { t!("Active") } else { t!("Expired") })),
             ),
         );
 

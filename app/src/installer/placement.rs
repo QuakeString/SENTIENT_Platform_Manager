@@ -80,10 +80,10 @@ impl Why {
     /// One line, for the footer when Next is refused.
     pub fn short(self) -> &'static str {
         match self {
-            Why::Later => "Running the server and the databases in different places comes in a later version.",
-            Why::NoWindowsClickhouse => "ClickHouse has no Windows build: it runs in Docker inside WSL 2 only.",
-            Why::NeedsWsl => "Docker and ClickHouse need WSL 2, and WSL 2 cannot run on this computer.",
-            Why::NoDistroTimescale => "Linux distributions do not package TimescaleDB. Choose Docker on System check to use it.",
+            Why::Later => t!("Running the server and the databases in different places comes in a later version."),
+            Why::NoWindowsClickhouse => t!("ClickHouse has no Windows build: it runs in Docker inside WSL 2 only."),
+            Why::NeedsWsl => t!("Docker and ClickHouse need WSL 2, and WSL 2 cannot run on this computer."),
+            Why::NoDistroTimescale => t!("Linux distributions do not package TimescaleDB. Choose Docker on System check to use it."),
         }
     }
 
@@ -91,10 +91,10 @@ impl Why {
     /// (wsl::DockerChoice::Unavailable).
     pub fn text(self, wsl_detail: &str) -> String {
         match self {
-            Why::Later => "Coming in a later version\n\nIn this version every part runs where the card above puts it. Running the server and the databases in different places comes later.".into(),
-            Why::NoWindowsClickhouse => "Not on Windows\n\nClickHouse has no Windows build. It runs in Docker inside WSL 2 only.".into(),
-            Why::NeedsWsl => format!("Needs WSL 2\n\nDocker and ClickHouse run inside WSL 2, and WSL 2 cannot run on this computer. {wsl_detail}").trim_end().to_string(),
-            Why::NoDistroTimescale => "Not with systemd\n\nLinux distributions do not package TimescaleDB. Choose Docker on System check to use it.".into(),
+            Why::Later => t!("Coming in a later version\n\nIn this version every part runs where the card above puts it. Running the server and the databases in different places comes later.").into(),
+            Why::NoWindowsClickhouse => t!("Not on Windows\n\nClickHouse has no Windows build. It runs in Docker inside WSL 2 only.").into(),
+            Why::NeedsWsl => tf!("Needs WSL 2\n\nDocker and ClickHouse run inside WSL 2, and WSL 2 cannot run on this computer. {wsl_detail}").trim_end().to_string(),
+            Why::NoDistroTimescale => t!("Not with systemd\n\nLinux distributions do not package TimescaleDB. Choose Docker on System check to use it.").into(),
         }
     }
 }
@@ -164,16 +164,16 @@ pub fn flavor_runs(host: Host, engine: Engine, flavor: Flavor) -> Result<Vec<&'s
     let no_wsl = host.windows && host.wsl == Wsl::Unavailable;
     match (host.windows, engine, flavor) {
         (true, Engine::Docker, _) if no_wsl => Err(Why::NeedsWsl),
-        (true, Engine::Docker, _) => Ok(vec!["Docker (WSL 2)"]),
+        (true, Engine::Docker, _) => Ok(vec![t!("Docker (WSL 2)")]),
         (true, Engine::Native, Flavor::Clickhouse) if no_wsl => Err(Why::NeedsWsl),
-        (true, Engine::Native, Flavor::Clickhouse) => Ok(vec!["PostgreSQL: in the system", "ClickHouse: Docker (WSL 2)"]),
-        (true, Engine::Native, _) => Ok(vec!["In the system"]),
-        (false, Engine::Docker, _) => Ok(vec!["Docker"]),
+        (true, Engine::Native, Flavor::Clickhouse) => Ok(vec![t!("PostgreSQL: in the system"), t!("ClickHouse: Docker (WSL 2)")]),
+        (true, Engine::Native, _) => Ok(vec![t!("In the system")]),
+        (false, Engine::Docker, _) => Ok(vec![t!("Docker")]),
         // sentient_installer_core::native_linux refuses it: no distribution
         // packages TimescaleDB.
         (false, Engine::Native, Flavor::Timescaledb) => Err(Why::NoDistroTimescale),
-        (false, Engine::Native, Flavor::Clickhouse) => Ok(vec!["PostgreSQL: in the system", "ClickHouse: in the system"]),
-        (false, Engine::Native, Flavor::Stock) => Ok(vec!["In the system"]),
+        (false, Engine::Native, Flavor::Clickhouse) => Ok(vec![t!("PostgreSQL: in the system"), t!("ClickHouse: in the system")]),
+        (false, Engine::Native, Flavor::Stock) => Ok(vec![t!("In the system")]),
     }
 }
 
@@ -192,13 +192,13 @@ pub fn plan_engine(host: Host, placement: Placement, flavor: Flavor) -> Result<E
 pub fn runs_as(host: Host, engine: Engine, flavor: Option<Flavor>) -> String {
     let ch = flavor == Some(Flavor::Clickhouse);
     match (host.windows, engine) {
-        (true, Engine::Docker) if host.wsl == Wsl::TurnOn => "SENTIENT server and its databases in Docker inside WSL 2 (Setup turns WSL 2 on; Windows restarts once)".into(),
-        (true, Engine::Docker) => "SENTIENT server and its databases in Docker inside WSL 2".into(),
-        (true, Engine::Native) if ch => "SENTIENT server and PostgreSQL as Windows services; ClickHouse in Docker inside WSL 2".into(),
-        (true, Engine::Native) => "SENTIENT server and PostgreSQL as Windows services".into(),
-        (false, Engine::Docker) => "SENTIENT server and its databases in Docker".into(),
-        (false, Engine::Native) if ch => "SENTIENT server, PostgreSQL and ClickHouse with systemd".into(),
-        (false, Engine::Native) => "SENTIENT server and PostgreSQL with systemd".into(),
+        (true, Engine::Docker) if host.wsl == Wsl::TurnOn => t!("SENTIENT server and its databases in Docker inside WSL 2 (Setup turns WSL 2 on; Windows restarts once)").into(),
+        (true, Engine::Docker) => t!("SENTIENT server and its databases in Docker inside WSL 2").into(),
+        (true, Engine::Native) if ch => t!("SENTIENT server and PostgreSQL as Windows services; ClickHouse in Docker inside WSL 2").into(),
+        (true, Engine::Native) => t!("SENTIENT server and PostgreSQL as Windows services").into(),
+        (false, Engine::Docker) => t!("SENTIENT server and its databases in Docker").into(),
+        (false, Engine::Native) if ch => t!("SENTIENT server, PostgreSQL and ClickHouse with systemd").into(),
+        (false, Engine::Native) => t!("SENTIENT server and PostgreSQL with systemd").into(),
     }
 }
 
@@ -206,8 +206,8 @@ pub fn runs_as(host: Host, engine: Engine, flavor: Option<Flavor>) -> String {
 /// settings heading's note.
 pub fn clickhouse_place(host: Host, engine: Engine) -> Option<&'static str> {
     match (host.windows, engine) {
-        (true, _) => Some("Docker in WSL 2"),
-        (false, Engine::Docker) => Some("Docker"),
+        (true, _) => Some(t!("Docker in WSL 2")),
+        (false, Engine::Docker) => Some(t!("Docker")),
         (false, Engine::Native) => None,
     }
 }

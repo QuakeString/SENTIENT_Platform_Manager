@@ -141,8 +141,8 @@ impl InstancesPage {
                     // The dialog's title says how it ended.
                     let name = this.instance(&id).map(|i| i.name).unwrap_or_default();
                     match job.read(cx).state() {
-                        JobState::Done(_) if this.job_dialog => crate::modal::set_title(format!("Finished on {name}"), cx),
-                        JobState::Failed(_) if this.job_dialog => crate::modal::set_title(format!("Did not finish on {name}"), cx),
+                        JobState::Done(_) if this.job_dialog => crate::modal::set_title(tf!("Finished on {name}"), cx),
+                        JobState::Failed(_) if this.job_dialog => crate::modal::set_title(tf!("Did not finish on {name}"), cx),
                         _ => {}
                     }
                     // Set up found a SENTIENT there that needs the PostgreSQL
@@ -187,27 +187,27 @@ impl InstancesPage {
         #[cfg(debug_assertions)]
         if let (Ok(kind), Some(inst)) = (std::env::var("SPM_DEBUG_JOB"), page.list.first().cloned()) {
             use sentient_installer_core::progress::Progress;
-            page.job_for = Some((inst.id.clone(), format!("Setting up {}", inst.name).into()));
+            page.job_for = Some((inst.id.clone(), tf!("Setting up {}", inst.name).into()));
             page.retry = Some(Retry::SetUp(inst.id.clone()));
             let name = inst.name.clone();
             page.job.update(cx, |job, cx| {
                 job.set_plan(vec![
-                    crate::jobplan::connect().when(&["Copying the Platform Manager"]),
-                    sentient_installer_core::progress::PlanStep::new("Looking for SENTIENT on the server"),
+                    crate::jobplan::connect().when(&[n!("Copying the Platform Manager")]),
+                    sentient_installer_core::progress::PlanStep::new(n!("Looking for SENTIENT on the server")),
                 ]);
                 job.start(
                     move |sink| {
-                        sink(Progress::Step { name: "Copying the Platform Manager to the server".into() });
+                        sink(Progress::Step { name: n!("Copying the Platform Manager to the server").into() });
                         sink(Progress::Log { line: "sentient-platform-manager-agent-linux-x86_64: 11.3 MB".into() });
                         match kind.as_str() {
                             "running" => {
                                 std::thread::sleep(std::time::Duration::from_secs(120));
                                 Ok(())
                             }
-                            "failed" => Err(remote::failed("The server refused the administrator password.", "sudo: 1 incorrect password attempt")),
+                            "failed" => Err(remote::failed(n!("The server refused the administrator password."), n!("sudo: 1 incorrect password attempt"))),
                             _ => {
-                                sink(Progress::Step { name: "Looking for SENTIENT on the server".into() });
-                                sink(Progress::Done { message: format!("The Platform Manager is set up on {name}. SENTIENT 4.4.0.2 (Docker) was found and added. Nothing on it was changed.") });
+                                sink(Progress::Step { name: n!("Looking for SENTIENT on the server").into() });
+                                sink(Progress::Done { message: nf!("The Platform Manager is set up on {name}. SENTIENT 4.4.0.2 (Docker) was found and added. Nothing on it was changed.") });
                                 Ok(())
                             }
                         }
@@ -260,8 +260,8 @@ impl InstancesPage {
             .unwrap_or_else(|| remote::PALETTE.iter().find(|c| !used.contains(&c.to_string())).unwrap_or(&remote::PALETTE[0]).to_string());
         self.form = Some(Form {
             editing: e.as_ref().map(|i| i.id.clone()),
-            name: input(cx, window, e.as_ref().map(|i| i.name.clone()).unwrap_or_default(), "Plant B server"),
-            host: input(cx, window, e.as_ref().map(|i| i.host.clone()).unwrap_or_default(), "192.168.1.20 or plantb.local"),
+            name: input(cx, window, e.as_ref().map(|i| i.name.clone()).unwrap_or_default(), t!("Plant B server")),
+            host: input(cx, window, e.as_ref().map(|i| i.host.clone()).unwrap_or_default(), t!("192.168.1.20 or plantb.local")),
             port: input(cx, window, e.as_ref().map(|i| i.port.to_string()).unwrap_or_else(|| "22".into()), "22"),
             user: input(cx, window, e.as_ref().map(|i| i.user.clone()).unwrap_or_default(), "admin"),
             key_file: input(
@@ -273,12 +273,12 @@ impl InstancesPage {
             secret: cx.new(|cx| {
                 InputState::new(window, cx)
                     .masked(true)
-                    .placeholder(if editing.is_some() { "Leave empty to keep the saved one" } else { "Key passphrase or password (if any)" })
+                    .placeholder(if editing.is_some() { t!("Leave empty to keep the saved one") } else { t!("Key passphrase or password (if any)") })
             }),
             sudo_secret: cx.new(|cx| {
                 InputState::new(window, cx)
                     .masked(true)
-                    .placeholder(if editing.is_some() { "Leave empty to keep the saved one" } else { "Only when sudo asks for one" })
+                    .placeholder(if editing.is_some() { t!("Leave empty to keep the saved one") } else { t!("Only when sudo asks for one") })
             }),
             color_picker: {
                 let start = remote::parse_hex(&color).unwrap_or(0x6b4fa0);
@@ -347,12 +347,12 @@ impl InstancesPage {
         let host = v(&f.host);
         let user = v(&f.user);
         if name.is_empty() || host.is_empty() || user.is_empty() {
-            return Err("Name, address and user are needed.".into());
+            return Err(n!("Name, address and user are needed.").into());
         }
-        let port: u16 = v(&f.port).parse().map_err(|_| "The port is a number, usually 22.")?;
+        let port: u16 = v(&f.port).parse().map_err(|_| n!("The port is a number, usually 22."))?;
         let key = v(&f.key_file);
         if f.auth == Auth::Key && key.is_empty() {
-            return Err("Choose the key file to sign in with.".into());
+            return Err(n!("Choose the key file to sign in with.").into());
         }
         let old = f.editing.as_ref().and_then(|id| self.instance(id));
         Ok(Instance {
@@ -500,7 +500,7 @@ impl InstancesPage {
         if self.job.read(cx).is_running() {
             return;
         }
-        self.job_for = Some((id.to_string(), format!("{label} on {}", inst.name).into()));
+        self.job_for = Some((id.to_string(), tf!("{label} on {}", inst.name).into()));
         // Its steps from the first frame (crate::jobplan); the agent's own
         // list replaces them when it answers.
         let owned: Vec<String> = args.iter().map(|a| a.to_string()).collect();
@@ -548,11 +548,11 @@ impl InstancesPage {
         if self.job.read(cx).is_running() {
             return;
         }
-        self.job_for = Some((id.to_string(), format!("Setting up {}", inst.name).into()));
+        self.job_for = Some((id.to_string(), tf!("Setting up {}", inst.name).into()));
         self.job.update(cx, |job, cx| {
             job.set_plan(vec![
-                crate::jobplan::connect().detail("SSH, and the Platform Manager copied to the server"),
-                sentient_installer_core::progress::PlanStep::new("Looking for SENTIENT on the server").detail("A SENTIENT found there is added; nothing on it changes"),
+                crate::jobplan::connect().detail(n!("SSH, and the Platform Manager copied to the server")),
+                sentient_installer_core::progress::PlanStep::new(n!("Looking for SENTIENT on the server")).detail(n!("A SENTIENT found there is added; nothing on it changes")),
             ]);
             job.start(
                 move |sink| {
@@ -560,7 +560,7 @@ impl InstancesPage {
                     remote::deploy(&inst, &sink)?;
                     // A lone SENTIENT already there is added in the same job
                     // (the agent says what it found and did).
-                    sink(sentient_installer_core::progress::Progress::Step { name: "Looking for SENTIENT on the server".into() });
+                    sink(sentient_installer_core::progress::Progress::Step { name: n!("Looking for SENTIENT on the server").into() });
                     let job_id = remote::start_job(&inst, &["add-if-one"])?;
                     remote::follow(&inst, &job_id, &sink)
                 },
@@ -577,7 +577,7 @@ impl InstancesPage {
         if self.job.read(cx).is_running() {
             return;
         }
-        self.job_for = Some((id.to_string(), format!("The job running on {}", inst.name).into()));
+        self.job_for = Some((id.to_string(), tf!("The job running on {}", inst.name).into()));
         self.job.update(cx, |job, cx| {
             // A server's job: its agent diagnoses a failure there.
             job.set_instance(inst.id.clone(), inst.name.clone(), inst.color.clone());
@@ -590,7 +590,7 @@ impl InstancesPage {
     /// The server's logs in a dialog: the same view as the Logs page.
     fn show_logs(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
         let Some(inst) = self.instance(id) else { return };
-        let title = format!("Logs on {}", inst.name);
+        let title = tf!("Logs on {}", inst.name);
         let view = cx.new(|cx| crate::manager::logs::LogView::remote(inst, window, cx));
         crate::modal::open(crate::modal::Modal { title: title.into(), body: view.into(), width: 1000., icon: None, on_close: None }, cx);
     }
@@ -644,13 +644,13 @@ impl InstancesPage {
         let open_btn: AnyElement = if current {
             open_now_tag(remote::LOCAL_COLOR).into_any_element()
         } else {
-            colour_button("open-local".into(), "Open", remote::LOCAL_COLOR, cx.listener(|_, _, _, cx| cx.emit(OpenInstance(None)))).into_any_element()
+            colour_button("open-local".into(), t!("Open"), remote::LOCAL_COLOR, cx.listener(|_, _, _, cx| cx.emit(OpenInstance(None)))).into_any_element()
         };
-        let more = crate::ui::button("more-local").outline().icon(gpui_kit::component::Icon::new(IconName::Ellipsis).size(px(18.)).text_color(cx.theme().foreground)).tooltip("More").dropdown_menu({
+        let more = crate::ui::button("more-local").outline().icon(gpui_kit::component::Icon::new(IconName::Ellipsis).size(px(18.)).text_color(cx.theme().foreground)).tooltip(t!("More")).dropdown_menu({
             let this = cx.entity().downgrade();
             move |menu, _, _| {
                 let t = this.clone();
-                menu.item(PopupMenuItem::new("Check again").on_click(move |_, _, cx| {
+                menu.item(PopupMenuItem::new(t!("Check again")).on_click(move |_, _, cx| {
                     t.update(cx, |p, cx| p.refresh_local(cx)).ok();
                 }))
             }
@@ -659,8 +659,8 @@ impl InstancesPage {
             &theme,
             remote::LOCAL_COLOR,
             &det,
-            "This computer".into(),
-            format!("{} · localhost", det.os_name),
+            t!("This computer").into(),
+            tf!("{} · localhost", det.os_name),
             current,
             (tone, state),
             quick_facts(&theme, status.as_ref(), None),
@@ -697,12 +697,12 @@ impl InstancesPage {
         if use_installed {
             if let Some(f) = remote::reuse::found(&id) {
                 let v = if f.info.version.is_empty() { String::new() } else { format!(" {}", f.info.version) };
-                state = format!("Platform Manager{v} found");
+                state = tf!("Platform Manager{v} found");
                 tone = Tone::Neutral;
             }
         }
         let this = cx.entity().downgrade();
-        let more = crate::ui::button(SharedString::from(format!("more-{id}"))).outline().icon(gpui_kit::component::Icon::new(IconName::Ellipsis).size(px(18.)).text_color(cx.theme().foreground)).tooltip("Work on this instance").dropdown_menu({
+        let more = crate::ui::button(SharedString::from(format!("more-{id}"))).outline().icon(gpui_kit::component::Icon::new(IconName::Ellipsis).size(px(18.)).text_color(cx.theme().foreground)).tooltip(t!("Work on this instance")).dropdown_menu({
             let (this, id) = (this.clone(), id.clone());
             move |menu, _, _| {
                 let item = |icon: Lucide, label: &'static str, enabled: bool, f: Box<dyn Fn(&mut InstancesPage, &mut Window, &mut Context<InstancesPage>)>| {
@@ -718,38 +718,38 @@ impl InstancesPage {
                         p.run_job(&id, title, vec!["control", action], cx)
                     }))
                 };
-                menu.item(ctl(Lucide::Play, "Start SENTIENT", "start", "Starting SENTIENT"))
-                    .item(ctl(Lucide::Square, "Stop SENTIENT", "stop", "Stopping SENTIENT"))
-                    .item(ctl(Lucide::RotateCw, "Restart SENTIENT", "restart", "Restarting SENTIENT"))
+                menu.item(ctl(Lucide::Play, t!("Start SENTIENT"), "start", t!("Starting SENTIENT")))
+                    .item(ctl(Lucide::Square, t!("Stop SENTIENT"), "stop", t!("Stopping SENTIENT")))
+                    .item(ctl(Lucide::RotateCw, t!("Restart SENTIENT"), "restart", t!("Restarting SENTIENT")))
                     .separator()
-                    .item(item(Lucide::Download, "Update SENTIENT", can_work, Box::new(move |p, _, cx| p.run_job(&i1, "Updating SENTIENT", vec!["update", "--latest"], cx))))
-                    .item(item(Lucide::Archive, "Back up now", can_work, Box::new(move |p, _, cx| p.run_job(&i2, "Backing up", vec!["backup-now"], cx))))
-                    .item(item(Lucide::ScrollText, "Logs", can_read, Box::new(move |p, window, cx| p.show_logs(&i3, window, cx))))
+                    .item(item(Lucide::Download, t!("Update SENTIENT"), can_work, Box::new(move |p, _, cx| p.run_job(&i1, t!("Updating SENTIENT"), vec!["update", "--latest"], cx))))
+                    .item(item(Lucide::Archive, t!("Back up now"), can_work, Box::new(move |p, _, cx| p.run_job(&i2, t!("Backing up"), vec!["backup-now"], cx))))
+                    .item(item(Lucide::ScrollText, t!("Logs"), can_read, Box::new(move |p, window, cx| p.show_logs(&i3, window, cx))))
                     .separator()
-                    .item(item(Lucide::RefreshCw, "Check again", true, Box::new(move |p, _, cx| p.refresh(&i4, cx))))
+                    .item(item(Lucide::RefreshCw, t!("Check again"), true, Box::new(move |p, _, cx| p.refresh(&i4, cx))))
             }
         });
         let unreachable = view.stale.is_some() || matches!(&status, Some(Err(e)) if !remote::needs_setup(e) && e != remote::FORGOTTEN && !e.contains("administrator rights"));
         let current = self.open.as_deref() == Some(id.as_str());
         let primary: AnyElement = if unreachable {
-            crate::ui::button(SharedString::from(format!("retry-{id}"))).primary().label("Try again").loading(refreshing).on_click(cx.listener({
+            crate::ui::button(SharedString::from(format!("retry-{id}"))).primary().label(t!("Try again")).loading(refreshing).on_click(cx.listener({
                 let id = id.clone();
                 move |this, _, _, cx| this.refresh(&id, cx)
             })).into_any_element()
         } else if use_installed {
-            crate::ui::button(SharedString::from(format!("use-installed-{id}"))).primary().label("Use it").disabled(busy).on_click(cx.listener({
+            crate::ui::button(SharedString::from(format!("use-installed-{id}"))).primary().label(t!("Use it")).disabled(busy).on_click(cx.listener({
                 let id = id.clone();
                 move |this, _, _, cx| this.use_installed(&id, cx)
             })).into_any_element()
         } else if not_set_up {
-            crate::ui::button(SharedString::from(format!("setup-{id}"))).primary().label("Set up").disabled(busy).on_click(cx.listener({
+            crate::ui::button(SharedString::from(format!("setup-{id}"))).primary().label(t!("Set up")).disabled(busy).on_click(cx.listener({
                 let id = id.clone();
                 move |this, _, _, cx| this.set_up(&id, cx)
             })).into_any_element()
         } else if current {
             open_now_tag(&inst.color).into_any_element()
         } else {
-            colour_button(SharedString::from(format!("open-{id}")), "Open", &inst.color, cx.listener({
+            colour_button(SharedString::from(format!("open-{id}")), t!("Open"), &inst.color, cx.listener({
                 let id = id.clone();
                 move |_, _, _, cx| cx.emit(OpenInstance(Some(id.clone())))
             })).into_any_element()
@@ -758,11 +758,11 @@ impl InstancesPage {
             .gap(crate::ui::button_gap())
             .items_center()
             .child(crate::ui::probed(primary))
-            .child(crate::ui::probed(crate::ui::button(SharedString::from(format!("edit-{id}"))).outline().label("Edit").disabled(busy).on_click(cx.listener({
+            .child(crate::ui::probed(crate::ui::button(SharedString::from(format!("edit-{id}"))).outline().label(t!("Edit")).disabled(busy).on_click(cx.listener({
                 let inst = inst.clone();
                 move |this, _, window, cx| this.open_form(Some(inst.clone()), window, cx)
             }))))
-            .child(crate::ui::probed(crate::ui::button(SharedString::from(format!("remove-{id}"))).outline().label("Remove").disabled(busy).on_click(cx.listener({
+            .child(crate::ui::probed(crate::ui::button(SharedString::from(format!("remove-{id}"))).outline().label(t!("Remove")).disabled(busy).on_click(cx.listener({
                 let id = id.clone();
                 move |this, _, _, cx| {
                     this.confirm_remove = Some(id.clone());
@@ -771,7 +771,7 @@ impl InstancesPage {
             }))))
             .child(div().flex_1().min_w_0())
             .child(div().flex_shrink_0().child(more));
-        let mut sub = format!("{} over SSH", inst.host);
+        let mut sub = tf!("{} over SSH", inst.host);
         if !det.os_name.is_empty() {
             sub.push_str(&format!(" · {}", det.os_name));
         }
@@ -794,8 +794,8 @@ impl InstancesPage {
                         .p_2()
                         .rounded(theme.radius)
                         .bg(theme.accent)
-                        .child(div().flex_1().text_sm().child("A job is running on this server."))
-                        .child(crate::ui::button(SharedString::from(format!("follow-{id}"))).outline().label("Follow").disabled(busy).on_click(cx.listener({
+                        .child(div().flex_1().text_sm().child(t!("A job is running on this server.")))
+                        .child(crate::ui::button(SharedString::from(format!("follow-{id}"))).outline().label(t!("Follow")).disabled(busy).on_click(cx.listener({
                             let id = id.clone();
                             move |this, _, _, cx| this.follow_job(&id, job_id.clone(), cx)
                         }))),
@@ -809,15 +809,15 @@ impl InstancesPage {
                     .gap_2()
                     .px_4()
                     .pb_4()
-                    .child(div().text_sm().child(format!("Remove {} from this list? Nothing on the server changes.", inst.name)))
+                    .child(div().text_sm().child(tf!("Remove {} from this list? Nothing on the server changes.", inst.name)))
                     .child(
                         h_flex()
                             .gap(crate::ui::button_gap())
-                            .child(crate::ui::probed(crate::ui::button("remove-yes").danger().label("Remove").on_click(cx.listener({
+                            .child(crate::ui::probed(crate::ui::button("remove-yes").danger().label(t!("Remove")).on_click(cx.listener({
                                 let id = id.clone();
                                 move |this, _, _, cx| this.remove(&id, cx)
                             }))))
-                            .child(crate::ui::probed(crate::ui::button("remove-no").ghost().label("Keep").on_click(cx.listener(|this, _, _, cx| {
+                            .child(crate::ui::probed(crate::ui::button("remove-no").ghost().label(t!("Keep")).on_click(cx.listener(|this, _, _, cx| {
                                 this.confirm_remove = None;
                                 cx.notify();
                             })))),
@@ -876,25 +876,25 @@ impl InstancesPage {
                 .child(h_flex().w(px(290.)).flex_shrink_0().justify_end().child(div().w_full().child(control)))
         };
         let os_help = if f.os == Os::Windows {
-            "Windows 10/11 or Windows Server 2019 and later, with OpenSSH Server turned on:\n1. Settings, System, Optional features, Add a feature: OpenSSH Server (or in PowerShell as administrator: Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0).\n2. Start it and start it with Windows: Start-Service sshd; Set-Service sshd -StartupType Automatic.\n3. Allow TCP port 22 in Windows Defender Firewall (the feature adds the rule).\n4. Sign in with an account in the Administrators group. For a key: put its public key in C:\\ProgramData\\ssh\\administrators_authorized_keys."
+            t!("Windows 10/11 or Windows Server 2019 and later, with OpenSSH Server turned on:\n1. Settings, System, Optional features, Add a feature: OpenSSH Server (or in PowerShell as administrator: Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0).\n2. Start it and start it with Windows: Start-Service sshd; Set-Service sshd -StartupType Automatic.\n3. Allow TCP port 22 in Windows Defender Firewall (the feature adds the rule).\n4. Sign in with an account in the Administrators group. For a key: put its public key in C:\\ProgramData\\ssh\\administrators_authorized_keys.")
         } else {
-            "Ubuntu, Debian, Red Hat, Rocky, Alma, Fedora, openSUSE and others, with an SSH server (openssh-server):\n1. Install it if missing: sudo apt install openssh-server (Debian, Ubuntu) or sudo dnf install openssh-server (Red Hat family).\n2. Start it with the system: sudo systemctl enable --now ssh (sshd on Red Hat).\n3. Allow TCP port 22 in the firewall if one is on.\n4. Sign in as root or a user that may use sudo. For a key: add its public key to ~/.ssh/authorized_keys of that user."
+            t!("Ubuntu, Debian, Red Hat, Rocky, Alma, Fedora, openSUSE and others, with an SSH server (openssh-server):\n1. Install it if missing: sudo apt install openssh-server (Debian, Ubuntu) or sudo dnf install openssh-server (Red Hat family).\n2. Start it with the system: sudo systemctl enable --now ssh (sshd on Red Hat).\n3. Allow TCP port 22 in the firewall if one is on.\n4. Sign in as root or a user that may use sudo. For a key: add its public key to ~/.ssh/authorized_keys of that user.")
         };
         let found = f
             .editing
             .as_ref()
             .and_then(|id| self.instance(id))
             .and_then(|i| i.detected)
-            .map(|d| format!("Found when connecting: {} {}", d.os_name, d.arch))
-            .unwrap_or_else(|| "Connecting checks the system and keeps what it finds.".into());
+            .map(|d| tf!("Found when connecting: {} {}", d.os_name, d.arch))
+            .unwrap_or_else(|| t!("Connecting checks the system and keeps what it finds.").into());
         let mut panel = v_flex()
             .gap_2()
-            .child(div().pb_1().text_sm().text_color(theme.muted_foreground).child("A computer running SENTIENT that this Platform Manager reaches over SSH."))
-            .child(row("Name", "", None, Input::new(&f.name).into_any_element()))
+            .child(div().pb_1().text_sm().text_color(theme.muted_foreground).child(t!("A computer running SENTIENT that this Platform Manager reaches over SSH.")))
+            .child(row(t!("Name"), "", None, Input::new(&f.name).into_any_element()))
             .child(row(
-                "Colour",
+                t!("Colour"),
                 "help-colour",
-                Some("The top bar takes this colour while the instance is open, so it is clear which computer you are working on. This computer is always SENTIENT teal."),
+                Some(t!("The top bar takes this colour while the instance is open, so it is clear which computer you are working on. This computer is always SENTIENT teal.")),
                 h_flex()
                     .gap_3()
                     .items_center()
@@ -905,21 +905,22 @@ impl InstancesPage {
             ))
 
             .child(v_flex().child(row(
-                "System",
+                t!("System"),
                 "help-os",
                 Some(os_help),
                 h_flex()
+                    .flex_wrap()
                     .gap_3()
                     .items_center()
                     .child(
                         ui::seg_track(&theme)
-                            .child(ui::seg_item(&theme, "os-linux", "Linux", f.os == Os::Linux).on_click(cx.listener(|this, _, _, cx| {
+                            .child(ui::seg_item(&theme, "os-linux", t!("Linux"), f.os == Os::Linux).on_click(cx.listener(|this, _, _, cx| {
                                 if let Some(f) = &mut this.form {
                                     f.os = Os::Linux;
                                 }
                                 cx.notify();
                             })))
-                            .child(ui::seg_item(&theme, "os-windows", "Windows", f.os == Os::Windows).on_click(cx.listener(|this, _, _, cx| {
+                            .child(ui::seg_item(&theme, "os-windows", t!("Windows"), f.os == Os::Windows).on_click(cx.listener(|this, _, _, cx| {
                                 if let Some(f) = &mut this.form {
                                     f.os = Os::Windows;
                                 }
@@ -945,7 +946,7 @@ impl InstancesPage {
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(theme.primary)
                             .child(gpui_kit::component::Icon::new(IconName::BookOpen).size(px(16.)))
-                            .child("Setup guide")
+                            .child(t!("Setup guide"))
                             .on_click(cx.listener(|this, _, _, cx| this.toggle_guide(cx))),
                     )
                     .into_any_element(),
@@ -955,26 +956,26 @@ impl InstancesPage {
                 h_flex().justify_end().pb_1().child(div().w(px(290.)).text_size(px(13.)).text_color(theme.muted_foreground).child(found)),
             ))
             .child(row(
-                "Address",
+                t!("Address"),
                 "",
                 None,
-                h_flex().gap_2().items_center().child(div().flex_1().min_w_0().child(ui::probed_input(Input::new(&f.host)))).child(div().text_sm().child("Port")).child(div().w(px(84.)).child(ui::probed_input(Input::new(&f.port)))).into_any_element(),
+                h_flex().gap_2().items_center().child(div().flex_1().min_w_0().child(ui::probed_input(Input::new(&f.host)))).child(div().text_sm().child(t!("Port"))).child(div().w(px(84.)).child(ui::probed_input(Input::new(&f.port)))).into_any_element(),
             ))
-            .child(row("User", "help-user", Some("An account on the server that may use sudo, or root. The Platform Manager runs its work on the server as an administrator."), Input::new(&f.user).into_any_element()))
+            .child(row(t!("User"), "help-user", Some(t!("An account on the server that may use sudo, or root. The Platform Manager runs its work on the server as an administrator.")), Input::new(&f.user).into_any_element()))
             .child(row(
-                "Sign in with",
+                t!("Sign in with"),
                 "",
                 None,
                 h_flex()
                     .child(
                         ui::seg_track(&theme)
-                            .child(ui::seg_item(&theme, "auth-key", "Key file", f.auth == Auth::Key).on_click(cx.listener(|this, _, _, cx| {
+                            .child(ui::seg_item(&theme, "auth-key", t!("Key file"), f.auth == Auth::Key).on_click(cx.listener(|this, _, _, cx| {
                                 if let Some(f) = &mut this.form {
                                     f.auth = Auth::Key;
                                 }
                                 cx.notify();
                             })))
-                            .child(ui::seg_item(&theme, "auth-password", "Password", f.auth == Auth::Password).on_click(cx.listener(|this, _, _, cx| {
+                            .child(ui::seg_item(&theme, "auth-password", t!("Password"), f.auth == Auth::Password).on_click(cx.listener(|this, _, _, cx| {
                                 if let Some(f) = &mut this.form {
                                     f.auth = Auth::Password;
                                 }
@@ -985,27 +986,27 @@ impl InstancesPage {
             ))
             .when(f.auth == Auth::Key, |p| {
                 p.child(row(
-                    "Key file",
+                    t!("Key file"),
                     "",
                     None,
                     h_flex()
                         .gap_2()
                         .child(div().flex_1().min_w_0().child(Input::new(&f.key_file)))
-                        .child(crate::ui::button("key-choose").outline().label("Choose").on_click(cx.listener(|this, _, _, cx| this.choose_key(cx))))
+                        .child(crate::ui::button("key-choose").outline().label(t!("Choose")).on_click(cx.listener(|this, _, _, cx| this.choose_key(cx))))
                         .into_any_element(),
                 ))
             })
             .child(row(
-                if f.auth == Auth::Key { "Key passphrase" } else { "Password" },
+                if f.auth == Auth::Key { t!("Key passphrase") } else { t!("Password") },
                 "help-secret",
-                Some("Kept in this computer's secret store (Windows: sealed to this computer; Linux: the desktop keyring, else until the Platform Manager closes). It is never written to the instance list."),
+                Some(t!("Kept in this computer's secret store (Windows: sealed to this computer; Linux: the desktop keyring, else until the Platform Manager closes). It is never written to the instance list.")),
                 Input::new(&f.secret).mask_toggle().into_any_element(),
             ))
             .when(f.auth == Auth::Key && f.os == Os::Linux, |p| {
                 p.child(row(
-                    "sudo password",
+                    t!("sudo password"),
                     "help-sudo",
-                    Some("The password sudo asks for on the server, when the user is not root and sudo is not set up without one. Kept in the secret store like the passphrase."),
+                    Some(t!("The password sudo asks for on the server, when the user is not root and sudo is not set up without one. Kept in the secret store like the passphrase.")),
                     Input::new(&f.sudo_secret).mask_toggle().into_any_element(),
                 ))
             })
@@ -1021,9 +1022,9 @@ impl InstancesPage {
             return Some(
                 v_flex()
                     .gap_3()
-                    .child(div().font_weight(FontWeight::MEDIUM).child("Is this the right computer?"))
-                    .child(ui::fact(&theme, "Address", host))
-                    .child(ui::fact(&theme, "Its fingerprint", fingerprint.clone()))
+                    .child(div().font_weight(FontWeight::MEDIUM).child(t!("Is this the right computer?")))
+                    .child(ui::fact(&theme, t!("Address"), host))
+                    .child(ui::fact(&theme, t!("Its fingerprint"), fingerprint.clone()))
                     .child(div().text_sm().text_color(theme.muted_foreground).child({
                         let file = remote::host_key_file(&keys);
                         format!("Compare it with the fingerprint shown on that server: ssh-keygen -lf /etc/ssh/{file} on Linux, ssh-keygen -lf C:\\ProgramData\\ssh\\{file} on Windows. It is asked once and remembered; if it ever changes, the connection is refused.")
@@ -1036,8 +1037,8 @@ impl InstancesPage {
                             .border_color(theme.border)
                             .gap(crate::ui::button_gap())
                             .justify_end()
-                            .child(crate::ui::probed(crate::ui::button("distrust").outline().label("Cancel").on_click(cx.listener(|this, _, _, cx| this.set_error("Not connected: the fingerprint was not accepted.", cx)))))
-                            .child(crate::ui::probed(crate::ui::button("trust").primary().label("Trust and add").on_click(cx.listener(move |this, _, _, cx| this.connect(Some((keys.clone(), fp.clone())), cx))))),
+                            .child(crate::ui::probed(crate::ui::button("distrust").outline().label(t!("Cancel")).on_click(cx.listener(|this, _, _, cx| this.set_error(t!("Not connected: the fingerprint was not accepted."), cx)))))
+                            .child(crate::ui::probed(crate::ui::button("trust").primary().label(t!("Trust and add")).on_click(cx.listener(move |this, _, _, cx| this.connect(Some((keys.clone(), fp.clone())), cx))))),
                     )
                     .into_any_element(),
             );
@@ -1051,11 +1052,11 @@ impl InstancesPage {
                 .gap(crate::ui::button_gap())
                 .items_center()
                 .child(div().flex_1().text_sm().text_color(theme.muted_foreground).child(match f.stage {
-                    Stage::Checking => "Asking the server for its key…",
-                    Stage::Connecting => "Signing in and looking at the system…",
+                    Stage::Checking => t!("Asking the server for its key…"),
+                    Stage::Connecting => t!("Signing in and looking at the system…"),
                     _ => "",
                 }))
-                .child(crate::ui::probed(crate::ui::button("cancel").outline().label("Cancel").disabled(busy).on_click(cx.listener(|this, _, _, cx| {
+                .child(crate::ui::probed(crate::ui::button("cancel").outline().label(t!("Cancel")).disabled(busy).on_click(cx.listener(|this, _, _, cx| {
                     this.form = None;
                     cx.notify();
                 }))))
@@ -1063,7 +1064,7 @@ impl InstancesPage {
                     r.child(crate::ui::probed(
                         crate::ui::button("check")
                             .primary()
-                            .label(if f.editing.is_some() { "Save and connect" } else { "Connect" })
+                            .label(if f.editing.is_some() { t!("Save and connect") } else { t!("Connect") })
                             .loading(busy)
                             .disabled(busy)
                             .on_click(cx.listener(|this, _, _, cx| this.check(cx))),
@@ -1131,8 +1132,8 @@ impl InstancesPage {
         let start = crate::chooser::start_for(&expand_home(&now).display().to_string(), ssh);
         let rx = crate::chooser::open(
             cx,
-            crate::chooser::Ask { title: "Choose the SSH key file", start: start.as_deref(), directory: false },
-            PathPromptOptions { files: true, directories: false, multiple: false, prompt: Some("Use this key".into()) },
+            crate::chooser::Ask { title: t!("Choose the SSH key file"), start: start.as_deref(), directory: false },
+            PathPromptOptions { files: true, directories: false, multiple: false, prompt: Some(t!("Use this key").into()) },
         );
         let task = cx.spawn(async move |this, cx| {
             let Ok(Ok(Some(paths))) = rx.await else { return };
@@ -1160,7 +1161,7 @@ impl InstancesPage {
         let page = cx.entity();
         if self.form.is_some() && !self.form_dialog && !self.job_dialog {
             self.form_dialog = true;
-            let title = if self.form.as_ref().is_some_and(|f| f.editing.is_some()) { "Edit instance" } else { "Add a remote instance" };
+            let title = if self.form.as_ref().is_some_and(|f| f.editing.is_some()) { t!("Edit instance") } else { t!("Add a remote instance") };
             let slot = cx.new(|cx| Slot::new(page.clone(), SlotKind::Form, cx));
             let p2 = page.clone();
             crate::modal::open(
@@ -1223,13 +1224,13 @@ impl InstancesPage {
         let done = !job.is_running();
         let failed = matches!(job.state(), JobState::Failed(_));
         // Secondary first, the primary at the right end.
-        let mut acts: Vec<AnyElement> = vec![crate::ui::button("job-close").outline().label("Close").on_click(cx.listener(|this, _, _, cx| {
+        let mut acts: Vec<AnyElement> = vec![crate::ui::button("job-close").outline().label(t!("Close")).on_click(cx.listener(|this, _, _, cx| {
             this.job_for = None;
             this.job.update(cx, |j, cx| j.reset(cx));
             cx.notify();
         })).into_any_element()];
         if done && failed && self.retry.is_some() {
-            acts.push(crate::ui::button("job-retry").primary().label("Try again").on_click(cx.listener(|this, _, _, cx| {
+            acts.push(crate::ui::button("job-retry").primary().label(t!("Try again")).on_click(cx.listener(|this, _, _, cx| {
                 this.job.update(cx, |j, cx| j.reset(cx));
                 match this.retry.clone() {
                     Some(Retry::SetUp(id)) => this.set_up(&id, cx),
@@ -1239,7 +1240,7 @@ impl InstancesPage {
             })).into_any_element());
         } else if done && !failed {
             let id = id.clone();
-            acts.push(crate::ui::button("job-open").primary().label("Open").on_click(cx.listener(move |this, _, _, cx| {
+            acts.push(crate::ui::button("job-open").primary().label(n!("Open")).on_click(cx.listener(move |this, _, _, cx| {
                 this.job_for = None;
                 this.job.update(cx, |j, cx| j.reset(cx));
                 cx.emit(OpenInstance(Some(id.clone())));
@@ -1320,7 +1321,7 @@ impl Render for InstancesPage {
             .chain(views.iter().map(|v| if v.stale.is_some() { Some(&gone) } else if v.checking { None } else { v.status.as_ref() }))
             .collect();
         // Named states, in this order, each only when there is one.
-        let mut named: Vec<(&str, usize)> = vec![("running", 0), ("stopped", 0), ("without SENTIENT", 0), ("not set up", 0), ("not reachable", 0), ("waiting for sign-in", 0), ("being checked", 0)];
+        let mut named: Vec<(&str, usize)> = vec![("running", 0), ("stopped", 0), ("without SENTIENT", 0), (t!("not set up"), 0), ("not reachable", 0), (t!("waiting for sign-in"), 0), ("being checked", 0)];
         for st in &all {
             let k = match st {
                 Some(Ok(s)) if s.installed && s.serving => 0,
@@ -1353,7 +1354,7 @@ impl Render for InstancesPage {
         .left_0()
         .right_0()
         .h(px(1.));
-        let summary = format!("Every SENTIENT this program looks after. {n} instance{}: {}.", if n == 1 { "" } else { "s" }, parts.join(", "));
+        let summary = if n == 1 { tf!("Every SENTIENT this program looks after. {n} instance: {}.", parts.join(", ")) } else { tf!("Every SENTIENT this program looks after. {n} instances: {}.", parts.join(", ")) };
         v_flex()
             .id("page")
             .flex_1()
@@ -1370,9 +1371,9 @@ impl Render for InstancesPage {
                     .child(ui::layout_probe("header-actions"))
                     .gap_3()
                     .items_center()
-                    .child(v_flex().flex_1().min_w_0().gap_0p5().child(div().text_size(px(22.)).font_weight(FontWeight::MEDIUM).child("Instances")).child(div().text_sm().text_color(theme.muted_foreground).child(summary)))
+                    .child(v_flex().flex_1().min_w_0().gap_0p5().child(div().text_size(px(22.)).font_weight(FontWeight::MEDIUM).child(t!("Instances"))).child(div().text_sm().text_color(theme.muted_foreground).child(summary)))
                     .when(self.form.is_none(), |r| {
-                        r.child(crate::ui::button("add").primary().icon(IconName::Plus).label("Add instance").on_click(cx.listener(|this, _, window, cx| this.open_form(None, window, cx))))
+                        r.child(crate::ui::button("add").primary().icon(IconName::Plus).label(t!("Add instance")).on_click(cx.listener(|this, _, window, cx| this.open_form(None, window, cx))))
                     }),
             )
             .child({
@@ -1428,10 +1429,10 @@ const OPEN_W: f32 = 78.;
 /// server stopped answering (its last answer stays below).
 fn remote_state(v: &status_cache::View) -> (Tone, String) {
     if v.stale.is_some() {
-        return (Tone::Bad, "Not reachable".into());
+        return (Tone::Bad, t!("Not reachable").into());
     }
     if v.checking {
-        return (Tone::Neutral, "Checking…".into());
+        return (Tone::Neutral, t!("Checking…").into());
     }
     state_of(v.status.as_ref(), v.in_flight)
 }
@@ -1440,22 +1441,22 @@ fn remote_state(v: &status_cache::View) -> (Tone, String) {
 fn last_answer_text(at: i64, now: i64) -> String {
     use chrono::{Local, TimeZone as _};
     let (Some(t), Some(n)) = (Local.timestamp_opt(at, 0).single(), Local.timestamp_opt(now, 0).single()) else { return String::new() };
-    if t.date_naive() == n.date_naive() { format!("Last answer at {}", t.format("%H:%M")) } else { format!("Last answer on {}", t.format("%-d %b, %H:%M")) }
+    if t.date_naive() == n.date_naive() { tf!("Last answer at {}", t.format("%H:%M")) } else { tf!("Last answer on {}", t.format("%-d %b, %H:%M")) }
 }
 
 /// The state label of a card.
 pub(crate) fn state_of(status: Option<&Result<RemoteStatus, String>>, refreshing: bool) -> (Tone, String) {
     let (t, s) = match status {
-        None if refreshing => (Tone::Neutral, "Checking…"),
-        None => (Tone::Neutral, "Not checked"),
-        Some(Err(e)) if remote::needs_setup(e) => (Tone::Warn, "Not set up"),
-        Some(Err(e)) if e == remote::FORGOTTEN => (Tone::Warn, "Sign-in needed"),
-        Some(Err(e)) if e.contains("administrator rights") => (Tone::Warn, "Needs sudo"),
-        Some(Err(e)) if remote::is_not_admin(e) => (Tone::Warn, "Not an administrator"),
-        Some(Err(_)) => (Tone::Bad, "Not reachable"),
-        Some(Ok(s)) if !s.installed => (Tone::Neutral, "No SENTIENT"),
-        Some(Ok(s)) if s.serving => (Tone::Good, "Running"),
-        Some(Ok(_)) => (Tone::Bad, "Stopped"),
+        None if refreshing => (Tone::Neutral, t!("Checking…")),
+        None => (Tone::Neutral, t!("Not checked")),
+        Some(Err(e)) if remote::needs_setup(e) => (Tone::Warn, t!("Not set up")),
+        Some(Err(e)) if e == remote::FORGOTTEN => (Tone::Warn, t!("Sign-in needed")),
+        Some(Err(e)) if e.contains("administrator rights") => (Tone::Warn, t!("Needs sudo")),
+        Some(Err(e)) if remote::is_not_admin(e) => (Tone::Warn, t!("Not an administrator")),
+        Some(Err(_)) => (Tone::Bad, t!("Not reachable")),
+        Some(Ok(s)) if !s.installed => (Tone::Neutral, t!("No SENTIENT")),
+        Some(Ok(s)) if s.serving => (Tone::Good, t!("Running")),
+        Some(Ok(_)) => (Tone::Bad, t!("Stopped")),
     };
     (t, s.to_string())
 }
@@ -1498,29 +1499,29 @@ fn quick_facts(theme: &gpui_kit::component::Theme, status: Option<&Result<Remote
                         h_flex()
                             .text_size(px(13.))
                             .items_center()
-                            .child(div().w(px(84.)).flex_shrink_0().text_color(theme.muted_foreground).child("Licence"))
+                            .child(div().w(px(84.)).flex_shrink_0().text_color(theme.muted_foreground).child(t!("Licence")))
                             .child(h_flex().flex_1().min_w_0().child(ui::pill(theme, tone, l.label()).text_size(px(11.5)).px(px(8.)).py(px(0.)))),
                     )
                 })
-                .child(row("Database", db, false))
+                .child(row(t!("Database"), db, false))
                 .child(row(
-                    "Disk",
-                    s.disk_free.map(|d| format!("{} free", crate::dbstatus::bytes_label(d))).unwrap_or_else(|| "Not known".into()),
+                    t!("Disk"),
+                    s.disk_free.map(|d| tf!("{} free", crate::dbstatus::bytes_label(d))).unwrap_or_else(|| t!("Not known").into()),
                     s.disk_free.is_some_and(|d| d < crate::dbstatus::LOW_DISK),
                 ))
-                .child(row("Last backup", s.last_backup.clone().unwrap_or_else(|| "None".into()), s.last_backup.is_none()))
-                .when_some(up_for(s), |c, u| c.child(row("Up for", uptime_label(u), false)));
+                .child(row(t!("Last backup"), s.last_backup.clone().unwrap_or_else(|| t!("None").into()), s.last_backup.is_none()))
+                .when_some(up_for(s), |c, u| c.child(row(t!("Up for"), uptime_label(u), false)));
         }
         Some(Ok(s)) => {
             col = col
-                .child(row("Connection", "OK".into(), false))
-                .child(row("SENTIENT", "Not found".into(), false))
-                .when_some(s.disk_free, |c, d| c.child(row("Disk", format!("{} free", crate::dbstatus::bytes_label(d)), false)));
+                .child(row(t!("Connection"), "OK".into(), false))
+                .child(row("SENTIENT", t!("Not found").into(), false))
+                .when_some(s.disk_free, |c, d| c.child(row(t!("Disk"), tf!("{} free", crate::dbstatus::bytes_label(d)), false)));
         }
-        Some(Err(e)) => col = col.child(div().text_sm().text_color(if remote::needs_setup(e) || e == remote::FORGOTTEN { theme.foreground } else { theme.danger }).child(e.clone())),
+        Some(Err(e)) => col = col.child(div().text_sm().text_color(if remote::needs_setup(e) || e == remote::FORGOTTEN { theme.foreground } else { theme.danger }).child(crate::ui::shown(e.clone()))),
         // Still reading: the rows it will show, values as placeholders.
         None => {
-            for (i, label) in ["SENTIENT", "Licence", "Database", "Disk", "Last backup", "Up for"].into_iter().enumerate() {
+            for (i, label) in ["SENTIENT", t!("Licence"), t!("Database"), t!("Disk"), t!("Last backup"), t!("Up for")].into_iter().enumerate() {
                 col = col.child(
                     h_flex()
                         .text_size(px(13.))
@@ -1541,8 +1542,15 @@ fn up_for(s: &crate::remote::RemoteStatus) -> Option<u64> {
 }
 
 fn uptime_label(secs: u64) -> String {
-    let (n, unit) = if secs >= 86_400 { (secs / 86_400, "day") } else if secs >= 3_600 { (secs / 3_600, "hour") } else { (secs / 60, "minute") };
-    format!("{n} {unit}{}", if n == 1 { "" } else { "s" })
+    let (d, h, m) = (secs / 86_400, secs / 3_600, secs / 60);
+    match (d, h, m) {
+        (1, _, _) => tf!("{d} day"),
+        (2.., _, _) => tf!("{d} days"),
+        (_, 1, _) => tf!("{h} hour"),
+        (_, 2.., _) => tf!("{h} hours"),
+        (_, _, 1) => tf!("{m} minute"),
+        _ => tf!("{m} minutes"),
+    }
 }
 
 /// `a` mixed into `b`: `t` of `a` (CSS color-mix in sRGB).
@@ -1674,7 +1682,7 @@ fn open_now_tag(color: &str) -> Div {
         .text_color(text_on(c))
         .text_size(px(13.))
         .font_weight(FontWeight::MEDIUM)
-        .child("Open now")
+        .child(t!("Open now"))
 }
 
 /// The system's logo, white, on a tile in the instance's colour.

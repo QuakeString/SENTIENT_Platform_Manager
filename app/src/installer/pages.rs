@@ -47,13 +47,13 @@ fn secret_field(theme: &Theme, text: &'static str, state: &Entity<InputState>) -
 }
 
 /// The help on a database password Setup fills in (an (i) beside its label).
-const DEFAULT_PASSWORD_HELP: &str = "Default password. Change it if the database port is reachable from other computers.";
+const DEFAULT_PASSWORD_HELP: &str = n!("Default password. Change it if the database port is reachable from other computers.");
 
 /// [`secret_field`] holding Setup's default password, with its (i).
 fn default_password_field(theme: &Theme, id: &'static str, text: &'static str, state: &Entity<InputState>) -> Div {
     v_flex()
         .gap_1p5()
-        .child(label(theme, text).child(ui::info(id.into(), DEFAULT_PASSWORD_HELP.into())))
+        .child(label(theme, text).child(ui::info(id.into(), crate::i18n::t(DEFAULT_PASSWORD_HELP).into())))
         .child(probed_input(Input::new(state).mask_toggle()))
 }
 
@@ -69,7 +69,7 @@ fn choice_title(theme: &Theme, title: impl Into<SharedString>, recommended: bool
         .gap_2()
         .items_center()
         .child(div().font_weight(FontWeight::MEDIUM).child(title.into()))
-        .when(recommended, |r| r.child(ui::pill(theme, Tone::Good, "Recommended")))
+        .when(recommended, |r| r.child(ui::pill(theme, Tone::Good, t!("Recommended"))))
         .into_any_element()
 }
 
@@ -86,7 +86,7 @@ fn install_failed(theme: &Theme, message: SharedString) -> Div {
     ui::notice(
         theme,
         Tone::Bad,
-        format!("The install stopped\n{message}\nFix the cause and press Retry. Tasks already done are skipped or repeated safely."),
+        tf!("The install stopped\n{message}\nFix the cause and press Retry. Tasks already done are skipped or repeated safely."),
     )
 }
 
@@ -118,11 +118,11 @@ fn runs_column(theme: &Theme, lines: &[&'static str], fade: f32) -> Div {
 /// ("Already installed", "In use") over the status's.
 fn check_tone(status: Status, state: Option<SharedString>) -> (Tone, SharedString) {
     let (tone, text) = match status {
-        Status::Pass => (Tone::Good, "Ready"),
-        Status::Setup => (Tone::Warn, "Will be installed"),
-        Status::Fail => (Tone::Bad, "Blocker"),
-        Status::Warn => (Tone::Warn, "Attention"),
-        Status::Unknown => (Tone::Neutral, "Unknown"),
+        Status::Pass => (Tone::Good, t!("Ready")),
+        Status::Setup => (Tone::Warn, t!("Will be installed")),
+        Status::Fail => (Tone::Bad, t!("Blocker")),
+        Status::Warn => (Tone::Warn, t!("Attention")),
+        Status::Unknown => (Tone::Neutral, t!("Unknown")),
     };
     (tone, state.unwrap_or_else(|| text.into()))
 }
@@ -134,7 +134,7 @@ fn gb(mb: u64) -> u64 {
 /// The Recommended panel's first line, and the (i) that says where a WSL 2
 /// VM's memory comes from.
 fn sized_for(s: crate::catalog::Sizing, docker: bool) -> (String, Option<String>) {
-    let Some(vm) = s.vm_mb else { return (format!("Sized for this computer: {} GB of memory.", gb(s.host_mb)), None) };
+    let Some(vm) = s.vm_mb else { return (tf!("Sized for this computer: {} GB of memory.", gb(s.host_mb)), None) };
     let source = if s.vm_from_wslconfig {
         "the memory= line of .wslconfig in your user folder sets it".to_string()
     } else {
@@ -142,13 +142,13 @@ fn sized_for(s: crate::catalog::Sizing, docker: bool) -> (String, Option<String>
     };
     if docker {
         (
-            format!("Sized for the WSL 2 VM: {} GB of this computer's {} GB.", gb(vm), gb(s.host_mb)),
-            Some(format!("Memory of the WSL 2 VM\n\nSENTIENT and its databases run in Docker inside the WSL 2 VM, which gets {} GB: {source}.", gb(vm))),
+            tf!("Sized for the WSL 2 VM: {} GB of this computer's {} GB.", gb(vm), gb(s.host_mb)),
+            Some(tf!("Memory of the WSL 2 VM\n\nSENTIENT and its databases run in Docker inside the WSL 2 VM, which gets {} GB: {source}.", gb(vm))),
         )
     } else {
         (
-            format!("Sized for this computer: {} GB, less {} GB for ClickHouse in WSL 2.", gb(s.host_mb), gb(vm)),
-            Some(format!("Memory of the WSL 2 VM\n\nClickHouse runs in its own WSL 2 VM, which can take {} GB: {source}. PostgreSQL is sized for the rest.", gb(vm))),
+            tf!("Sized for this computer: {} GB, less {} GB for ClickHouse in WSL 2.", gb(s.host_mb), gb(vm)),
+            Some(tf!("Memory of the WSL 2 VM\n\nClickHouse runs in its own WSL 2 VM, which can take {} GB: {source}. PostgreSQL is sized for the rest.", gb(vm))),
         )
     }
 }
@@ -162,15 +162,15 @@ fn coap_local_only(windows: bool, engine: Engine) -> bool {
     windows && engine == Engine::Docker
 }
 
-const COAP_LOCAL_HELP: &str = "CoAP: this computer only\n\nUDP is not forwarded from WSL 2, so devices on other computers cannot reach SENTIENT's CoAP ports. \
-Devices on this computer can. Devices on the network can use MQTT or HTTP, or install SENTIENT “In the system”.";
+const COAP_LOCAL_HELP: &str = n!("CoAP: this computer only\n\nUDP is not forwarded from WSL 2, so devices on other computers cannot reach SENTIENT's CoAP ports. \
+Devices on this computer can. Devices on the network can use MQTT or HTTP, or install SENTIENT “In the system”.");
 
 /// The Summary's Ports row: [web, MQTT, MQTTS, CoAP, CoAPS]. CoAP says so
 /// when it is this computer's only (coap_local_only).
 fn ports_summary(p: [String; 5], coap_local_only: bool) -> String {
     let [web, mqtt, mqtts, coap, coaps] = p;
-    let coap_where = if coap_local_only { " (this computer only)" } else { "" };
-    format!("Web {web} · MQTT {mqtt} / {mqtts} · CoAP {coap} / {coaps}{coap_where}")
+    let coap_where = if coap_local_only { t!(" (this computer only)") } else { "" };
+    tf!("Web {web} · MQTT {mqtt} / {mqtts} · CoAP {coap} / {coaps}{coap_where}")
 }
 
 /// Whether a System check row that is not ready gets "Check again": not
@@ -196,22 +196,22 @@ impl Installer {
     /// page's title).
     pub(super) fn subtitle(&self) -> Option<SharedString> {
         let text: &str = match self.step {
-            0 => "Nothing changes on the computer until you press Install on the Summary page.",
-            1 => "What SENTIENT needs on this computer. Items marked “Will be installed” are handled by setup.",
-            2 if self.engine == Engine::Docker && self.windows => "SENTIENT's distribution keeps the containers and all their data on one disk. Put it on the disk with the most room: telemetry grows.",
-            2 if self.engine == Engine::Docker => "SENTIENT and its databases keep their data in Docker volumes. Put them on the disk with the most room: telemetry grows.",
-            2 => "Where SENTIENT and its database go. Put the database on the disk with the most free space: telemetry grows.",
-            3 => "How SENTIENT stores its data. The type can be changed later with Migration in the Platform Manager.",
-            4 => "The database SENTIENT signs in to. Setup checks that its ports are free.",
-            5 => "Setup checks that each port is free before moving on.",
-            6 => "The first SENTIENT sign-in, with full system rights. More users can be added in SENTIENT.",
-            7 => "SENTIENT's settings, sized for this computer. All of them can be changed later in the Platform Manager.",
-            8 if !self.windows && !self.manager_only => "Where to find SENTIENT. It starts with the computer: as a systemd service, or through Docker's restart policy.",
-            8 => "Where to find SENTIENT and how it starts.",
-            9 => "Check your choices. Nothing has been installed yet.",
-            INSTALL => "Setup is installing. This takes a few minutes.",
-            FINISH if self.manager_only => "The Platform Manager is installed. Open it to install SENTIENT later.",
-            FINISH => "SENTIENT is installed and running.",
+            0 => t!("Nothing changes on the computer until you press Install on the Summary page."),
+            1 => t!("What SENTIENT needs on this computer. Items marked “Will be installed” are handled by setup."),
+            2 if self.engine == Engine::Docker && self.windows => t!("SENTIENT's distribution keeps the containers and all their data on one disk. Put it on the disk with the most room: telemetry grows."),
+            2 if self.engine == Engine::Docker => t!("SENTIENT and its databases keep their data in Docker volumes. Put them on the disk with the most room: telemetry grows."),
+            2 => t!("Where SENTIENT and its database go. Put the database on the disk with the most free space: telemetry grows."),
+            3 => t!("How SENTIENT stores its data. The type can be changed later with Migration in the Platform Manager."),
+            4 => t!("The database SENTIENT signs in to. Setup checks that its ports are free."),
+            5 => t!("Setup checks that each port is free before moving on."),
+            6 => t!("The first SENTIENT sign-in, with full system rights. More users can be added in SENTIENT."),
+            7 => t!("SENTIENT's settings, sized for this computer. All of them can be changed later in the Platform Manager."),
+            8 if !self.windows && !self.manager_only => t!("Where to find SENTIENT. It starts with the computer: as a systemd service, or through Docker's restart policy."),
+            8 => t!("Where to find SENTIENT and how it starts."),
+            9 => t!("Check your choices. Nothing has been installed yet."),
+            INSTALL => t!("Setup is installing. This takes a few minutes."),
+            FINISH if self.manager_only => t!("The Platform Manager is installed. Open it to install SENTIENT later."),
+            FINISH => t!("SENTIENT is installed and running."),
             _ => return None,
         };
         Some(text.into())
@@ -250,7 +250,7 @@ impl Installer {
         };
         let chosen = self.chosen_version.clone().unwrap_or_else(|| list[0].version.clone());
         let this = cx.entity().downgrade();
-        let label = if chosen == list[0].version { format!("{chosen} (newest)") } else { chosen.clone() };
+        let label = if chosen == list[0].version { tf!("{chosen} (newest)") } else { chosen.clone() };
         Some(
             crate::ui::fitted_dropdown(
                 "sentient-version",
@@ -260,7 +260,7 @@ impl Installer {
                     for v in &list {
                         let this = this.clone();
                         let pick = v.version.clone();
-                        let label = if v.version == list[0].version { format!("{} (newest)", v.label()) } else { v.label() };
+                        let label = if v.version == list[0].version { tf!("{} (newest)", v.label()) } else { v.label() };
                         menu = menu.item(PopupMenuItem::new(label).checked(v.version == chosen).on_click(move |_, _, cx| {
                             let pick = pick.clone();
                             this.update(cx, |page, cx| page.choose_version(pick, cx)).ok();
@@ -275,23 +275,23 @@ impl Installer {
     fn welcome(&mut self, cx: &mut Context<Self>) -> Div {
         let theme = cx.theme().clone();
         let package: SharedString = match (&self.bundle, &self.online) {
-            (Some(_), _) => "Offline package: everything is included".into(),
-            (None, None) => "Looking for the latest SENTIENT online…".into(),
-            (None, Some(Ok(m))) => format!(
+            (Some(_), _) => t!("Offline package: everything is included").into(),
+            (None, None) => t!("Looking for the latest SENTIENT online…").into(),
+            (None, Some(Ok(m))) => tf!(
                 "Downloaded during install: SENTIENT {}, {}, checked before use",
                 m.version,
                 crate::online::size_label(m.download_size())
             )
             .into(),
             (None, Some(Err(_))) if cfg!(windows) => {
-                "No SENTIENT package next to Setup and no SENTIENT download for this computer: only the Platform Manager can be installed".into()
+                t!("No SENTIENT package next to Setup and no SENTIENT download for this computer: only the Platform Manager can be installed").into()
             }
             (None, Some(Err(_))) => {
-                "No SENTIENT package next to Setup and no SENTIENT download for this computer: Docker installs pull the image; a native install needs the package".into()
+                t!("No SENTIENT package next to Setup and no SENTIENT download for this computer: Docker installs pull the image; a native install needs the package").into()
             }
         };
         let manager_version = if self.adding_sentient {
-            format!("{}, installed", crate::updates::manager_version())
+            tf!("{}, installed", crate::updates::manager_version())
         } else {
             crate::updates::manager_version().to_string()
         };
@@ -310,7 +310,7 @@ impl Installer {
                     }),
             )
             .child(ui::card_fact(&theme, "Platform Manager", manager_version))
-            .child(ui::card_fact(&theme, "Package", package));
+            .child(ui::card_fact(&theme, t!("Package"), package));
         let choice = |manager_only: bool, id: &'static str, title: &'static str, desc: &'static str| {
             choice_card(&theme, id, choice_title(&theme, title, false), desc, self.manager_only == manager_only).on_click(cx.listener(move |this, _, _, cx| {
                 this.manager_only = manager_only;
@@ -353,14 +353,14 @@ impl Installer {
                     choice(
                         false,
                         "install-both",
-                        "SENTIENT and the Platform Manager",
-                        "The platform, its database and the Platform Manager. You choose the database and every setting on the next pages.",
+                        t!("SENTIENT and the Platform Manager"),
+                        t!("The platform, its database and the Platform Manager. You choose the database and every setting on the next pages."),
                     ),
                     choice(
                         true,
                         "install-manager",
-                        "Only the Platform Manager",
-                        "The Platform Manager alone, without SENTIENT and its database. SENTIENT can be installed from it later, from a SENTIENT package.",
+                        t!("Only the Platform Manager"),
+                        t!("The Platform Manager alone, without SENTIENT and its database. SENTIENT can be installed from it later, from a SENTIENT package."),
                     ),
                 ))
             })
@@ -369,7 +369,7 @@ impl Installer {
             .child(
                 div().flex_shrink_0().child(
                     Checkbox::new("accept")
-                        .label("I accept the licence agreement")
+                        .label(t!("I accept the licence agreement"))
                         .checked(self.accepted)
                         .on_change(cx.listener(|this, value: &bool, _, cx| {
                             this.accepted = *value;
@@ -391,11 +391,11 @@ impl Installer {
         let leftovers = (!self.leftovers.is_empty() || cleaning || !matches!(cleanup_state, JobState::Idle)).then(|| {
             let items = self.leftovers.clone();
             ui::panel(&theme)
-                .child(div().font_weight(FontWeight::MEDIUM).child("An earlier SENTIENT install is still on this computer"))
+                .child(div().font_weight(FontWeight::MEDIUM).child(t!("An earlier SENTIENT install is still on this computer")))
                 .children(items.into_iter().map(|i| div().text_sm().child(format!("• {i}"))))
                 .when(!self.leftovers.is_empty(), |p| {
                     p.child(div().text_sm().text_color(theme.muted_foreground).child(
-                        "Keep it to use its database again (offered under Database settings), or remove it so this install starts clean and its ports are free.",
+                        t!("Keep it to use its database again (offered under Database settings), or remove it so this install starts clean and its ports are free."),
                     ))
                 })
                 .child(
@@ -405,7 +405,7 @@ impl Installer {
                             r.child(
                                 crate::ui::button("remove-leftovers")
                                     .danger()
-                                    .label("Remove the earlier install")
+                                    .label(t!("Remove the earlier install"))
                                     .disabled(cleaning)
                                     .on_click(cx.listener(|this, _, window, cx| this.confirm_remove_leftovers(window, cx))),
                             )
@@ -428,7 +428,7 @@ impl Installer {
             .children(leftovers)
             .children(old_pg)
             .child(match rows {
-                None => ui::panel(&theme).child(div().text_sm().child("Checking this computer…")),
+                None => ui::panel(&theme).child(div().text_sm().child(t!("Checking this computer…"))),
                 Some(rows) => {
                     let rows: Vec<AnyElement> = rows.into_iter().enumerate().map(|(i, row)| self.check_row(i, row, cx)).collect();
                     ui::panel(&theme).gap_0().children(rows)
@@ -439,7 +439,7 @@ impl Installer {
                 h_flex().child(
                     crate::ui::button("recheck")
                         .outline()
-                        .label("Check again")
+                        .label(t!("Check again"))
                         .on_click(cx.listener(|this, _, _, cx| this.run_checks(cx))),
                 ),
             )
@@ -453,31 +453,31 @@ impl Installer {
     fn engine_choice(&self, theme: &Theme, cx: &mut Context<Self>) -> Div {
         let host = self.host();
         let (sys_desc, docker_desc) = if host.windows {
-            ("SENTIENT and PostgreSQL as Windows services. They start with Windows.", "SENTIENT and its databases as containers, in Docker Engine inside WSL 2.")
+            (t!("SENTIENT and PostgreSQL as Windows services. They start with Windows."), t!("SENTIENT and its databases as containers, in Docker Engine inside WSL 2."))
         } else {
-            ("Services from the distribution's packages, run by systemd.", "SENTIENT and its databases as containers. Every database type.")
+            (t!("Services from the distribution's packages, run by systemd."), t!("SENTIENT and its databases as containers. Every database type."))
         };
         // Linux: a glibc older than the release needs (or musl) turns the
         // card off; one that could not be read is a warning only.
         let glibc = self.native_glibc();
         let native = match glibc.blocked() {
             Some(why) => {
-                let title = off_title("In the system", ui::info("engine-native-why".into(), format!("Not on this system\n\n{why}").into()));
-                ui::radio_card_off(theme, "engine-native", title, "Not available on this computer.").relative().child(ui::layout_probe("panel"))
+                let title = off_title(t!("In the system"), ui::info("engine-native-why".into(), tf!("Not on this system\n\n{why}").into()));
+                ui::radio_card_off(theme, "engine-native", title, t!("Not available on this computer.")).relative().child(ui::layout_probe("panel"))
             }
-            None => choice_card(theme, "engine-native", choice_title(theme, "In the system", true), sys_desc, self.engine == Engine::Native)
+            None => choice_card(theme, "engine-native", choice_title(theme, t!("In the system"), true), sys_desc, self.engine == Engine::Native)
                 .on_click(cx.listener(|this, _, _, cx| this.set_engine(Engine::Native, cx))),
         };
         let docker = if host.windows && host.wsl == Wsl::Unavailable {
-            let title = off_title("Docker", ui::info("engine-docker-why".into(), format!("Docker is not possible on this computer\n\n{}", self.wsl_detail()).into()));
-            ui::radio_card_off(theme, "engine-docker", title, "Not available on this computer.").relative().child(ui::layout_probe("panel"))
+            let title = off_title(t!("Docker"), ui::info("engine-docker-why".into(), tf!("Docker is not possible on this computer\n\n{}", self.wsl_detail()).into()));
+            ui::radio_card_off(theme, "engine-docker", title, t!("Not available on this computer.")).relative().child(ui::layout_probe("panel"))
         } else {
-            choice_card(theme, "engine-docker", choice_title(theme, "Docker", false), docker_desc, self.engine == Engine::Docker)
+            choice_card(theme, "engine-docker", choice_title(theme, t!("Docker"), false), docker_desc, self.engine == Engine::Docker)
                 .on_click(cx.listener(|this, _, _, cx| this.set_engine(Engine::Docker, cx)))
         };
         let glibc_notice = match &glibc {
-            sentient_installer_core::glibc::NativeGlibc::Blocked(why) => Some(ui::notice(theme, Tone::Warn, format!("“In the system” is not available\n{why}"))),
-            sentient_installer_core::glibc::NativeGlibc::Unknown(why) if self.engine == Engine::Native => Some(ui::notice(theme, Tone::Warn, format!("The C library could not be checked\n{why}"))),
+            sentient_installer_core::glibc::NativeGlibc::Blocked(why) => Some(ui::notice(theme, Tone::Warn, tf!("“In the system” is not available\n{why}"))),
+            sentient_installer_core::glibc::NativeGlibc::Unknown(why) if self.engine == Engine::Native => Some(ui::notice(theme, Tone::Warn, tf!("The C library could not be checked\n{why}"))),
             _ => None,
         };
         column()
@@ -488,7 +488,7 @@ impl Installer {
                 c.child(ui::notice(
                     theme,
                     Tone::Neutral,
-                    "Windows restarts once\nWSL 2 is not on yet. Setup turns it on during the install, Windows restarts, and Setup continues by itself after you sign in.",
+                    t!("Windows restarts once\nWSL 2 is not on yet. Setup turns it on during the install, Windows restarts, and Setup continues by itself after you sign in."),
                 ))
             })
     }
@@ -509,7 +509,7 @@ impl Installer {
             .text_color(theme.primary)
             .cursor_pointer()
             .child(Icon::new(if open { IconName::ChevronDown } else { IconName::ChevronRight }).size(px(16.)))
-            .child("Customise where each part runs")
+            .child(t!("Customise where each part runs"))
             .on_click(cx.listener(|this, _, _, cx| {
                 this.customise_open = !this.customise_open;
                 cx.notify();
@@ -521,19 +521,19 @@ impl Installer {
         let host = self.host();
         let current = Placement::preset(self.engine, host.windows);
         let detail = self.wsl_detail();
-        let glibc_off = self.native_glibc().blocked().map(|why| format!("Not on this system\n\n{why}"));
+        let glibc_off = self.native_glibc().blocked().map(|why| tf!("Not on this system\n\n{why}"));
         let rows = PARTS.into_iter().enumerate().map(|(i, part)| {
             let (name, sub, help): (&str, Option<&str>, Option<&str>) = match part {
-                Part::Server => ("SENTIENT server", None, None),
-                Part::Postgres => ("PostgreSQL", Some("and TimescaleDB"), Some("TimescaleDB goes with PostgreSQL\n\nTimescaleDB is an extension inside PostgreSQL, so it always runs where PostgreSQL runs.")),
-                Part::Clickhouse => ("ClickHouse", None, Some("Only with PostgreSQL + ClickHouse\n\nUsed when you choose PostgreSQL + ClickHouse on the Database step.")),
+                Part::Server => (t!("SENTIENT server"), None, None),
+                Part::Postgres => ("PostgreSQL", Some(t!("and TimescaleDB")), Some(t!("TimescaleDB goes with PostgreSQL\n\nTimescaleDB is an extension inside PostgreSQL, so it always runs where PostgreSQL runs."))),
+                Part::Clickhouse => ("ClickHouse", None, Some(t!("Only with PostgreSQL + ClickHouse\n\nUsed when you choose PostgreSQL + ClickHouse on the Database step."))),
             };
             let key = match part {
                 Part::Server => "server",
                 Part::Postgres => "pg",
                 Part::Clickhouse => "ch",
             };
-            let seg = [(Place::System, "In the system"), (Place::Docker, "Docker")].into_iter().fold(ui::seg_track(theme), |track, (place, label)| {
+            let seg = [(Place::System, t!("In the system")), (Place::Docker, t!("Docker"))].into_iter().fold(ui::seg_track(theme), |track, (place, label)| {
                 let id = SharedString::from(format!("part-{key}-{}", if place == Place::System { "system" } else { "docker" }));
                 if let (Place::System, Some(why)) = (place, &glibc_off) {
                     return track.child(ui::seg_item_off(theme, id.clone(), label, ui::info(format!("{id}-why").into(), why.clone().into())));
@@ -604,7 +604,7 @@ impl Installer {
             buttons.push(
                 ui::button(SharedString::from(format!("check-again-{}", row.id)))
                     .ghost()
-                    .label("Check again")
+                    .label(t!("Check again"))
                     .disabled(fixing)
                     .on_click(cx.listener(|this, _, _, cx| this.run_checks(cx)))
                     .into_any_element(),
@@ -617,10 +617,10 @@ impl Installer {
                     ui::button(SharedString::from(format!("check-cmd-{}", row.id)))
                         .ghost()
                         .label(match (shown, commands.len()) {
-                            (true, 1) => "Hide command",
-                            (true, _) => "Hide commands",
-                            (false, 1) => "Show command",
-                            (false, _) => "Show commands",
+                            (true, 1) => t!("Hide command"),
+                            (true, _) => t!("Hide commands"),
+                            (false, 1) => t!("Show command"),
+                            (false, _) => t!("Show commands"),
                         })
                         .on_click(cx.listener(move |this, _, _, cx| {
                             if !this.commands_shown.remove(&id) {
@@ -669,7 +669,7 @@ impl Installer {
         let job = self.check_fix.read(cx);
         match job.state() {
             JobState::Done(m) => Some(ui::outcome(&theme, Tone::Good, format!("{label}: {m}")).into_any_element()),
-            JobState::Failed(m) => Some(crate::diagnosis::outcome(&theme, Tone::Bad, format!("{label} did not finish: {m}"), job)),
+            JobState::Failed(m) => Some(crate::diagnosis::outcome(&theme, Tone::Bad, tf!("{label} did not finish: {m}"), job)),
             _ => None,
         }
     }
@@ -678,8 +678,8 @@ impl Installer {
         let start = crate::chooser::start_for(&field.read(cx).value().to_string(), None);
         let rx = crate::chooser::open(
             cx,
-            crate::chooser::Ask { title: "Choose a folder", start: start.as_deref(), directory: true },
-            PathPromptOptions { files: false, directories: true, multiple: false, prompt: Some("Choose".into()) },
+            crate::chooser::Ask { title: t!("Choose a folder"), start: start.as_deref(), directory: true },
+            PathPromptOptions { files: false, directories: true, multiple: false, prompt: Some(t!("Choose").into()) },
         );
         cx.spawn_in(window, async move |_, cx| {
             let Ok(Ok(Some(paths))) = rx.await else { return };
@@ -701,8 +701,8 @@ impl Installer {
                 h_flex()
                     .gap_2()
                     .items_end()
-                    .child(field(&theme, "Folder for SENTIENT's WSL distribution and its data", &program).flex_1())
-                    .child(crate::ui::button("browse-program").outline().label("Browse").on_click(
+                    .child(field(&theme, t!("Folder for SENTIENT's WSL distribution and its data"), &program).flex_1())
+                    .child(crate::ui::button("browse-program").outline().label(t!("Browse")).on_click(
                         cx.listener(move |this, _, window, cx| this.browse(program.clone(), window, cx)),
                     )),
             ));
@@ -712,7 +712,7 @@ impl Installer {
         }
         if !self.windows {
             return column().child(ui::panel(&theme)
-                .child(field(&theme, "Program folder", &program))
+                .child(field(&theme, t!("Program folder"), &program))
                 .child(div().text_sm().text_color(theme.muted_foreground).child(
                     "PostgreSQL keeps its data where the distribution puts it (/var/lib/postgresql); SENTIENT's own files go to /var/lib/sentient.",
                 )));
@@ -723,8 +723,8 @@ impl Installer {
                 h_flex()
                     .gap_2()
                     .items_end()
-                    .child(field(&theme, "Program folder", &program).flex_1())
-                    .child(crate::ui::button("browse-program").outline().label("Browse").on_click(
+                    .child(field(&theme, t!("Program folder"), &program).flex_1())
+                    .child(crate::ui::button("browse-program").outline().label(t!("Browse")).on_click(
                         cx.listener(move |this, _, window, cx| this.browse(program.clone(), window, cx)),
                     )),
             )
@@ -732,8 +732,8 @@ impl Installer {
                 h_flex()
                     .gap_2()
                     .items_end()
-                    .child(field(&theme, "Database folder (PostgreSQL and its data)", &data).flex_1())
-                    .child(crate::ui::button("browse-data").outline().label("Browse").on_click(
+                    .child(field(&theme, t!("Database folder (PostgreSQL and its data)"), &data).flex_1())
+                    .child(crate::ui::button("browse-data").outline().label(t!("Browse")).on_click(
                         cx.listener(move |this, _, window, cx| this.browse(data.clone(), window, cx)),
                     )),
             )
@@ -746,11 +746,11 @@ impl Installer {
     fn data_locations(&mut self, theme: &Theme, cx: &mut Context<Self>) -> Div {
         let per = self.loc_per_store;
         let seg = crate::ui::seg_track(theme)
-            .child(crate::ui::seg_item(theme, "loc-one", "One folder", !per).on_click(cx.listener(|this, _, _, cx| {
+            .child(crate::ui::seg_item(theme, "loc-one", t!("One folder"), !per).on_click(cx.listener(|this, _, _, cx| {
                 this.loc_per_store = false;
                 cx.notify();
             })))
-            .child(crate::ui::seg_item(theme, "loc-per", "A place per store", per).on_click(cx.listener(|this, _, _, cx| {
+            .child(crate::ui::seg_item(theme, "loc-per", t!("A place per store"), per).on_click(cx.listener(|this, _, _, cx| {
                 this.loc_per_store = true;
                 cx.notify();
             })));
@@ -763,12 +763,12 @@ impl Installer {
                 .when(!last, |r| r.border_b_1().border_color(theme.border))
                 .child(div().w(px(150.)).flex_shrink_0().text_sm().text_color(theme.muted_foreground).child(label))
                 .child(div().flex_1().min_w_0().font_family(theme.mono_font_family.clone()).child(probed_input(Input::new(&field))))
-                .child(crate::ui::button(id).outline().icon(Icon::new(IconName::Folder)).label("Change").on_click(cx.listener(move |this, _, window, cx| this.browse(f2.clone(), window, cx))))
+                .child(crate::ui::button(id).outline().icon(Icon::new(IconName::Folder)).label(t!("Change")).on_click(cx.listener(move |this, _, window, cx| this.browse(f2.clone(), window, cx))))
                 .into_any_element()
         };
         let mut card = crate::ui::panel(theme)
             .gap_0()
-            .child(div().pb_2().font_weight(FontWeight::MEDIUM).child("Data locations"))
+            .child(div().pb_2().font_weight(FontWeight::MEDIUM).child(t!("Data locations")))
             .child(
                 h_flex()
                     .gap_3()
@@ -776,17 +776,17 @@ impl Installer {
                     .py(px(8.))
                     .border_b_1()
                     .border_color(theme.border)
-                    .child(h_flex().w(px(150.)).flex_shrink_0().gap_1().items_center().text_sm().text_color(theme.muted_foreground).child("Data").child(crate::ui::info(
+                    .child(h_flex().w(px(150.)).flex_shrink_0().gap_1().items_center().text_sm().text_color(theme.muted_foreground).child(t!("Data")).child(crate::ui::info(
                         "loc-help".into(),
-                        "One folder keeps everything together (postgres, clickhouse and files under it; Docker's own folder when left empty); a place per store puts each database on its own disk. The volumes keep their names (st-pg-data, st-ch-data, st-data): they stay in Docker's own folder unless you give them a place here.".into(),
+                        t!("One folder keeps everything together (postgres, clickhouse and files under it; Docker's own folder when left empty); a place per store puts each database on its own disk. The volumes keep their names (st-pg-data, st-ch-data, st-data): they stay in Docker's own folder unless you give them a place here.").into(),
                     )))
                     .child(seg),
             );
         let (one, pg, ch, data) = (self.fields.loc_one.clone(), self.fields.loc_pg.clone(), self.fields.loc_ch.clone(), self.fields.loc_data.clone());
         if per {
-            card = card.child(row("PostgreSQL", "loc-pg", pg, false, cx)).child(row("ClickHouse", "loc-ch", ch, false, cx)).child(row("SENTIENT files", "loc-data", data, true, cx));
+            card = card.child(row("PostgreSQL", "loc-pg", pg, false, cx)).child(row("ClickHouse", "loc-ch", ch, false, cx)).child(row(t!("SENTIENT files"), "loc-data", data, true, cx));
         } else {
-            card = card.child(row("Folder", "loc-one-dir", one, true, cx));
+            card = card.child(row(t!("Folder"), "loc-one-dir", one, true, cx));
         }
         card
     }
@@ -799,9 +799,9 @@ impl Installer {
         let host = self.host();
         let detail = self.wsl_detail();
         let options: [(Flavor, &'static str); 3] = [
-            (Flavor::Stock, "Simplest and smallest. For small sites and a few hundred devices."),
-            (Flavor::Timescaledb, "Compressed time-series inside PostgreSQL."),
-            (Flavor::Clickhouse, "Best for large telemetry volumes and long history."),
+            (Flavor::Stock, t!("Simplest and smallest. For small sites and a few hundred devices.")),
+            (Flavor::Timescaledb, t!("Compressed time-series inside PostgreSQL.")),
+            (Flavor::Clickhouse, t!("Best for large telemetry volumes and long history.")),
         ];
         let cards = options.into_iter().map(|(flavor, desc)| {
             let logos = || ui::flavor_logos(flavor, 18.);
@@ -812,7 +812,7 @@ impl Installer {
                     let help = (host.windows && self.engine == Engine::Native && flavor == Flavor::Clickhouse).then(|| {
                         ui::info(
                             "ch-wsl-help".into(),
-                            "ClickHouse runs in Docker inside WSL 2\n\nThere is no ClickHouse for Windows. Setup puts it in Docker Engine inside WSL 2, under its own hidden account, so it starts at boot with nobody signed in.".into(),
+                            t!("ClickHouse runs in Docker inside WSL 2\n\nThere is no ClickHouse for Windows. Setup puts it in Docker Engine inside WSL 2, under its own hidden account, so it starts at boot with nobody signed in.").into(),
                         )
                     });
                     let title = h_flex()
@@ -820,7 +820,7 @@ impl Installer {
                         .items_center()
                         .child(logos())
                         .child(div().font_weight(FontWeight::MEDIUM).child(flavor_label(flavor)))
-                        .when(recommended, |r| r.child(ui::pill(&theme, Tone::Good, "Recommended")))
+                        .when(recommended, |r| r.child(ui::pill(&theme, Tone::Good, t!("Recommended"))))
                         .children(help)
                         .into_any_element();
                     choice_card(&theme, flavor.as_str(), title, desc, self.flavor == Some(flavor))
@@ -833,7 +833,7 @@ impl Installer {
                 }
                 Err(why) => {
                     let text = match (why, flavor) {
-                        (Why::NeedsWsl, Flavor::Clickhouse) => format!("ClickHouse needs WSL 2\n\nClickHouse runs in Docker inside WSL 2, and WSL 2 cannot run on this computer. {detail}").trim_end().to_string(),
+                        (Why::NeedsWsl, Flavor::Clickhouse) => tf!("ClickHouse needs WSL 2\n\nClickHouse runs in Docker inside WSL 2, and WSL 2 cannot run on this computer. {detail}").trim_end().to_string(),
                         _ => why.text(&detail),
                     };
                     let title = h_flex()
@@ -842,7 +842,7 @@ impl Installer {
                         .child(h_flex().gap_2().items_center().opacity(ui::OFF_OPACITY).child(logos()).child(div().font_weight(FontWeight::MEDIUM).child(flavor_label(flavor))))
                         .child(ui::info(SharedString::from(format!("{}-why", flavor.as_str())), text.into()))
                         .into_any_element();
-                    let desc = if why == Why::NeedsWsl { "Not available on this computer." } else { desc };
+                    let desc = if why == Why::NeedsWsl { t!("Not available on this computer.") } else { desc };
                     ui::radio_card_off(&theme, flavor.as_str(), title, desc).relative().child(ui::layout_probe("panel")).child(runs_column(&theme, &["—"], ui::OFF_OPACITY))
                 }
             }
@@ -851,7 +851,7 @@ impl Installer {
             col.child(ui::notice(
                 &theme,
                 Tone::Neutral,
-                "Windows restarts once\nWSL 2 is not on yet. Setup turns it on for ClickHouse and continues by itself after you sign in.",
+                t!("Windows restarts once\nWSL 2 is not on yet. Setup turns it on for ClickHouse and continues by itself after you sign in."),
             ))
         })
     }
@@ -860,7 +860,7 @@ impl Installer {
         let theme = cx.theme().clone();
         let f = &self.fields;
         let pg_title = match self.flavor {
-            Some(Flavor::Timescaledb) => "PostgreSQL + TimescaleDB",
+            Some(Flavor::Timescaledb) => t!("PostgreSQL + TimescaleDB"),
             _ => "PostgreSQL",
         };
         let existing = self.existing.clone().map(|where_| {
@@ -874,23 +874,23 @@ impl Installer {
                 if selected { b.primary() } else { b.outline() }
             };
             ui::panel(&theme)
-                .child(div().font_weight(FontWeight::SEMIBOLD).child("Earlier database found"))
+                .child(div().font_weight(FontWeight::SEMIBOLD).child(t!("Earlier database found")))
                 .child(div().text_sm().child(where_))
                 .child(
                     h_flex()
                         .gap(crate::ui::button_gap())
-                        .child(crate::ui::probed(choice("existing-keep", "Keep using it", keep).on_click(cx.listener(|this, _, _, cx| {
+                        .child(crate::ui::probed(choice("existing-keep", t!("Keep using it"), keep).on_click(cx.listener(|this, _, _, cx| {
                             this.keep_existing = true;
                             this.delete_existing = false;
                             cx.notify();
                         }))))
-                        .child(crate::ui::probed(choice("existing-fresh", "Start fresh", !keep && !delete).on_click(cx.listener(|this, _, _, cx| {
+                        .child(crate::ui::probed(choice("existing-fresh", t!("Start fresh"), !keep && !delete).on_click(cx.listener(|this, _, _, cx| {
                             this.keep_existing = false;
                             this.delete_existing = false;
                             cx.notify();
                         }))))
                         .when(native, |row| {
-                            row.child(crate::ui::probed(choice("existing-delete", "Delete it", delete).on_click(cx.listener(|this, _, _, cx| {
+                            row.child(crate::ui::probed(choice("existing-delete", t!("Delete it"), delete).on_click(cx.listener(|this, _, _, cx| {
                                 this.keep_existing = false;
                                 this.delete_existing = true;
                                 cx.notify();
@@ -898,23 +898,23 @@ impl Installer {
                         }),
                 )
                 .child(div().text_sm().text_color(theme.muted_foreground).child(if keep {
-                    format!(
+                    tf!(
                         "Its users, devices, dashboards and settings stay. Before anything is changed, the install checks that its history table fits {}: a plain one is converted for TimescaleDB, and a database that cannot work in this mode stops the install with the reason.",
-                        flavor.map(crate::installation::flavor_label).unwrap_or("the chosen database")
+                        flavor.map(crate::installation::flavor_label).unwrap_or(t!("the chosen database"))
                     )
                 } else if delete {
-                    "A new, empty database. The earlier SENTIENT database (and its ClickHouse history) is deleted when the install starts. This cannot be undone.".to_string()
+                    t!("A new, empty database. The earlier SENTIENT database (and its ClickHouse history) is deleted when the install starts. This cannot be undone.").to_string()
                 } else {
-                    "A new, empty database. The earlier one is not deleted: it is renamed (…_before_install_<date>) and listed under Kept on the Migration screen, where it can be removed.".to_string()
+                    t!("A new, empty database. The earlier one is not deleted: it is renamed (…_before_install_<date>) and listed under Kept on the Migration screen, where it can be removed.").to_string()
                 }))
                 .when(cfg!(windows) && native, |p| {
                     p.child(if kept_passwords {
-                        ui::outcome(&theme, Tone::Good, "The earlier install's passwords were found and filled in below.")
+                        ui::outcome(&theme, Tone::Good, t!("The earlier install's passwords were found and filled in below."))
                     } else {
                         ui::outcome(
                             &theme,
                             Tone::Warn,
-                            "The PostgreSQL admin password below must be the earlier install's: the kept PostgreSQL still uses it.",
+                            t!("The PostgreSQL admin password below must be the earlier install's: the kept PostgreSQL still uses it."),
                         )
                     })
                 })
@@ -926,13 +926,13 @@ impl Installer {
                     .gap_4()
                     .child(div().font_weight(FontWeight::SEMIBOLD).child(pg_title))
                     .child(grid_row(vec![
-                        Some(field(&theme, "Database name", &f.pg_db)),
-                        Some(field(&theme, "User", &f.pg_user)),
-                        Some(field(&theme, "Port", &f.pg_port)),
+                        Some(field(&theme, t!("Database name"), &f.pg_db)),
+                        Some(field(&theme, t!("User"), &f.pg_user)),
+                        Some(field(&theme, t!("Port"), &f.pg_port)),
                     ]))
                     .child(grid_row(vec![
-                        Some(default_password_field(&theme, "pg-password-help", "Password", &f.pg_password)),
-                        Some(default_password_field(&theme, "pg-admin-password-help", "PostgreSQL admin password", &f.pg_admin_password)),
+                        Some(default_password_field(&theme, "pg-password-help", t!("Password"), &f.pg_password)),
+                        Some(default_password_field(&theme, "pg-admin-password-help", t!("PostgreSQL admin password"), &f.pg_admin_password)),
                         None,
                     ])),
             )
@@ -941,17 +941,17 @@ impl Installer {
                     ui::panel(&theme)
                         .gap_4()
                         .child(div().font_weight(FontWeight::SEMIBOLD).child(match placement::clickhouse_place(self.host(), self.engine) {
-                            Some(place) => format!("ClickHouse ({place})"),
+                            Some(place) => tf!("ClickHouse ({place})"),
                             None => "ClickHouse".to_string(),
                         }))
                         .child(grid_row(vec![
-                            Some(field(&theme, "Database", &f.ch_db)),
-                            Some(field(&theme, "User", &f.ch_user)),
-                            Some(default_password_field(&theme, "ch-password-help", "Password", &f.ch_password)),
+                            Some(field(&theme, t!("Database"), &f.ch_db)),
+                            Some(field(&theme, t!("User"), &f.ch_user)),
+                            Some(default_password_field(&theme, "ch-password-help", t!("Password"), &f.ch_password)),
                         ]))
                         .child(grid_row(vec![
-                            Some(field(&theme, "HTTP port", &f.ch_http_port)),
-                            Some(field(&theme, "Native port", &f.ch_native_port)),
+                            Some(field(&theme, t!("HTTP port"), &f.ch_http_port)),
+                            Some(field(&theme, t!("Native port"), &f.ch_native_port)),
                             None,
                         ])),
                 )
@@ -985,12 +985,12 @@ impl Installer {
         for (port, what, field) in busy {
             let owner = self.port_owners.get(&port).cloned().flatten();
             let text = match &owner {
-                Some(o) if o.is_sentient(&ours) => format!(
+                Some(o) if o.is_sentient(&ours) => tf!(
                     "Port {port} ({what}) is held by an earlier SENTIENT install ({}). Go back to System check to remove it, or use another port.",
                     o.describe()
                 ),
-                Some(o) => format!("Port {port} ({what}) is used by another program ({}). It is not part of SENTIENT and is not touched.", o.describe()),
-                None => format!("Port {port} ({what}) is in use by another program."),
+                Some(o) => tf!("Port {port} ({what}) is used by another program ({}). It is not part of SENTIENT and is not touched.", o.describe()),
+                None => tf!("Port {port} ({what}) is in use by another program."),
             };
             let next = sentient_installer_core::checks::next_free_port(port.saturating_add(1));
             panel = panel
@@ -1002,8 +1002,8 @@ impl Installer {
                         .pl_6()
                         .when_some(next, |row, next| {
                             let field = field.clone();
-                            row.child(div().child(format!("{what} port for SENTIENT: {next} is free.")))
-                                .child(crate::ui::probed(crate::ui::button(SharedString::from(format!("use-port-{port}"))).outline().label(format!("Use {next}")).on_click(cx.listener(
+                            row.child(div().child(tf!("{what} port for SENTIENT: {next} is free.")))
+                                .child(crate::ui::probed(crate::ui::button(SharedString::from(format!("use-port-{port}"))).outline().label(tf!("Use {next}")).on_click(cx.listener(
                                     move |this, _, window, cx| {
                                         field.update(cx, |state, cx| state.set_value(next.to_string(), window, cx));
                                         this.problem = None;
@@ -1011,7 +1011,7 @@ impl Installer {
                                     },
                                 ))))
                         })
-                        .child(crate::ui::probed(crate::ui::button(SharedString::from(format!("recheck-port-{port}"))).ghost().label("Check again").on_click(cx.listener(
+                        .child(crate::ui::probed(crate::ui::button(SharedString::from(format!("recheck-port-{port}"))).ghost().label(t!("Check again")).on_click(cx.listener(
                             move |this, _, _, cx| {
                                 this.port_owners.remove(&port);
                                 cx.notify();
@@ -1035,11 +1035,11 @@ impl Installer {
         column()
             .child(
                 ui::panel(&theme)
-                    .child(row("Web (HTTP)", &f.http_port))
+                    .child(row(t!("Web (HTTP)"), &f.http_port))
                     .child(row("MQTT", &f.mqtt_port))
-                    .child(row("MQTT over TLS", &f.mqtts_port))
+                    .child(row(t!("MQTT over TLS"), &f.mqtts_port))
                     .child(row("CoAP", &f.coap_port))
-                    .child(row("CoAP over DTLS", &f.coaps_port)),
+                    .child(row(t!("CoAP over DTLS"), &f.coaps_port)),
             )
             .children(self.port_warning(cx))
     }
@@ -1051,13 +1051,13 @@ impl Installer {
             .child(
                 ui::panel(&theme)
                     .gap_4()
-                    .child(field(&theme, "E-mail", &f.admin_email))
-                    .child(secret_field(&theme, "Password (at least 8 characters)", &f.admin_password))
-                    .child(secret_field(&theme, "Confirm password", &f.admin_confirm)),
+                    .child(field(&theme, t!("E-mail"), &f.admin_email))
+                    .child(secret_field(&theme, t!("Password (at least 8 characters)"), &f.admin_password))
+                    .child(secret_field(&theme, t!("Confirm password"), &f.admin_confirm)),
             )
             .child(
                 Checkbox::new("demo")
-                    .label("Load demo devices and dashboards")
+                    .label(t!("Load demo devices and dashboards"))
                     .checked(self.load_demo)
                     .on_change(cx.listener(|this, value: &bool, _, cx| {
                         this.load_demo = *value;
@@ -1069,11 +1069,11 @@ impl Installer {
     fn configuration(&mut self, cx: &mut Context<Self>) -> Div {
         let theme = cx.theme().clone();
         let toggle = crate::ui::seg_track(&theme)
-            .child(crate::ui::seg_item(&theme, "recommended", "Recommended", !self.customize).on_click(cx.listener(|this, _, _, cx| {
+            .child(crate::ui::seg_item(&theme, "recommended", t!("Recommended"), !self.customize).on_click(cx.listener(|this, _, _, cx| {
                 this.customize = false;
                 cx.notify();
             })))
-            .child(crate::ui::seg_item(&theme, "customize", "Customize", self.customize).on_click(cx.listener(|this, _, window, cx| {
+            .child(crate::ui::seg_item(&theme, "customize", t!("Customize"), self.customize).on_click(cx.listener(|this, _, window, cx| {
                 this.refill_recommended(window, cx);
                 this.customize = true;
                 cx.notify();
@@ -1085,7 +1085,7 @@ impl Installer {
     fn recommended_panel(&self, cx: &mut Context<Self>) -> Div {
         let theme = cx.theme().clone();
         let recommended = self.recommendation();
-        let get = |key: &str| recommended.get(key).cloned().unwrap_or_else(|| "SENTIENT default".into());
+        let get = |key: &str| recommended.get(key).cloned().unwrap_or_else(|| t!("SENTIENT default").into());
         let sizing = self.sizing();
         let docker = self.engine == Engine::Docker;
         let clickhouse = self.flavor == Some(Flavor::Clickhouse);
@@ -1100,16 +1100,16 @@ impl Installer {
                     .child(sized_for)
                     .children(why.map(|w| ui::info("sized-for-why".into(), w.into()))),
             )
-            .child(ui::fact(&theme, "PostgreSQL shared_buffers", get("pg:shared_buffers")))
-            .child(ui::fact(&theme, "PostgreSQL effective_cache_size", get("pg:effective_cache_size")))
+            .child(ui::fact(&theme, t!("PostgreSQL shared_buffers"), get("pg:shared_buffers")))
+            .child(ui::fact(&theme, t!("PostgreSQL effective_cache_size"), get("pg:effective_cache_size")))
             .when_some(sizing.vm_mb.filter(|_| clickhouse), |p, vm| {
-                p.child(ui::fact(&theme, "ClickHouse memory", format!("Up to {} GB, the WSL 2 VM's{}", gb(vm), if docker { ", shared with PostgreSQL" } else { "" })))
+                p.child(ui::fact(&theme, t!("ClickHouse memory"), tf!("Up to {} GB, the WSL 2 VM's{}", gb(vm), if docker { t!(", shared with PostgreSQL") } else { "" })))
             })
-            .child(ui::fact(&theme, "Audit log kept", format!("{} days", get("AUDIT_LOG_TTL_DAYS"))))
-            .child(ui::fact(&theme, "Notifications kept", format!("{} days", get("NOTIFICATIONS_TTL_DAYS"))))
-            .child(ui::fact(&theme, "Everything else", "SENTIENT's tested defaults"))
+            .child(ui::fact(&theme, t!("Audit log kept"), tf!("{} days", get("AUDIT_LOG_TTL_DAYS"))))
+            .child(ui::fact(&theme, t!("Notifications kept"), tf!("{} days", get("NOTIFICATIONS_TTL_DAYS"))))
+            .child(ui::fact(&theme, t!("Everything else"), t!("SENTIENT's tested defaults")))
             .child(div().text_size(px(13.)).text_color(theme.muted_foreground).child(
-                "Choose Customize to see and change every setting. All of them can also be changed later in the Platform Manager.",
+                t!("Choose Customize to see and change every setting. All of them can also be changed later in the Platform Manager."),
             ))
     }
 
@@ -1166,7 +1166,7 @@ impl Installer {
         v_flex()
             .gap_3()
             .child(Input::new(&self.fields.search))
-            .child(div().text_size(px(13.)).text_color(theme.muted_foreground).child(format!(
+            .child(div().text_size(px(13.)).text_color(theme.muted_foreground).child(tf!(
                 "{total} settings. Empty fields keep the value shown in grey. Values are written to the SENTIENT service."
             )))
             .child(ui::panel(&theme).gap_2().children(groups))
@@ -1176,20 +1176,20 @@ impl Installer {
         let options: Vec<(&'static str, &'static str, bool)> = if self.manager_only {
             if cfg!(windows) {
                 vec![
-                    ("desktop-manager", "Desktop shortcut for the Platform Manager", self.desktop_manager),
-                    ("start-menu", "Start menu entry", self.start_menu),
+                    ("desktop-manager", t!("Desktop shortcut for the Platform Manager"), self.desktop_manager),
+                    ("start-menu", t!("Start menu entry"), self.start_menu),
                 ]
             } else {
-                vec![("start-menu", "Application menu entry for the Platform Manager", self.start_menu)]
+                vec![("start-menu", t!("Application menu entry for the Platform Manager"), self.start_menu)]
             }
         } else if cfg!(windows) {
             let mut v = vec![
-                ("autostart", "Start SENTIENT automatically with Windows", self.autostart),
-                ("desktop-sentient", "Desktop shortcut for SENTIENT", self.desktop_sentient),
-                ("desktop-manager", "Desktop shortcut for the Platform Manager", self.desktop_manager),
-                ("start-menu", "Start menu entries", self.start_menu),
-                ("kiosk", "Full-screen (kiosk) shortcut for operator screens", self.kiosk),
-                ("open-at-signin", "Open SENTIENT full screen when the computer starts (operator screens)", self.open_at_signin),
+                ("autostart", t!("Start SENTIENT automatically with Windows"), self.autostart),
+                ("desktop-sentient", t!("Desktop shortcut for SENTIENT"), self.desktop_sentient),
+                ("desktop-manager", t!("Desktop shortcut for the Platform Manager"), self.desktop_manager),
+                ("start-menu", t!("Start menu entries"), self.start_menu),
+                ("kiosk", t!("Full-screen (kiosk) shortcut for operator screens"), self.kiosk),
+                ("open-at-signin", t!("Open SENTIENT full screen when the computer starts (operator screens)"), self.open_at_signin),
             ];
             // Already installed: its shortcuts are there.
             if self.adding_sentient {
@@ -1198,9 +1198,9 @@ impl Installer {
             v
         } else {
             vec![
-                ("start-menu", if self.adding_sentient { "Application menu entry for SENTIENT" } else { "Application menu entries for SENTIENT and the Platform Manager" }, self.start_menu),
-                ("kiosk", "Full-screen (kiosk) launcher for operator screens", self.kiosk),
-                ("open-at-signin", "Open SENTIENT full screen when the computer starts (operator screens)", self.open_at_signin),
+                ("start-menu", if self.adding_sentient { t!("Application menu entry for SENTIENT") } else { t!("Application menu entries for SENTIENT and the Platform Manager") }, self.start_menu),
+                ("kiosk", t!("Full-screen (kiosk) launcher for operator screens"), self.kiosk),
+                ("open-at-signin", t!("Open SENTIENT full screen when the computer starts (operator screens)"), self.open_at_signin),
             ]
         };
         let theme = cx.theme().clone();
@@ -1214,7 +1214,7 @@ impl Installer {
                 .gap_3()
                 .child(
                     Checkbox::new("autologin")
-                        .label("Also sign in to this computer automatically after a restart")
+                        .label(t!("Also sign in to this computer automatically after a restart"))
                         .checked(self.autologin)
                         .on_change(cx.listener(|this, value: &bool, _, cx| {
                             this.autologin = *value;
@@ -1225,11 +1225,11 @@ impl Installer {
                     col.child(
                         h_flex()
                             .gap_3()
-                            .child(div().w_64().child(field(&theme, "Operator account", &self.fields.autologin_user)))
+                            .child(div().w_64().child(field(&theme, t!("Operator account"), &self.fields.autologin_user)))
                             .when(cfg!(windows), |row| {
                                 row.child(div().w_64().child(secret_field(
                                     &theme,
-                                    "Account password",
+                                    t!("Account password"),
                                     &self.fields.autologin_password,
                                 )))
                             }),
@@ -1237,7 +1237,7 @@ impl Installer {
                     .child(ui::outcome(
                         &theme,
                         Tone::Warn,
-                        "Anyone at this screen gets this account without typing a password. Use an operator account with only the rights the operator needs.",
+                        t!("Anyone at this screen gets this account without typing a password. Use an operator account with only the rights the operator needs."),
                     ))
                 })
         });
@@ -1278,80 +1278,80 @@ impl Installer {
                 shortcuts.push("desktop");
             }
             if self.start_menu {
-                shortcuts.push(if cfg!(windows) { "Start menu" } else { "application menu" });
+                shortcuts.push(if cfg!(windows) { t!("Start menu") } else { "application menu" });
             }
-            rows.push(("Installs", format!("SENTIENT Platform Manager {}, without SENTIENT", crate::updates::manager_version()), 0));
-            rows.push(("Program folder", crate::self_install::manager_dir().display().to_string(), 0));
+            rows.push((t!("Installs"), tf!("SENTIENT Platform Manager {}, without SENTIENT", crate::updates::manager_version()), 0));
+            rows.push((t!("Program folder"), crate::self_install::manager_dir().display().to_string(), 0));
             rows.push((
-                "Shortcuts",
-                if shortcuts.is_empty() { "None".into() } else { shortcuts.join(" and ") },
+                t!("Shortcuts"),
+                if shortcuts.is_empty() { t!("None").into() } else { shortcuts.join(" and ") },
                 super::SHORTCUTS,
             ));
         } else {
             if self.adding_sentient {
-                rows.push(("Installs", format!("SENTIENT {} (the Platform Manager {} is already installed)", self.sentient_version, crate::updates::manager_version()), 0));
+                rows.push((t!("Installs"), tf!("SENTIENT {} (the Platform Manager {} is already installed)", self.sentient_version, crate::updates::manager_version()), 0));
             }
             let host = self.host();
-            rows.push(("Runs as", placement::runs_as(host, self.engine, self.flavor), 1));
+            rows.push((t!("Runs as"), placement::runs_as(host, self.engine, self.flavor), 1));
             if self.windows && self.engine == Engine::Docker {
-                rows.push(("WSL distribution folder", v(&f.install_dir), 2));
+                rows.push((t!("WSL distribution folder"), v(&f.install_dir), 2));
             } else if self.engine == Engine::Native {
-                rows.push(("Program folder", v(&f.install_dir), 2));
+                rows.push((t!("Program folder"), v(&f.install_dir), 2));
             }
             if self.windows && self.engine == Engine::Native {
-                rows.push(("Database folder", v(&f.data_dir), 2));
+                rows.push((t!("Database folder"), v(&f.data_dir), 2));
             }
             rows.extend(vec![
-                ("Database", self.flavor.map(flavor_label).unwrap_or("Not chosen").to_string(), 3),
-                ("PostgreSQL", format!("{} as {} on port {}", v(&f.pg_db), v(&f.pg_user), v(&f.pg_port)), 4),
+                (t!("Database"), self.flavor.map(flavor_label).unwrap_or(t!("Not chosen")).to_string(), 3),
+                ("PostgreSQL", tf!("{} as {} on port {}", v(&f.pg_db), v(&f.pg_user), v(&f.pg_port)), 4),
             ]);
             if self.flavor == Some(Flavor::Clickhouse) {
                 let place = placement::clickhouse_place(host, self.engine).map(|p| format!(" ({p})")).unwrap_or_default();
                 rows.push((
                     "ClickHouse",
-                    format!("{} as {} on port {}{place}", v(&f.ch_db), v(&f.ch_user), v(&f.ch_http_port)),
+                    tf!("{} as {} on port {}{place}", v(&f.ch_db), v(&f.ch_user), v(&f.ch_http_port)),
                     4,
                 ));
             }
             rows.extend(vec![
                 (
-                    "Ports",
+                    t!("Ports"),
                     ports_summary(
                         [v(&f.http_port), v(&f.mqtt_port), v(&f.mqtts_port), v(&f.coap_port), v(&f.coaps_port)],
                         coap_local_only(self.windows, self.engine),
                     ),
                     5,
                 ),
-                ("Administrator", v(&f.admin_email), 6),
+                (t!("Administrator"), v(&f.admin_email), 6),
                 (
-                    "Configuration",
+                    t!("Configuration"),
                     if self.customize {
-                        format!("Customized ({} settings set)", self.chosen_settings(cx).len())
+                        tf!("Customized ({} settings set)", self.chosen_settings(cx).len())
                     } else {
-                        "Recommended for this computer".into()
+                        t!("Recommended for this computer").into()
                     },
                     7,
                 ),
                 (
-                    "Startup",
-                    if !self.windows || self.autostart { "Starts with the computer".into() } else { "Started manually".into() },
+                    t!("Startup"),
+                    if !self.windows || self.autostart { t!("Starts with the computer").into() } else { t!("Started manually").into() },
                     8,
                 ),
             ]);
             if self.open_at_signin {
                 let screen = if self.autologin {
-                    format!("Signs in as {} and opens SENTIENT full screen after a restart", v(&f.autologin_user))
+                    tf!("Signs in as {} and opens SENTIENT full screen after a restart", v(&f.autologin_user))
                 } else {
-                    "Opens SENTIENT full screen when someone signs in".into()
+                    t!("Opens SENTIENT full screen when someone signs in").into()
                 };
-                rows.push(("Operator screen", screen, 8));
+                rows.push((t!("Operator screen"), screen, 8));
             }
         }
         let coap_local = !self.manager_only && coap_local_only(self.windows, self.engine);
         column().child(ui::panel(&theme).gap_0().py(px(8.)).children(rows.into_iter().enumerate().map(|(i, (label, value, step))| {
             let empty = value.trim().is_empty();
             // Windows Docker: why CoAP is this computer's only (an (i), not a wall of text).
-            let why = (coap_local && label == "Ports").then(|| ui::info("summary-coap-why".into(), COAP_LOCAL_HELP.into()));
+            let why = (coap_local && label == t!("Ports")).then(|| ui::info("summary-coap-why".into(), crate::i18n::t(COAP_LOCAL_HELP).into()));
             h_flex()
                 .gap_4()
                 .py(px(6.))
@@ -1361,14 +1361,14 @@ impl Installer {
                 .text_sm()
                 .child(div().w(px(ui::CARD_LABEL_W + 30.)).flex_shrink_0().text_color(theme.muted_foreground).child(label))
                 .child(if empty {
-                    div().flex_1().min_w_0().text_color(theme.muted_foreground).child("Not entered")
+                    div().flex_1().min_w_0().text_color(theme.muted_foreground).child(t!("Not entered"))
                 } else {
                     h_flex().flex_1().min_w_0().gap_1().items_center().child(div().min_w_0().font_weight(FontWeight::MEDIUM).child(value)).children(why)
                 })
                 .child(
                     crate::ui::button(SharedString::from(format!("change-{step}-{label}")))
                         .ghost()
-                        .label("Change")
+                        .label(t!("Change"))
                         .on_click(cx.listener(move |this, _, _, cx| this.go(step, cx))),
                 )
         })))
@@ -1378,19 +1378,19 @@ impl Installer {
         let theme = cx.theme().clone();
         let job = self.install.read(cx);
         let state = job.state().clone();
-        let restart = matches!(&state, JobState::Failed(m) if m.as_ref() == super::plan::RESTART_REQUIRED);
+        let restart = matches!(&state, JobState::Failed(m) if m.as_ref() == super::plan::RESTART_REQUIRED || m.as_ref() == crate::i18n::t(super::plan::RESTART_REQUIRED));
         // What went wrong and the fix (crate::diagnosis), when diagnosed;
         // the shared job view shows it (crate::manager::jobview).
         let undiagnosed = job.diagnosis_view().is_none();
-        let mut view = crate::manager::jobview::JobView::new("install", if self.manager_only { "Installing the Platform Manager" } else { "Installing SENTIENT" }, &self.install)
-            .cancel(crate::manager::jobview::Cancel::Cannot("Setup cannot stop half-way: a failed step says what to fix, and Setup can then run again."));
+        let mut view = crate::manager::jobview::JobView::new("install", if self.manager_only { t!("Installing the Platform Manager") } else { t!("Installing SENTIENT") }, &self.install)
+            .cancel(crate::manager::jobview::Cancel::Cannot(t!("Setup cannot stop half-way: a failed step says what to fix, and Setup can then run again.")));
         if restart {
             // Not a failure: the step waits for the restart, and Restart
             // now is the footer's primary button.
-            view = view.pill("Restart", Tone::Warn).paused("Continues after Windows restarts and you sign in").result(ui::notice(
+            view = view.pill(t!("Restart"), Tone::Warn).paused(t!("Continues after Windows restarts and you sign in")).result(ui::notice(
                 &theme,
                 Tone::Neutral,
-                "Restart required\nWindows must restart to finish turning on WSL 2. Setup continues by itself after you sign in again; your choices are kept.",
+                t!("Restart required\nWindows must restart to finish turning on WSL 2. Setup continues by itself after you sign in again; your choices are kept."),
             ));
         } else if let JobState::Failed(m) = &state {
             if undiagnosed {
@@ -1415,8 +1415,8 @@ impl Installer {
                         .justify_center()
                         .child(Icon::new(IconName::Check).large()),
                 )
-                .child(div().text_sm().child("To install SENTIENT later, open it and choose Download and install SENTIENT (or Install from local files)."))
-                .child(h_flex().child(crate::ui::button("open-manager").primary().label("Open Platform Manager").on_click(
+                .child(div().text_sm().child(t!("To install SENTIENT later, open it and choose Download and install SENTIENT (or Install from local files).")))
+                .child(h_flex().child(crate::ui::button("open-manager").primary().label(t!("Open Platform Manager")).on_click(
                     |_, _, _| {
                         let _ = crate::self_install::manager_command(&crate::self_install::manager_exe()).arg("--manager").spawn();
                     },
@@ -1440,22 +1440,22 @@ impl Installer {
             )
             .child(
                 ui::panel(&theme)
-                    .child(ui::card_fact(&theme, "Address", url))
-                    .child(ui::card_fact(&theme, "Sign in as", if email.trim().is_empty() { "The e-mail entered under Administrator".to_string() } else { email }))
+                    .child(ui::card_fact(&theme, t!("Address"), url))
+                    .child(ui::card_fact(&theme, t!("Sign in as"), if email.trim().is_empty() { t!("The e-mail entered under Administrator").to_string() } else { email }))
                     .child(ui::card_fact(
                         &theme,
-                        "Managed by",
+                        t!("Managed by"),
                         if cfg!(windows) {
-                            "SENTIENT Platform Manager (Start menu)"
+                            t!("SENTIENT Platform Manager (Start menu)")
                         } else {
-                            "SENTIENT Platform Manager (application menu, or sentient-platform-manager)"
+                            t!("SENTIENT Platform Manager (application menu, or sentient-platform-manager)")
                         },
                     )),
             )
             .child(ui::notice(
                 &theme,
                 Tone::Neutral,
-                "Next: activate your licence\nSign in to SENTIENT as the system administrator and activate it under Licence. Activation needs internet once.",
+                t!("Next: activate your licence\nSign in to SENTIENT as the system administrator and activate it under Licence. Activation needs internet once."),
             ))
             .child(
                 h_flex()
@@ -1463,10 +1463,10 @@ impl Installer {
                     .child(crate::ui::probed(
                         crate::ui::button("open-sentient")
                             .primary()
-                            .label("Open SENTIENT")
+                            .label(t!("Open SENTIENT"))
                             .on_click(move |_, _, cx| ui::open_sentient(port, kiosk, cx)),
                     ))
-                    .child(crate::ui::probed(crate::ui::button("open-manager").outline().label("Open Platform Manager").on_click(
+                    .child(crate::ui::probed(crate::ui::button("open-manager").outline().label(t!("Open Platform Manager")).on_click(
                         |_, _, _| {
                             let _ = crate::self_install::manager_command(&crate::self_install::manager_exe())
                                 .arg("--manager")

@@ -76,7 +76,7 @@ pub fn load_state(record: &InstallationRecord) -> Option<MigrationState> {
 fn save_state(record: &InstallationRecord, state: &MigrationState) -> Result<(), String> {
     let json = serde_json::to_string_pretty(state).map_err(|e| e.to_string())?;
     let path = state_path(record);
-    std::fs::write(&path, json).map_err(|e| format!("write the migration state: {e}"))?;
+    std::fs::write(&path, json).map_err(|e| nf!("write the migration state: {e}"))?;
     #[cfg(unix)]
     if !state.old_ch_password.is_empty() {
         use std::os::unix::fs::PermissionsExt;
@@ -93,7 +93,7 @@ pub fn targets(record: &InstallationRecord) -> Result<Vec<Flavor>, &'static str>
         // TimescaleDB is not packaged by Linux distributions.
         Engine::Native => Ok([Flavor::Stock, Flavor::Clickhouse].into_iter().filter(|f| *f != record.flavor()).collect()),
         Engine::Docker if cfg!(windows) => {
-            Err("SENTIENT runs natively on Windows; in-place migration covers native Windows installations and Docker on Linux.")
+            Err(n!("SENTIENT runs natively on Windows; in-place migration covers native Windows installations and Docker on Linux."))
         }
         Engine::Docker => Ok(all.into_iter().filter(|f| *f != record.flavor()).collect()),
     }
@@ -123,7 +123,7 @@ fn block_on<F: std::future::Future>(future: F) -> Result<F::Output, String> {
         .enable_all()
         .build()
         .map(|rt| rt.block_on(future))
-        .map_err(|e| format!("start the migration runtime: {e}"))
+        .map_err(|e| nf!("start the migration runtime: {e}"))
 }
 
 // ---------------------------------------------------------------------------
@@ -289,7 +289,7 @@ pub fn preflight(record: &InstallationRecord) -> Result<(), String> {
             return Err(sentient_installer_core::distro::EXTERNAL_COMPOSE.into());
         }
         if record.stack.pg_port == 0 {
-            return Err("PostgreSQL is not published on this machine, so it cannot be backed up from here.".into());
+            return Err(n!("PostgreSQL is not published on this machine, so it cannot be backed up from here.").into());
         }
     }
     let old = Setup::current(record)?;
@@ -299,7 +299,7 @@ pub fn preflight(record: &InstallationRecord) -> Result<(), String> {
     if let (Some(pg), Some(free)) = (db.pg.as_ref(), free_space(&dir)) {
         let need = pg.db_bytes + db.ch.as_ref().map(|c| c.disk_bytes).unwrap_or(0);
         if free < need + need / 5 + (1 << 30) {
-            return Err(format!(
+            return Err(nf!(
                 "The backup needs about {} at {}, and {} is free there.",
                 crate::dbstatus::bytes_label(need + need / 5),
                 dir.display(),
@@ -328,12 +328,12 @@ pub fn run(record: InstallationRecord, target: Flavor, sink: ProgressFn) -> Resu
     }
     let from = record.flavor();
     if from == target {
-        return Err(format!("This installation already uses {}.", flavor_label(target)));
+        return Err(nf!("This installation already uses {}.", flavor_label(target)));
     }
     if load_state(&record).is_some_and(|s| !s.done) {
-        return Err("A previous migration has history left to copy; continue it first.".into());
+        return Err(n!("A previous migration has history left to copy; continue it first.").into());
     }
-    preflight(&record).map_err(|e| format!("{e} Nothing was changed: no backup was made and SENTIENT keeps running."))?;
+    preflight(&record).map_err(|e| nf!("{e} Nothing was changed: no backup was made and SENTIENT keeps running."))?;
     let old = Setup::current(&record)?;
     let mut new = old.with_flavor(target);
 
@@ -343,7 +343,7 @@ pub fn run(record: InstallationRecord, target: Flavor, sink: ProgressFn) -> Resu
     }
 
     // 2. A full backup to return to.
-    step(&sink, "Backing up everything first");
+    step(&sink, n!("Backing up everything first"));
     let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
     let dir = work_dir(&record).join("backups");
     std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
@@ -358,8 +358,8 @@ pub fn run(record: InstallationRecord, target: Flavor, sink: ProgressFn) -> Resu
         origin: crate::backup_jobs::origin(&record, &old.pg()),
         part_size: None,
     };
-    block_on(backup::run(&old.pg(), &opts, bridge(sink.clone())))?.map_err(|e| format!("backup: {e}"))?;
-    log(&sink, format!("Backup: {}", backup_file.display()));
+    block_on(backup::run(&old.pg(), &opts, bridge(sink.clone())))?.map_err(|e| nf!("backup: {e}"))?;
+    log(&sink, nf!("Backup: {}", backup_file.display()));
 
     // 3. Stop, prepare the stores.
     if let Err(e) = old.stop(&sink) {
@@ -374,7 +374,7 @@ pub fn run(record: InstallationRecord, target: Flavor, sink: ProgressFn) -> Resu
     let aside = match prepared {
         Ok(aside) => aside,
         Err(e) => {
-            log(&sink, format!("Preparing failed ({e}); starting SENTIENT as it was"));
+            log(&sink, nf!("Preparing failed ({e}); starting SENTIENT as it was"));
             if let Setup::Docker(c) = &old {
                 // PostgreSQL may be on the new image already.
                 let _ = docker_ops::recreate_postgres(&sink, c);
@@ -385,7 +385,7 @@ pub fn run(record: InstallationRecord, target: Flavor, sink: ProgressFn) -> Resu
     };
 
     // 4. Switch.
-    step(&sink, &format!("Starting SENTIENT on {}", flavor_label(target)));
+    step(&sink, &nf!("Starting SENTIENT on {}", flavor_label(target)));
     let mut state = MigrationState {
         from,
         to: target,
@@ -404,20 +404,20 @@ pub fn run(record: InstallationRecord, target: Flavor, sink: ProgressFn) -> Resu
     if let Err(e) = new.deploy(&sink) {
         // Whatever fails while putting it back, SENTIENT is started again as
         // it was: a failed move never leaves the plant stopped.
-        log(&sink, format!("SENTIENT did not start on the new type ({e}); putting it back"));
+        log(&sink, nf!("SENTIENT did not start on the new type ({e}); putting it back"));
         let _ = old.stop(&sink);
         match block_on(undo_stores(&old, aside.as_deref())) {
             Ok(Ok(())) => {}
-            Ok(Err(u)) => log(&sink, format!("could not put ts_kv back: {u}")),
-            Err(u) => log(&sink, format!("could not put ts_kv back: {u}")),
+            Ok(Err(u)) => log(&sink, nf!("could not put ts_kv back: {u}")),
+            Err(u) => log(&sink, nf!("could not put ts_kv back: {u}")),
         }
         if let Err(d) = old.deploy(&sink) {
             // An adopted stack is not rewritten (its own compose file): start
             // its containers as they were.
-            log(&sink, format!("Starting SENTIENT as it was ({d})"));
+            log(&sink, nf!("Starting SENTIENT as it was ({d})"));
             old.restart_as_was(&sink);
         }
-        return Err(format!("SENTIENT did not start on {}: {e}. It runs on {} again, as it was.", flavor_label(target), flavor_label(from)));
+        return Err(nf!("SENTIENT did not start on {}: {e}. It runs on {} again, as it was.", flavor_label(target), flavor_label(from)));
     }
     let mut record = record;
     record.stack.flavor = target;
@@ -433,17 +433,17 @@ pub fn run(record: InstallationRecord, target: Flavor, sink: ProgressFn) -> Resu
     // 5. History.
     copy_history(&record, &new, &mut state, &sink)?;
     sink(Progress::Done {
-        message: format!("SENTIENT runs on {} with its full history.", flavor_label(target)),
+        message: nf!("SENTIENT runs on {} with its full history.", flavor_label(target)),
     });
     Ok(record)
 }
 
 /// Continue the history copy of an interrupted migration.
 pub fn resume(record: InstallationRecord, sink: ProgressFn) -> Result<(), String> {
-    let mut state = load_state(&record).filter(|s| !s.done).ok_or("No migration is waiting to continue.")?;
+    let mut state = load_state(&record).filter(|s| !s.done).ok_or(n!("No migration is waiting to continue."))?;
     let setup = Setup::current(&record)?;
     copy_history(&record, &setup, &mut state, &sink)?;
-    sink(Progress::Done { message: "The history copy is complete.".into() });
+    sink(Progress::Done { message: n!("The history copy is complete.").into() });
     Ok(())
 }
 
@@ -466,16 +466,16 @@ fn prepare_clickhouse(record: &InstallationRecord, new: &mut Setup, sink: &Progr
 #[cfg(windows)]
 fn prepare_clickhouse_wsl(record: &InstallationRecord, new: &mut NativeConfig, sink: &ProgressFn) -> Result<(), String> {
     use sentient_installer_core::{clickhouse_wsl, wsl};
-    step(sink, "Preparing ClickHouse");
+    step(sink, n!("Preparing ClickHouse"));
     if !wsl::is_ready() {
         let outcome = wsl::install(sink.clone());
         if outcome.reboot_required {
-            return Err("WSL2 is now enabled but needs Windows to restart. Restart, then start the migration again; nothing has been changed yet.".into());
+            return Err(n!("WSL2 is now enabled but needs Windows to restart. Restart, then start the migration again; nothing has been changed yet.").into());
         }
     }
     new.ch_password = secrets::get(Secret::Clickhouse).unwrap_or_else(clickhouse_wsl::new_password);
     if distro::clickhouse_answers(new.ch_http_port) {
-        log(sink, "ClickHouse is already running");
+        log(sink, n!("ClickHouse is already running"));
     } else {
         let mut stack = record.stack.clone();
         stack.flavor = Flavor::Clickhouse;
@@ -494,12 +494,12 @@ fn prepare_clickhouse_wsl(record: &InstallationRecord, new: &mut NativeConfig, s
 /// its user and database.
 #[cfg(not(windows))]
 fn prepare_clickhouse_wsl(_: &InstallationRecord, new: &mut NativeConfig, sink: &ProgressFn) -> Result<(), String> {
-    step(sink, "Preparing ClickHouse");
+    step(sink, n!("Preparing ClickHouse"));
     if new.ch_password.is_empty() {
         new.ch_password = native::generate_secret().chars().take(32).collect();
     }
     if distro::clickhouse_answers(new.ch_http_port) {
-        log(sink, "ClickHouse is already running");
+        log(sink, n!("ClickHouse is already running"));
         return Ok(());
     }
     native::setup(sink.clone(), new)
@@ -516,7 +516,7 @@ async fn prepare_stores(
     aside_name: &str,
     sink: &ProgressFn,
 ) -> Result<Option<String>, String> {
-    step(sink, "Preparing the database");
+    step(sink, n!("Preparing the database"));
     let msink = bridge(sink.clone());
     let pg = mv::connect(&old.pg()).await.map_err(|e| e.to_string())?;
     let mut aside = None;
@@ -560,7 +560,7 @@ async fn undo_stores(old: &Setup, aside: Option<&str>) -> Result<(), String> {
 
 /// Copy the history from before the switch into the store SENTIENT now uses.
 fn copy_history(record: &InstallationRecord, setup: &Setup, state: &mut MigrationState, sink: &ProgressFn) -> Result<(), String> {
-    step(sink, "Copying the history from before the switch");
+    step(sink, n!("Copying the history from before the switch"));
     let msink = bridge(sink.clone());
     let old_ch = (state.from == Flavor::Clickhouse).then(|| clickhouse_password(record, state)).transpose()?;
     let result = block_on(async {
@@ -583,12 +583,12 @@ fn copy_history(record: &InstallationRecord, setup: &Setup, state: &mut Migratio
         }
         Ok::<_, String>(rows)
     })??;
-    log(sink, format!("{result} rows copied"));
+    log(sink, nf!("{result} rows copied"));
     state.done = true;
     state.old_ch_password.clear();
     save_state(record, state)?;
     if let Some(aside) = &state.aside {
-        log(sink, format!("The old history is still in the table {aside}; remove it once you no longer need it."));
+        log(sink, nf!("The old history is still in the table {aside}; remove it once you no longer need it."));
     }
     Ok(())
 }
@@ -600,5 +600,5 @@ fn clickhouse_password(record: &InstallationRecord, state: &MigrationState) -> R
         return Ok(state.old_ch_password.clone());
     }
     let _ = record;
-    secrets::get(Secret::Clickhouse).ok_or_else(|| "The ClickHouse password is not in the secret store.".to_string())
+    secrets::get(Secret::Clickhouse).ok_or_else(|| n!("The ClickHouse password is not in the secret store.").to_string())
 }

@@ -37,7 +37,7 @@ use crate::remote::{self, Instance, RemoteStatus};
 use crate::ui::{self, Tone};
 
 /// The steps, in order: Setup's, without Welcome, Configuration and Shortcuts.
-pub const STEPS: [&str; 9] = ["System check", "Location", "Database", "Database settings", "Network ports", "Administrator", "Summary", "Install", "Finish"];
+pub const STEPS: [&str; 9] = [n!("System check"), n!("Location"), n!("Database"), n!("Database settings"), n!("Network ports"), n!("Administrator"), n!("Summary"), n!("Install"), n!("Finish")];
 pub const CHECK: usize = 0;
 pub const LOCATION: usize = 1;
 pub const DATABASE: usize = 2;
@@ -250,8 +250,8 @@ impl InstallFlow {
         // The agent sends its own steps first (Progress::Plan) as the log is
         // read again from its start; these stand in until then.
         self.job.update(cx, |job, cx| {
-            job.set_plan(vec![PlanStep::new(crate::jobplan::CONNECT), PlanStep::new("Installing SENTIENT").weight(6.)]);
-            job.set_label(format!("Installing SENTIENT on {}", inst.name));
+            job.set_plan(vec![PlanStep::new(crate::jobplan::CONNECT), PlanStep::new(n!("Installing SENTIENT")).weight(6.)]);
+            job.set_label(tf!("Installing SENTIENT on {}", inst.name));
             job.set_on_page(true);
             job.set_instance(inst.id.clone(), inst.name.clone(), inst.color.clone());
             job.start(
@@ -297,27 +297,27 @@ impl InstallFlow {
     }
 
     fn port(&self, field: &Entity<InputState>, name: &str, cx: &App) -> Result<u16, String> {
-        self.value(field, cx).parse::<u16>().ok().filter(|p| *p > 0).ok_or_else(|| format!("{name}: enter a port from 1 to 65535."))
+        self.value(field, cx).parse::<u16>().ok().filter(|p| *p > 0).ok_or_else(|| tf!("{name}: enter a port from 1 to 65535."))
     }
 
     /// Every port the configuration binds on the server.
     fn ports(&self, cx: &App) -> Result<Vec<(u16, &'static str)>, String> {
         let f = &self.fields;
         let mut v = vec![
-            (self.port(&f.http_port, "Web port", cx)?, "Web"),
-            (self.port(&f.mqtt_port, "MQTT port", cx)?, "MQTT"),
-            (self.port(&f.mqtts_port, "MQTT over TLS port", cx)?, "MQTT over TLS"),
-            (self.port(&f.coap_port, "CoAP port", cx)?, "CoAP"),
-            (self.port(&f.coaps_port, "CoAP over DTLS port", cx)?, "CoAP over DTLS"),
-            (self.port(&f.pg_port, "PostgreSQL port", cx)?, "PostgreSQL"),
+            (self.port(&f.http_port, t!("Web port"), cx)?, t!("Web")),
+            (self.port(&f.mqtt_port, t!("MQTT port"), cx)?, "MQTT"),
+            (self.port(&f.mqtts_port, t!("MQTT over TLS port"), cx)?, t!("MQTT over TLS")),
+            (self.port(&f.coap_port, t!("CoAP port"), cx)?, "CoAP"),
+            (self.port(&f.coaps_port, t!("CoAP over DTLS port"), cx)?, t!("CoAP over DTLS")),
+            (self.port(&f.pg_port, t!("PostgreSQL port"), cx)?, "PostgreSQL"),
         ];
         if self.flavor.uses_clickhouse() {
-            v.push((self.port(&f.ch_http_port, "ClickHouse HTTP port", cx)?, "ClickHouse HTTP"));
-            v.push((self.port(&f.ch_native_port, "ClickHouse native port", cx)?, "ClickHouse native"));
+            v.push((self.port(&f.ch_http_port, t!("ClickHouse HTTP port"), cx)?, t!("ClickHouse HTTP")));
+            v.push((self.port(&f.ch_native_port, t!("ClickHouse native port"), cx)?, t!("ClickHouse native")));
         }
         let mut seen = std::collections::HashSet::new();
         if let Some((p, n)) = v.iter().find(|(p, _)| !seen.insert(*p)) {
-            return Err(format!("{n}: port {p} is used twice."));
+            return Err(tf!("{n}: port {p} is used twice."));
         }
         Ok(v)
     }
@@ -366,8 +366,8 @@ impl InstallFlow {
         match self.step {
             CHECK => {
                 let facts = match &self.facts {
-                    None => return Err(format!("Checking {}…", self.inst.name)),
-                    Some(Err(e)) => return Err(e.lines().next().unwrap_or("The check did not finish.").to_string()),
+                    None => return Err(tf!("Checking {}…", self.inst.name)),
+                    Some(Err(e)) => return Err(e.lines().next().unwrap_or(t!("The check did not finish.")).to_string()),
                     Some(Ok(facts)) => facts,
                 };
                 rinst::engine_offer(facts, self.engine, &self.inst.name).map_err(|e| headline(&e))?;
@@ -378,13 +378,13 @@ impl InstallFlow {
                     }
                 }
                 if facts.checks(self.engine).iter().any(|c| c.blocks()) {
-                    return Err("Resolve the items marked “Blocker” on the server first, then check again.".into());
+                    return Err(t!("Resolve the items marked “Blocker” on the server first, then check again.").into());
                 }
                 match &self.version {
-                    None => Err("Looking for the newest SENTIENT…".into()),
+                    None => Err(t!("Looking for the newest SENTIENT…").into()),
                     Some(Ok(Some(_))) => Ok(()),
-                    Some(Ok(None)) => Err(format!("No SENTIENT is published on the {} channel.", self.channel.label())),
-                    Some(Err(e)) => Err(format!("The SENTIENT releases could not be read: {e}")),
+                    Some(Ok(None)) => Err(tf!("No SENTIENT is published on the {} channel.", self.channel.label())),
+                    Some(Err(e)) => Err(tf!("The SENTIENT releases could not be read: {e}")),
                 }
             }
             LOCATION => {
@@ -400,12 +400,12 @@ impl InstallFlow {
                 None => Ok(()),
             },
             DB_SETTINGS => {
-                let mut required = vec![(&f.pg_db, "Database name"), (&f.pg_user, "Database user"), (&f.pg_password, "Database password"), (&f.pg_admin_password, "PostgreSQL admin password")];
+                let mut required = vec![(&f.pg_db, t!("Database name")), (&f.pg_user, t!("Database user")), (&f.pg_password, t!("Database password")), (&f.pg_admin_password, t!("PostgreSQL admin password"))];
                 if self.flavor.uses_clickhouse() {
-                    required.extend([(&f.ch_db, "ClickHouse database"), (&f.ch_user, "ClickHouse user"), (&f.ch_password, "ClickHouse password")]);
+                    required.extend([(&f.ch_db, t!("ClickHouse database")), (&f.ch_user, t!("ClickHouse user")), (&f.ch_password, t!("ClickHouse password"))]);
                 }
                 if let Some((_, name)) = required.into_iter().find(|(s, _)| self.value(s, cx).is_empty()) {
-                    return Err(format!("{name} is required."));
+                    return Err(tf!("{name} is required."));
                 }
                 self.ports(cx).map(|_| ())
             }
@@ -414,11 +414,11 @@ impl InstallFlow {
                 let email = self.value(&f.admin_email, cx);
                 let password = f.admin_password.read(cx).value().to_string();
                 if !email.contains('@') {
-                    Err("Enter the administrator's e-mail address.".into())
+                    Err(t!("Enter the administrator's e-mail address.").into())
                 } else if password.chars().count() < 8 {
-                    Err("The password must be at least 8 characters.".into())
+                    Err(t!("The password must be at least 8 characters.").into())
                 } else if password != f.admin_confirm.read(cx).value().as_ref() {
-                    Err("The passwords do not match.".into())
+                    Err(t!("The passwords do not match.").into())
                 } else {
                     Ok(())
                 }
@@ -436,23 +436,23 @@ impl InstallFlow {
     /// passwords (they are taken out before it leaves this computer).
     fn plan(&self, cx: &App) -> Result<crate::installer::InstallPlan, String> {
         let f = &self.fields;
-        let version = self.version_text().ok_or("No SENTIENT version was found to install.")?;
+        let version = self.version_text().ok_or(t!("No SENTIENT version was found to install."))?;
         let mut stack = DeployConfig {
             flavor: self.flavor,
             db_name: self.value(&f.pg_db, cx),
             db_user: self.value(&f.pg_user, cx),
             db_password: f.pg_password.read(cx).value().to_string(),
-            pg_port: self.port(&f.pg_port, "PostgreSQL port", cx)?,
+            pg_port: self.port(&f.pg_port, t!("PostgreSQL port"), cx)?,
             ch_db: self.value(&f.ch_db, cx),
             ch_user: self.value(&f.ch_user, cx),
             ch_password: f.ch_password.read(cx).value().to_string(),
-            ch_http_port: self.port(&f.ch_http_port, "ClickHouse HTTP port", cx)?,
-            ch_native_port: self.port(&f.ch_native_port, "ClickHouse native port", cx)?,
-            http_port: self.port(&f.http_port, "Web port", cx)?,
-            mqtt_port: self.port(&f.mqtt_port, "MQTT port", cx)?,
-            mqtts_port: self.port(&f.mqtts_port, "MQTT over TLS port", cx)?,
-            coap_port: self.port(&f.coap_port, "CoAP port", cx)?,
-            coaps_port: self.port(&f.coaps_port, "CoAP over DTLS port", cx)?,
+            ch_http_port: self.port(&f.ch_http_port, t!("ClickHouse HTTP port"), cx)?,
+            ch_native_port: self.port(&f.ch_native_port, t!("ClickHouse native port"), cx)?,
+            http_port: self.port(&f.http_port, t!("Web port"), cx)?,
+            mqtt_port: self.port(&f.mqtt_port, t!("MQTT port"), cx)?,
+            mqtts_port: self.port(&f.mqtts_port, t!("MQTT over TLS port"), cx)?,
+            coap_port: self.port(&f.coap_port, t!("CoAP port"), cx)?,
+            coaps_port: self.port(&f.coaps_port, t!("CoAP over DTLS port"), cx)?,
             // The databases listen on the server's loopback only.
             db_loopback: true,
             ..DeployConfig::default()
@@ -549,7 +549,7 @@ impl InstallFlow {
                             f.problem = None;
                         }
                     },
-                    Err(e) => f.problem = Some(format!("The ports could not be checked on {}: {}", f.inst.name, e.lines().next().unwrap_or("")).into()),
+                    Err(e) => f.problem = Some(tf!("The ports could not be checked on {}: {}", f.inst.name, e.lines().next().unwrap_or("")).into()),
                 }
                 cx.notify();
             })
@@ -576,7 +576,7 @@ impl InstallFlow {
         let steps = job_plan(&plan);
         self.job.update(cx, |job, cx| {
             job.set_plan(steps);
-            job.set_label(format!("Installing SENTIENT on {}", inst.name));
+            job.set_label(tf!("Installing SENTIENT on {}", inst.name));
             job.set_on_page(true);
             job.set_instance(inst.id.clone(), inst.name.clone(), inst.color.clone());
             job.set_retry(Rc::new(move |cx: &mut App| {
@@ -588,7 +588,7 @@ impl InstallFlow {
                     // not know the install jobs.
                     sink(Progress::Step { name: crate::jobplan::CONNECT.into() });
                     if let Err(e) = remote::deploy(&inst, &sink) {
-                        sink(Progress::Log { line: format!("The agent could not be updated: {}", remote::split_failure(&e).0) });
+                        sink(Progress::Log { line: nf!("The agent could not be updated: {}", remote::split_failure(&e).0) });
                     }
                     let id = rinst::start(&inst, plan)?;
                     remote::follow(&inst, &id, &sink)
@@ -701,15 +701,15 @@ impl InstallFlow {
     fn subtitle(&self) -> String {
         let n = &self.inst.name;
         match self.step {
-            CHECK => format!("What SENTIENT needs on {n}, checked there by its agent."),
-            LOCATION => "Where SENTIENT and its database go on the server.".into(),
-            DATABASE => "How SENTIENT stores its data. The type can be changed later with Migration in the Platform Manager.".into(),
-            DB_SETTINGS => "The database SENTIENT signs in to.".into(),
-            PORTS => "The ports SENTIENT listens on. They are checked free on the server before moving on.".into(),
-            ADMIN => "The first SENTIENT sign-in, with full system rights.".into(),
-            SUMMARY => format!("Check your choices. Nothing has been installed on {n} yet."),
-            INSTALL => format!("The install runs on {n} through its agent. It goes on if this computer sleeps or the connection drops."),
-            _ => format!("SENTIENT is installed and running on {n}."),
+            CHECK => tf!("What SENTIENT needs on {n}, checked there by its agent."),
+            LOCATION => t!("Where SENTIENT and its database go on the server.").into(),
+            DATABASE => t!("How SENTIENT stores its data. The type can be changed later with Migration in the Platform Manager.").into(),
+            DB_SETTINGS => t!("The database SENTIENT signs in to.").into(),
+            PORTS => t!("The ports SENTIENT listens on. They are checked free on the server before moving on.").into(),
+            ADMIN => t!("The first SENTIENT sign-in, with full system rights.").into(),
+            SUMMARY => tf!("Check your choices. Nothing has been installed on {n} yet."),
+            INSTALL => tf!("The install runs on {n} through its agent. It goes on if this computer sleeps or the connection drops."),
+            _ => tf!("SENTIENT is installed and running on {n}."),
         }
     }
 
@@ -740,17 +740,17 @@ impl InstallFlow {
         let name = self.inst.name.clone();
         let facts = self.facts_got();
         let glibc = self.native_glibc();
-        let glibc_off = glibc.blocked().map(|why| format!("Not on this system\n\n{why}"));
+        let glibc_off = glibc.blocked().map(|why| tf!("Not on this system\n\n{why}"));
         let card = |engine: Engine, title: &'static str, desc: &'static str, recommended: bool, cx: &mut Context<Self>| -> Stateful<Div> {
             let off = facts.and_then(|f| rinst::engine_offer(f, engine, &name).err()).or_else(|| glibc_off.clone().filter(|_| engine == Engine::Native));
             let id = if engine == Engine::Native { "rinst-native" } else { "rinst-docker" };
             match off {
                 Some(why) => {
                     let title = h_flex().gap_2().items_center().child(div().font_weight(FontWeight::MEDIUM).opacity(ui::OFF_OPACITY).child(title)).child(ui::info(SharedString::from(format!("{id}-why")), why.into())).into_any_element();
-                    ui::radio_card_off(&theme, id, title, "Not available on this server.").relative().child(ui::layout_probe("panel"))
+                    ui::radio_card_off(&theme, id, title, t!("Not available on this server.")).relative().child(ui::layout_probe("panel"))
                 }
                 None => {
-                    let title = h_flex().gap_2().items_center().child(div().font_weight(FontWeight::MEDIUM).child(title)).when(recommended, |r| r.child(ui::pill(&theme, Tone::Good, "Recommended"))).into_any_element();
+                    let title = h_flex().gap_2().items_center().child(div().font_weight(FontWeight::MEDIUM).child(title)).when(recommended, |r| r.child(ui::pill(&theme, Tone::Good, t!("Recommended")))).into_any_element();
                     ui::radio_card_el(&theme, id, title, desc, self.engine == engine, true).relative().child(ui::layout_probe("panel")).on_click(cx.listener(move |this, _, _, cx| {
                         this.engine = engine;
                         if let Some(f) = this.facts_got() {
@@ -764,20 +764,20 @@ impl InstallFlow {
                 }
             }
         };
-        let native = card(Engine::Native, "In the system", "Services from the distribution's packages, run by systemd.", true, cx);
-        let docker = card(Engine::Docker, "Docker", "SENTIENT and its databases as containers. Every database type.", false, cx);
+        let native = card(Engine::Native, t!("In the system"), t!("Services from the distribution's packages, run by systemd."), true, cx);
+        let docker = card(Engine::Docker, t!("Docker"), t!("SENTIENT and its databases as containers. Every database type."), false, cx);
         let rows: Div = match &self.facts {
-            None => ui::panel(&theme).child(div().text_sm().text_color(theme.muted_foreground).child(format!("Checking {name}…"))),
-            Some(Err(e)) => ui::notice(&theme, Tone::Bad, format!("{name} could not be checked\n{}", e.lines().next().unwrap_or(""))),
+            None => ui::panel(&theme).child(div().text_sm().text_color(theme.muted_foreground).child(tf!("Checking {name}…"))),
+            Some(Err(e)) => ui::notice(&theme, Tone::Bad, tf!("{name} could not be checked\n{}", e.lines().next().unwrap_or(""))),
             Some(Ok(f)) => {
                 let list = f.checks(self.engine);
                 ui::panel(&theme).gap_0().py(px(4.)).children(list.iter().enumerate().map(|(i, c)| {
                     let (tone, text) = match c.status.as_str() {
-                        "pass" => (Tone::Good, "Ready"),
-                        "setup" => (Tone::Warn, "Will be installed"),
-                        "fail" => (Tone::Bad, "Blocker"),
-                        "warn" => (Tone::Warn, "Attention"),
-                        _ => (Tone::Neutral, "Unknown"),
+                        "pass" => (Tone::Good, t!("Ready")),
+                        "setup" => (Tone::Warn, t!("Will be installed")),
+                        "fail" => (Tone::Bad, t!("Blocker")),
+                        "warn" => (Tone::Warn, t!("Attention")),
+                        _ => (Tone::Neutral, t!("Unknown")),
                     };
                     let text = c.state.clone().unwrap_or_else(|| text.to_string());
                     h_flex()
@@ -793,8 +793,8 @@ impl InstallFlow {
             }
         };
         let glibc_notice = match &glibc {
-            sentient_installer_core::glibc::NativeGlibc::Blocked(why) => Some(ui::notice(&theme, Tone::Warn, format!("“In the system” is not available\n{why}"))),
-            sentient_installer_core::glibc::NativeGlibc::Unknown(why) if self.engine == Engine::Native => Some(ui::notice(&theme, Tone::Warn, format!("The C library could not be checked\n{why}"))),
+            sentient_installer_core::glibc::NativeGlibc::Blocked(why) => Some(ui::notice(&theme, Tone::Warn, tf!("“In the system” is not available\n{why}"))),
+            sentient_installer_core::glibc::NativeGlibc::Unknown(why) if self.engine == Engine::Native => Some(ui::notice(&theme, Tone::Warn, tf!("The C library could not be checked\n{why}"))),
             _ => None,
         };
         v_flex()
@@ -802,11 +802,11 @@ impl InstallFlow {
             .child(ui::card_pair(v_flex().child(native.flex_1()), v_flex().child(docker.flex_1())))
             .children(glibc_notice)
             .child(rows)
-            .child(h_flex().child(crate::ui::button("rinst-recheck").outline().label("Check again").disabled(self.facts.is_none()).on_click(cx.listener(|this, _, _, cx| this.check(cx)))))
+            .child(h_flex().child(crate::ui::button("rinst-recheck").outline().label(t!("Check again")).disabled(self.facts.is_none()).on_click(cx.listener(|this, _, _, cx| this.check(cx)))))
     }
 
     fn free_text(&self) -> String {
-        self.facts_got().and_then(|f| f.disk_free).map(|b| format!("{} free on /", crate::dbstatus::bytes_label(b))).unwrap_or_default()
+        self.facts_got().and_then(|f| f.disk_free).map(|b| tf!("{} free on /", crate::dbstatus::bytes_label(b))).unwrap_or_default()
     }
 
     fn location_page(&self, cx: &mut Context<Self>) -> Div {
@@ -814,28 +814,28 @@ impl InstallFlow {
         let f = &self.fields;
         let data = match self.engine {
             Engine::Native => "PostgreSQL's own folder from the distribution's packages (/var/lib/postgresql)",
-            Engine::Docker => "Docker volumes on the server",
+            Engine::Docker => t!("Docker volumes on the server"),
         };
         ui::panel(&theme)
-            .child(Self::field(&theme, "Program folder", &f.install_dir))
-            .child(ui::fact(&theme, "Database folder", data))
-            .when(!self.free_text().is_empty(), |p| p.child(ui::fact(&theme, "Disk", self.free_text())))
+            .child(Self::field(&theme, t!("Program folder"), &f.install_dir))
+            .child(ui::fact(&theme, t!("Database folder"), data))
+            .when(!self.free_text().is_empty(), |p| p.child(ui::fact(&theme, t!("Disk"), self.free_text())))
     }
 
     fn database_page(&self, cx: &mut Context<Self>) -> Div {
         let theme = cx.theme().clone();
         let facts = self.facts_got().cloned().unwrap_or_default();
         let runs = |flavor: Flavor| -> Vec<String> {
-            let place = if self.engine == Engine::Native { "in the system" } else { "in Docker" };
+            let place = if self.engine == Engine::Native { t!("in the system") } else { "in Docker" };
             match flavor {
-                Flavor::Clickhouse => vec![format!("PostgreSQL: {place}"), format!("ClickHouse: {place}")],
-                _ => vec![if self.engine == Engine::Native { "In the system".into() } else { "In Docker".into() }],
+                Flavor::Clickhouse => vec![tf!("PostgreSQL: {place}"), tf!("ClickHouse: {place}")],
+                _ => vec![if self.engine == Engine::Native { t!("In the system").into() } else { t!("In Docker").into() }],
             }
         };
         let options: [(Flavor, &'static str); 3] = [
-            (Flavor::Stock, "Simplest and smallest. For small sites and a few hundred devices."),
-            (Flavor::Timescaledb, "Compressed time-series inside PostgreSQL."),
-            (Flavor::Clickhouse, "Best for large telemetry volumes and long history."),
+            (Flavor::Stock, t!("Simplest and smallest. For small sites and a few hundred devices.")),
+            (Flavor::Timescaledb, t!("Compressed time-series inside PostgreSQL.")),
+            (Flavor::Clickhouse, t!("Best for large telemetry volumes and long history.")),
         ];
         let runs_col = |lines: Vec<String>, fade: f32| {
             v_flex().flex_shrink_0().items_end().gap_0p5().text_sm().text_color(theme.muted_foreground).when(fade < 1., |c| c.opacity(fade)).children(lines.into_iter().map(|l| div().whitespace_nowrap().child(l)))
@@ -849,7 +849,7 @@ impl InstallFlow {
                         .items_center()
                         .child(ui::flavor_logos(flavor, 18.))
                         .child(div().font_weight(FontWeight::MEDIUM).child(flavor_label(flavor)))
-                        .when(flavor == Flavor::Clickhouse, |r| r.child(ui::pill(&theme, Tone::Good, "Recommended")))
+                        .when(flavor == Flavor::Clickhouse, |r| r.child(ui::pill(&theme, Tone::Good, t!("Recommended"))))
                         .into_any_element();
                     ui::radio_card_el(&theme, SharedString::from(format!("rinst-{}", flavor.as_str())), title, desc, self.flavor == flavor, true)
                         .relative()
@@ -869,12 +869,12 @@ impl InstallFlow {
                         .child(h_flex().gap_2().items_center().opacity(ui::OFF_OPACITY).child(ui::flavor_logos(flavor, 18.)).child(div().font_weight(FontWeight::MEDIUM).child(flavor_label(flavor))))
                         .child(ui::info(SharedString::from(format!("rinst-{}-why", flavor.as_str())), why.into()))
                         .into_any_element();
-                    let desc = format!("{} Not available with In the system on this server.", desc);
+                    let desc = tf!("{} Not available with In the system on this server.", desc);
                     ui::radio_card_off(&theme, SharedString::from(format!("rinst-{}", flavor.as_str())), title, desc).relative().child(ui::layout_probe("panel")).child(runs_col(vec!["—".into()], ui::OFF_OPACITY)).into_any_element()
                 }
             })
             .collect();
-        let checked = [Some(if facts.os_name.is_empty() { "its packages".to_string() } else { format!("{} packages", facts.os_name) }), (!self.free_text().is_empty()).then(|| self.free_text())]
+        let checked = [Some(if facts.os_name.is_empty() { "its packages".to_string() } else { tf!("{} packages", facts.os_name) }), (!self.free_text().is_empty()).then(|| self.free_text())]
             .into_iter()
             .flatten()
             .collect::<Vec<_>>()
@@ -882,26 +882,26 @@ impl InstallFlow {
         v_flex()
             .gap(px(ui::GAP))
             .children(cards)
-            .child(ui::notice(&theme, Tone::Neutral, format!("Checked on {}\n{checked}.", self.inst.name)))
+            .child(ui::notice(&theme, Tone::Neutral, tf!("Checked on {}\n{checked}.", self.inst.name)))
     }
 
     fn db_settings_page(&self, cx: &mut Context<Self>) -> Div {
         let theme = cx.theme().clone();
         let f = &self.fields;
-        const DEFAULT: &str = "Default password. Change it if the database port is reachable from other computers.";
+        const DEFAULT: &str = n!("Default password. Change it if the database port is reachable from other computers.");
         let pg = ui::panel(&theme)
             .gap(px(ui::GAP))
             .child(div().font_weight(FontWeight::MEDIUM).child("PostgreSQL"))
-            .child(Self::pair(Self::field(&theme, "Database name", &f.pg_db), Self::field(&theme, "User", &f.pg_user)))
-            .child(Self::pair(Self::secret_field(&theme, "Password", Some(DEFAULT), &f.pg_password), Self::secret_field(&theme, "PostgreSQL admin password", Some("The postgres account's password on the server. It goes there over the SSH connection and is not kept on this computer."), &f.pg_admin_password)))
-            .child(Self::pair(Self::field(&theme, "Port", &f.pg_port), div().flex_1()));
+            .child(Self::pair(Self::field(&theme, t!("Database name"), &f.pg_db), Self::field(&theme, t!("User"), &f.pg_user)))
+            .child(Self::pair(Self::secret_field(&theme, t!("Password"), Some(crate::i18n::t(DEFAULT)), &f.pg_password), Self::secret_field(&theme, t!("PostgreSQL admin password"), Some(t!("The postgres account's password on the server. It goes there over the SSH connection and is not kept on this computer.")), &f.pg_admin_password)))
+            .child(Self::pair(Self::field(&theme, t!("Port"), &f.pg_port), div().flex_1()));
         let ch = self.flavor.uses_clickhouse().then(|| {
             ui::panel(&theme)
                 .gap(px(ui::GAP))
                 .child(div().font_weight(FontWeight::MEDIUM).child("ClickHouse"))
-                .child(Self::pair(Self::field(&theme, "Database name", &f.ch_db), Self::field(&theme, "User", &f.ch_user)))
-                .child(Self::pair(Self::secret_field(&theme, "Password", Some(DEFAULT), &f.ch_password), div().flex_1()))
-                .child(Self::pair(Self::field(&theme, "HTTP port", &f.ch_http_port), Self::field(&theme, "Native port", &f.ch_native_port)))
+                .child(Self::pair(Self::field(&theme, t!("Database name"), &f.ch_db), Self::field(&theme, t!("User"), &f.ch_user)))
+                .child(Self::pair(Self::secret_field(&theme, t!("Password"), Some(crate::i18n::t(DEFAULT)), &f.ch_password), div().flex_1()))
+                .child(Self::pair(Self::field(&theme, t!("HTTP port"), &f.ch_http_port), Self::field(&theme, t!("Native port"), &f.ch_native_port)))
         });
         v_flex().gap(px(ui::GAP)).child(pg).children(ch)
     }
@@ -911,9 +911,9 @@ impl InstallFlow {
         let f = &self.fields;
         ui::panel(&theme)
             .gap(px(ui::GAP))
-            .child(Self::pair(Self::field(&theme, "Web (HTTP)", &f.http_port), div().flex_1()))
-            .child(Self::pair(Self::field(&theme, "MQTT", &f.mqtt_port), Self::field(&theme, "MQTT over TLS", &f.mqtts_port)))
-            .child(Self::pair(Self::field(&theme, "CoAP", &f.coap_port), Self::field(&theme, "CoAP over DTLS", &f.coaps_port)))
+            .child(Self::pair(Self::field(&theme, t!("Web (HTTP)"), &f.http_port), div().flex_1()))
+            .child(Self::pair(Self::field(&theme, "MQTT", &f.mqtt_port), Self::field(&theme, t!("MQTT over TLS"), &f.mqtts_port)))
+            .child(Self::pair(Self::field(&theme, "CoAP", &f.coap_port), Self::field(&theme, t!("CoAP over DTLS"), &f.coaps_port)))
     }
 
     fn admin_page(&self, cx: &mut Context<Self>) -> Div {
@@ -921,8 +921,8 @@ impl InstallFlow {
         let f = &self.fields;
         ui::panel(&theme)
             .gap(px(ui::GAP))
-            .child(Self::pair(Self::field(&theme, "Email", &f.admin_email), div().flex_1()))
-            .child(Self::pair(Self::secret_field(&theme, "Password (at least 8 characters)", None, &f.admin_password), Self::secret_field(&theme, "Confirm the password", None, &f.admin_confirm)))
+            .child(Self::pair(Self::field(&theme, t!("Email"), &f.admin_email), div().flex_1()))
+            .child(Self::pair(Self::secret_field(&theme, t!("Password (at least 8 characters)"), None, &f.admin_password), Self::secret_field(&theme, t!("Confirm the password"), None, &f.admin_confirm)))
     }
 
     /// Summary's rows: the label, the value and the step that changes it.
@@ -933,31 +933,31 @@ impl InstallFlow {
         let os = self.facts_got().map(|f| f.os_name.clone()).filter(|s| !s.is_empty()).unwrap_or(det.os_name);
         let version = self.version_text().unwrap_or_else(|| "—".into());
         let mut rows = vec![
-            ("Server", format!("{}, {} over SSH{}", self.inst.name, self.inst.host, if os.is_empty() { String::new() } else { format!(" ({os})") }), CHECK),
+            (t!("Server"), tf!("{}, {} over SSH{}", self.inst.name, self.inst.host, if os.is_empty() { String::new() } else { format!(" ({os})") }), CHECK),
             (
-                "Version",
-                format!("SENTIENT {version}, {}, {}", self.channel.label(), if self.engine == Engine::Native { "downloaded on the server and checked before use" } else { "its image pulled on the server" }),
+                t!("Version"),
+                tf!("SENTIENT {version}, {}, {}", self.channel.label(), if self.engine == Engine::Native { t!("downloaded on the server and checked before use") } else { t!("its image pulled on the server") }),
                 CHECK,
             ),
             (
-                "Runs as",
+                t!("Runs as"),
                 match (self.engine, self.flavor.uses_clickhouse()) {
-                    (Engine::Native, true) => "SENTIENT server, PostgreSQL and ClickHouse with systemd".into(),
-                    (Engine::Native, false) => "SENTIENT server and PostgreSQL with systemd".into(),
-                    (Engine::Docker, _) => "Containers in Docker on the server".into(),
+                    (Engine::Native, true) => t!("SENTIENT server, PostgreSQL and ClickHouse with systemd").into(),
+                    (Engine::Native, false) => t!("SENTIENT server and PostgreSQL with systemd").into(),
+                    (Engine::Docker, _) => t!("Containers in Docker on the server").into(),
                 },
                 CHECK,
             ),
-            ("Program folder", v(&f.install_dir), LOCATION),
-            ("Database", flavor_label(self.flavor).to_string(), DATABASE),
-            ("PostgreSQL", format!("{} as {} on port {}", v(&f.pg_db), v(&f.pg_user), v(&f.pg_port)), DB_SETTINGS),
+            (t!("Program folder"), v(&f.install_dir), LOCATION),
+            (t!("Database"), flavor_label(self.flavor).to_string(), DATABASE),
+            ("PostgreSQL", tf!("{} as {} on port {}", v(&f.pg_db), v(&f.pg_user), v(&f.pg_port)), DB_SETTINGS),
         ];
         if self.flavor.uses_clickhouse() {
-            rows.push(("ClickHouse", format!("{} as {} on port {}", v(&f.ch_db), v(&f.ch_user), v(&f.ch_http_port)), DB_SETTINGS));
+            rows.push(("ClickHouse", tf!("{} as {} on port {}", v(&f.ch_db), v(&f.ch_user), v(&f.ch_http_port)), DB_SETTINGS));
         }
-        rows.push(("Ports", format!("Web {} · MQTT {} / {} · CoAP {} / {}", v(&f.http_port), v(&f.mqtt_port), v(&f.mqtts_port), v(&f.coap_port), v(&f.coaps_port)), PORTS));
-        rows.push(("Administrator", v(&f.admin_email), ADMIN));
-        rows.push(("Startup", "Starts with the server".into(), SUMMARY));
+        rows.push((t!("Ports"), tf!("Web {} · MQTT {} / {} · CoAP {} / {}", v(&f.http_port), v(&f.mqtt_port), v(&f.mqtts_port), v(&f.coap_port), v(&f.coaps_port)), PORTS));
+        rows.push((t!("Administrator"), v(&f.admin_email), ADMIN));
+        rows.push((t!("Startup"), t!("Starts with the server").into(), SUMMARY));
         rows
     }
 
@@ -976,7 +976,7 @@ impl InstallFlow {
                 .child(div().w(px(ui::CARD_LABEL_W + 30.)).flex_shrink_0().text_color(theme.muted_foreground).child(label))
                 .child(div().flex_1().min_w_0().font_weight(FontWeight::MEDIUM).child(value))
                 .when(step < SUMMARY, |r| {
-                    r.child(crate::ui::button(SharedString::from(format!("rinst-change-{i}"))).ghost().label("Change").on_click(cx.listener(move |this, _, _, cx| this.go(step, cx))))
+                    r.child(crate::ui::button(SharedString::from(format!("rinst-change-{i}"))).ghost().label(t!("Change")).on_click(cx.listener(move |this, _, _, cx| this.go(step, cx))))
                 })
         }));
         v_flex().gap(px(ui::GAP)).child(table).child(
@@ -986,12 +986,12 @@ impl InstallFlow {
                 .text_sm()
                 .text_color(theme.muted_foreground)
                 .child(Icon::new(IconName::Info).size(px(14.)).flex_shrink_0())
-                .child("The administrator password and the database passwords go to the server over the SSH connection. They are not kept on this computer."),
+                .child(t!("The administrator password and the database passwords go to the server over the SSH connection. They are not kept on this computer.")),
         )
     }
 
     fn install_page(&self, cx: &mut Context<Self>) -> Div {
-        crate::manager::jobview::JobView::new("rinst-job", format!("Installing SENTIENT on {}", self.inst.name), &self.job).render(cx)
+        crate::manager::jobview::JobView::new("rinst-job", tf!("Installing SENTIENT on {}", self.inst.name), &self.job).render(cx)
     }
 
     /// The address SENTIENT answers on, on the server.
@@ -1006,13 +1006,13 @@ impl InstallFlow {
         let version = self.finished.as_ref().map(|s| s.comparable_version()).filter(|v| !v.is_empty()).or_else(|| self.version_text()).unwrap_or_default();
         let url = address.clone();
         ui::panel(&theme)
-            .child(h_flex().gap_3().items_center().child(ui::product_logo(ui::Product::Sentient, 30.)).child(ui::pill(&theme, Tone::Good, "Installed")))
-            .child(ui::fact(&theme, "Address", address))
-            .when(!version.is_empty(), |p| p.child(ui::fact(&theme, "Version", version)))
-            .child(ui::fact(&theme, "Administrator", self.value(&self.fields.admin_email, cx)))
+            .child(h_flex().gap_3().items_center().child(ui::product_logo(ui::Product::Sentient, 30.)).child(ui::pill(&theme, Tone::Good, t!("Installed"))))
+            .child(ui::fact(&theme, t!("Address"), address))
+            .when(!version.is_empty(), |p| p.child(ui::fact(&theme, t!("Version"), version)))
+            .child(ui::fact(&theme, t!("Administrator"), self.value(&self.fields.admin_email, cx)))
             .children(ui::card_actions(
                 &theme,
-                h_flex().gap(crate::ui::button_gap()).child(crate::ui::button("rinst-open").outline().label("Open SENTIENT").on_click(move |_, _, cx| ui::open_url(&url, cx))),
+                h_flex().gap(crate::ui::button_gap()).child(crate::ui::button("rinst-open").outline().label(t!("Open SENTIENT")).on_click(move |_, _, cx| ui::open_url(&url, cx))),
             ))
     }
 
@@ -1023,17 +1023,17 @@ impl InstallFlow {
         let failed = matches!(job.state(), JobState::Failed(_));
         let running = job.is_running();
         let again = match job.state() {
-            JobState::Failed(m) => crate::ui::retry_label(m, "Retry"),
-            _ => "Retry",
+            JobState::Failed(m) => crate::ui::retry_label(m, t!("Retry")),
+            _ => t!("Retry"),
         };
         let blocked = if self.step < SUMMARY { self.validate(cx).err() } else { None };
         let next_label = match self.step {
-            SUMMARY => "Install",
-            PORTS if self.ports_checking => "Checking…",
+            SUMMARY => t!("Install"),
+            PORTS if self.ports_checking => t!("Checking…"),
             INSTALL if failed => again,
-            INSTALL => "Installing…",
-            FINISH => "Done",
-            _ => "Next",
+            INSTALL => t!("Installing…"),
+            FINISH => t!("Done"),
+            _ => t!("Next"),
         };
         let next_off = (self.step == INSTALL && !failed) || self.ports_checking || blocked.is_some();
         h_flex()
@@ -1045,7 +1045,7 @@ impl InstallFlow {
             .bg(theme.background)
             .border_t_1()
             .border_color(theme.border)
-            .child(div().flex_shrink_0().text_size(px(12.)).text_color(theme.muted_foreground).whitespace_nowrap().child(format!("Step {} of {}", self.step + 1, STEPS.len())))
+            .child(div().flex_shrink_0().text_size(px(12.)).text_color(theme.muted_foreground).whitespace_nowrap().child(tf!("Step {} of {}", self.step + 1, STEPS.len())))
             .map(|bar| match (self.problem.clone(), blocked.clone()) {
                 (Some(problem), _) => bar.child(div().ml_4().flex_1().min_w_0().text_sm().line_clamp(2).text_color(theme.danger).child(problem)),
                 (None, Some(reason)) => bar.child(
@@ -1064,12 +1064,12 @@ impl InstallFlow {
             // While the install runs it cannot be left from here (it goes on
             // on the server; the progress strip follows it).
             .when(self.step < FINISH && !running, |bar| {
-                bar.child(crate::ui::probed(crate::ui::button("rinst-cancel").outline().label("Cancel").on_click(cx.listener(|this, _, window, cx| {
+                bar.child(crate::ui::probed(crate::ui::button("rinst-cancel").outline().label(t!("Cancel")).on_click(cx.listener(|this, _, window, cx| {
                     let close = this.on_close.clone();
                     close(Close::Cancel, window, cx);
                 }))))
             })
-            .when(self.step > CHECK && self.step < INSTALL, |bar| bar.child(crate::ui::probed(crate::ui::button("rinst-back").outline().label("Back").on_click(cx.listener(|this, _, _, cx| this.back(cx))))))
+            .when(self.step > CHECK && self.step < INSTALL, |bar| bar.child(crate::ui::probed(crate::ui::button("rinst-back").outline().label(t!("Back")).on_click(cx.listener(|this, _, _, cx| this.back(cx))))))
             .child(crate::ui::probed(crate::ui::button("rinst-next").primary().label(next_label).disabled(next_off).on_click(cx.listener(|this, _, window, cx| this.next(window, cx)))))
     }
 }

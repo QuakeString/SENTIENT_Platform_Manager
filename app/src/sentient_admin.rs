@@ -22,11 +22,11 @@ use serde::Deserialize;
 use crate::installation::{Engine, InstallationRecord};
 
 /// What the command says when the installed SENTIENT does not have it.
-pub const MISSING: &str = "This SENTIENT version has no administration command (sentient-admin comes with SENTIENT 4.4.0.3). Update SENTIENT first.";
+pub const MISSING: &str = n!("This SENTIENT version has no administration command (sentient-admin comes with SENTIENT 4.4.0.3). Update SENTIENT first.");
 
 /// What the page says when SENTIENT (or, on Windows, its WSL distro) is
 /// stopped: nothing was asked, and nothing was started to ask.
-pub const STOPPED: &str = "SENTIENT must be running to read and change its settings.";
+pub const STOPPED: &str = n!("SENTIENT must be running to read and change its settings.");
 
 /// Where sentient-admin is in SENTIENT's image.
 const IN_IMAGE: &str = "/usr/share/sentient/bin/sentient-admin";

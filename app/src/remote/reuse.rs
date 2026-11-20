@@ -91,34 +91,34 @@ pub fn fit(theirs: &AgentInfo, ours: &AgentInfo) -> Fit {
 fn relation(theirs: &AgentInfo, ours: &AgentInfo) -> &'static str {
     use std::cmp::Ordering::*;
     if theirs.version.is_empty() {
-        return "an older version";
+        return t!("an older version");
     }
     match sentient_installer_core::releases::compare(&theirs.version, &ours.version) {
-        Less => "older than this one",
-        Greater => "newer than this one",
-        Equal => "another build of this version",
+        Less => t!("older than this one"),
+        Greater => t!("newer than this one"),
+        Equal => t!("another build of this version"),
     }
 }
 
 /// Every message about an installed Platform Manager starts with this (the
 /// pages tell these from other errors by it: [`is_offer`]).
-pub const OFFER_PREFIX: &str = "A Platform Manager is installed on this server";
+pub const OFFER_PREFIX: &str = n!("A Platform Manager is installed on this server");
 
 /// The plain words for an installed Platform Manager that is not used yet.
 pub fn offer_message(theirs: &AgentInfo, ours: &AgentInfo) -> String {
-    let version = if theirs.version.is_empty() { "an older version".to_string() } else { format!("version {}", theirs.version) };
+    let version = if theirs.version.is_empty() { t!("an older version").to_string() } else { tf!("version {}", theirs.version) };
     match fit(theirs, ours) {
-        Fit::Same => format!("{OFFER_PREFIX} ({version}), the same as this one."),
-        Fit::Compatible => format!(
+        Fit::Same => tf!("{OFFER_PREFIX} ({version}), the same as this one."),
+        Fit::Compatible => tf!(
             "{OFFER_PREFIX}: {version}, {} ({}). It does its work the same way, so it can be used as it is; or set up this version's agent beside it.",
             relation(theirs, ours),
             ours.version
         ),
-        Fit::Incompatible if theirs.protocol == 0 => format!(
+        Fit::Incompatible if theirs.protocol == 0 => tf!(
             "{OFFER_PREFIX}: {version}, too old to work with this one ({}). Set up puts this version's agent beside it; the installed one is not changed. Updating that Platform Manager lets it be used instead.",
             ours.version
         ),
-        Fit::Incompatible => format!(
+        Fit::Incompatible => tf!(
             "{OFFER_PREFIX}: {version}, {} ({}), and it does its work differently. Set up puts this version's agent beside it; the installed one is not changed.",
             relation(theirs, ours),
             ours.version

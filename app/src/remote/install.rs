@@ -115,15 +115,15 @@ impl ServerFacts {
 /// the (i)'s text (a title line, a blank line, why and what to do).
 pub fn engine_offer(f: &ServerFacts, engine: Engine, server: &str) -> Result<(), String> {
     match engine {
-        Engine::Docker if !f.docker => Err(format!(
+        Engine::Docker if !f.docker => Err(tf!(
             "Docker is not on this server\n\n“docker” was not found on {server}. Install Docker Engine on the server and press Check again, or install in the system."
         )),
-        Engine::Docker if !f.compose => Err(format!(
+        Engine::Docker if !f.compose => Err(tf!(
             "Docker Compose is missing\n\nDocker is on {server}, but not its Compose plugin. Install docker-compose-plugin there and press Check again, or install in the system."
         )),
-        Engine::Native if !f.systemd => Err(format!(
+        Engine::Native if !f.systemd => Err(tf!(
             "systemd does not run this server\n\nIn the system installs SENTIENT and its databases as systemd services, and systemd is not running on {server}.{}",
-            if f.docker { " Docker is there: choose Docker." } else { "" }
+            if f.docker { t!(" Docker is there: choose Docker.") } else { "" }
         )),
         _ => Ok(()),
     }
@@ -133,13 +133,13 @@ pub fn engine_offer(f: &ServerFacts, engine: Engine, server: &str) -> Result<(),
 /// the (i)'s text.
 pub fn flavor_offer(f: &ServerFacts, engine: Engine, flavor: Flavor) -> Result<(), String> {
     match (engine, flavor) {
-        (Engine::Native, Flavor::Timescaledb) => Err(format!(
+        (Engine::Native, Flavor::Timescaledb) => Err(tf!(
             "Not with “In the system” on {}\n\nTimescaleDB is not in the distribution’s packages. {}",
             f.os(),
             if engine_offer(f, Engine::Docker, "").is_ok() {
-                "Docker is on this server: choose Docker on System check to use it."
+                t!("Docker is on this server: choose Docker on System check to use it.")
             } else {
-                "It runs with Docker: install Docker Engine on the server, then choose Docker on System check."
+                t!("It runs with Docker: install Docker Engine on the server, then choose Docker on System check.")
             }
         )),
         _ => Ok(()),
@@ -222,12 +222,12 @@ pub fn gather(ports: &[(u16, String)]) -> ServerFacts {
 /// Keep the passwords for the install job (`install-secrets`): a new file
 /// only this account reads (0600).
 pub fn stage(s: &crate::installer::InstallSecrets) -> Result<(), String> {
-    stage_private_at(&crate::gateway_record::staged_path(SECRETS_FILE), s, "The passwords could not be kept for the install")
+    stage_private_at(&crate::gateway_record::staged_path(SECRETS_FILE), s, t!("The passwords could not be kept for the install"))
 }
 
 /// What [`stage`] kept, removed as it is read (`install --staged`).
 pub fn take_staged() -> Result<crate::installer::InstallSecrets, String> {
-    take_private_at(&crate::gateway_record::staged_path(SECRETS_FILE)).ok_or_else(|| "The passwords did not reach the server. Install again.".to_string())
+    take_private_at(&crate::gateway_record::staged_path(SECRETS_FILE)).ok_or_else(|| t!("The passwords did not reach the server. Install again.").to_string())
 }
 
 /// Write `value` as JSON to a new file at `path` that only this account
@@ -299,22 +299,22 @@ pub fn debug_facts() -> Option<ServerFacts> {
     let row = |id: &str, label: &str, status: &str, detail: &str| FactCheck { id: id.into(), label: label.into(), status: status.into(), detail: detail.into(), state: None };
     Some(ServerFacts {
         docker,
-        docker_version: if docker { "Docker version 27.3.1".into() } else { String::new() },
+        docker_version: if docker { t!("Docker version 27.3.1").into() } else { String::new() },
         compose: docker,
         systemd: true,
-        os_name: if std::env::var_os("SPM_DEBUG_GLIBC").is_some() { "Debian GNU/Linux 12 (bookworm)".into() } else { "Ubuntu 24.04 LTS".into() },
+        os_name: if std::env::var_os("SPM_DEBUG_GLIBC").is_some() { t!("Debian GNU/Linux 12 (bookworm)").into() } else { t!("Ubuntu 24.04 LTS").into() },
         distro: "ubuntu".into(),
         arch: "x86_64".into(),
         libc: glibc::local(),
         disk_free: Some(433_000_000_000),
         mem_total: Some(15_600_000_000),
         native_checks: vec![
-            row("systemd", "systemd", "pass", "systemd 255 runs the server."),
-            row("root", "Privileges", "pass", "The agent runs as root (sudo for ops)."),
-            row("packages", "Package manager", "pass", "apt-get, from Ubuntu's packages."),
-            row("disk", "Disk space", "pass", "433 GB free on /."),
-            row("ports", "Required ports", "pass", "8080, 1883, 8883, 5683, 5684 and 5432 are free."),
-            row("download", "Download hosts", "pass", "github.com and packages.clickhouse.com answer from the server."),
+            row("systemd", "systemd", "pass", t!("systemd 255 runs the server.")),
+            row("root", t!("Privileges"), "pass", "The agent runs as root (sudo for ops)."),
+            row("packages", t!("Package manager"), "pass", "apt-get, from Ubuntu's packages."),
+            row("disk", t!("Disk space"), "pass", t!("433 GB free on /.")),
+            row("ports", t!("Required ports"), "pass", t!("8080, 1883, 8883, 5683, 5684 and 5432 are free.")),
+            row("download", t!("Download hosts"), "pass", t!("github.com and packages.clickhouse.com answer from the server.")),
         ],
         docker_checks: Vec::new(),
     })

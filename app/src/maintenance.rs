@@ -58,17 +58,17 @@ impl Action {
 
     fn title(self) -> &'static str {
         match self {
-            Action::Repair => "Repair",
-            Action::ChangeDatabase => "Change database",
-            Action::Uninstall => "Uninstall",
+            Action::Repair => t!("Repair"),
+            Action::ChangeDatabase => t!("Change database"),
+            Action::Uninstall => t!("Uninstall"),
         }
     }
 
     fn describe(self) -> &'static str {
         match self {
-            Action::Repair => "Re-register the services and restore missing program files. Data and settings are kept.",
-            Action::ChangeDatabase => "Move to another database type, history included. Opens the Platform Manager's Migration screen.",
-            Action::Uninstall => "Stop and remove SENTIENT. The Platform Manager stays. You choose whether to keep the data.",
+            Action::Repair => t!("Re-register the services and restore missing program files. Data and settings are kept."),
+            Action::ChangeDatabase => t!("Move to another database type, history included. Opens the Platform Manager's Migration screen."),
+            Action::Uninstall => t!("Stop and remove SENTIENT. The Platform Manager stays. You choose whether to keep the data."),
         }
     }
 
@@ -119,7 +119,7 @@ impl Found {
     }
 
     fn installed_manager_label(&self) -> String {
-        if self.installed_manager.is_empty() { "an earlier version".into() } else { self.installed_manager.clone() }
+        if self.installed_manager.is_empty() { t!("an earlier version").into() } else { self.installed_manager.clone() }
     }
 
     fn sentient_move(&self, record: &InstallationRecord) -> Option<releases::Move> {
@@ -300,19 +300,19 @@ impl Maintenance {
             let this = this.clone();
             let (title, text, ok) = match action {
                 Action::Repair => (
-                    "Repair SENTIENT?",
-                    "The services are re-registered and SENTIENT is restarted. Data and settings are kept.",
-                    "Repair",
+                    t!("Repair SENTIENT?"),
+                    t!("The services are re-registered and SENTIENT is restarted. Data and settings are kept."),
+                    t!("Repair"),
                 ),
                 _ if keep => (
-                    "Uninstall SENTIENT?",
-                    "SENTIENT is removed. The database is kept. The Platform Manager stays.",
-                    "Uninstall",
+                    t!("Uninstall SENTIENT?"),
+                    t!("SENTIENT is removed. The database is kept. The Platform Manager stays."),
+                    t!("Uninstall"),
                 ),
                 _ => (
-                    "Uninstall SENTIENT and delete its data?",
-                    "SENTIENT, PostgreSQL and every database are removed. This can't be undone. The Platform Manager stays.",
-                    "Delete everything",
+                    t!("Uninstall SENTIENT and delete its data?"),
+                    t!("SENTIENT, PostgreSQL and every database are removed. This can't be undone. The Platform Manager stays."),
+                    t!("Delete everything"),
                 ),
             };
             dialog.title(title).description(text).confirm().ok_text(ok).on_ok(move |_, _, cx| {
@@ -366,7 +366,7 @@ impl Maintenance {
                             start_delay: 0,
                         };
                         if let Err(e) = self_install::create_manager_shortcuts(&path, &shortcuts) {
-                            sink(Progress::Log { line: format!("note: {e}") });
+                            sink(Progress::Log { line: nf!("note: {e}") });
                         }
                         self_install::refresh_operator_screen(&sink);
                         record.manager_version = crate::updates::manager_version().into();
@@ -428,29 +428,29 @@ impl Maintenance {
 /// The Update button's words for what is ticked.
 fn update_label(manager: bool, sentient: bool, gateway: bool) -> String {
     match (manager, sentient, gateway) {
-        (true, true, true) => "Update all three".into(),
-        (true, true, false) | (true, false, true) | (false, true, true) => "Update both".into(),
-        (true, false, false) => "Update the Platform Manager".into(),
-        (false, true, false) => "Update SENTIENT".into(),
-        (false, false, true) => "Update the gateway".into(),
-        _ => "Update".into(),
+        (true, true, true) => t!("Update all three").into(),
+        (true, true, false) | (true, false, true) | (false, true, true) => t!("Update both").into(),
+        (true, false, false) => t!("Update the Platform Manager").into(),
+        (false, true, false) => t!("Update SENTIENT").into(),
+        (false, false, true) => t!("Update the gateway").into(),
+        _ => t!("Update").into(),
     }
 }
 
 /// What the update screen names: the ticked parts, in order.
 fn updated_parts(manager: bool, sentient: bool, gateway: bool) -> String {
-    let parts: Vec<&str> = [(manager, "the Platform Manager"), (sentient, "SENTIENT"), (gateway, "the Sentient Gateway")].into_iter().filter(|(on, _)| *on).map(|(_, n)| n).collect();
+    let parts: Vec<&str> = [(manager, t!("the Platform Manager")), (sentient, "SENTIENT"), (gateway, t!("the Sentient Gateway"))].into_iter().filter(|(on, _)| *on).map(|(_, n)| n).collect();
     match parts.as_slice() {
         [] => String::new(),
         [one] => one.to_string(),
-        [a, b] => format!("{a} and {b}"),
-        [a, b, c] => format!("{a}, {b} and {c}"),
+        [a, b] => tf!("{a} and {b}"),
+        [a, b, c] => tf!("{a}, {b} and {c}"),
         _ => parts.join(", "),
     }
 }
 
 fn updating_gateway(version: &str) -> String {
-    format!("Updating the Sentient Gateway to {version}")
+    tf!("Updating the Sentient Gateway to {version}")
 }
 
 /// Start the installed Platform Manager with `args`.
@@ -503,7 +503,7 @@ fn line(
 impl Maintenance {
     /// The "What's new" button of a line: the notes this Setup carries.
     fn notes_button(&self, id: &'static str, cx: &mut Context<Self>) -> Button {
-        crate::ui::button(id).outline().label("What's new").on_click(cx.listener(|this, _, _, cx| {
+        crate::ui::button(id).outline().label(t!("What's new")).on_click(cx.listener(|this, _, _, cx| {
             this.screen = Screen::WhatsNew;
             cx.notify();
         }))
@@ -537,7 +537,7 @@ impl Maintenance {
     fn other_choices(&self, theme: &gpui_kit::component::Theme, cx: &mut Context<Self>) -> Div {
         v_flex()
             .gap_2()
-            .child(div().text_sm().text_color(theme.muted_foreground).child("Other choices"))
+            .child(div().text_sm().text_color(theme.muted_foreground).child(t!("Other choices")))
             .child(h_flex().gap(crate::ui::button_gap()).children(Action::ALL.into_iter().map(|action| {
                 crate::ui::button(SharedString::from(format!("other-{}", action.id())))
                     .outline()
@@ -549,34 +549,34 @@ impl Maintenance {
     /// C7b: the Platform Manager was removed, SENTIENT is still here.
     fn install_manager_screen(&self, theme: &gpui_kit::component::Theme, record: &InstallationRecord, found: &Found, cx: &mut Context<Self>) -> Vec<AnyElement> {
         vec![
-            div().text_size(px(19.)).font_weight(FontWeight::MEDIUM).child("Install the SENTIENT Platform Manager").into_any_element(),
-            div().text_color(theme.muted_foreground).child("This setup found SENTIENT already on this computer.").into_any_element(),
+            div().text_size(px(19.)).font_weight(FontWeight::MEDIUM).child(t!("Install the SENTIENT Platform Manager")).into_any_element(),
+            div().text_color(theme.muted_foreground).child(t!("This setup found SENTIENT already on this computer.")).into_any_element(),
             line(
                 theme,
                 "line-sentient",
                 false,
                 false,
                 "SENTIENT",
-                format!(
+                tf!(
                     "SENTIENT {} installation detected ({}). It is not installed again and not touched.",
                     record.sentient_version,
                     crate::installation::flavor_label(record.flavor())
                 ),
-                Some("Detected"),
+                Some(t!("Detected")),
             )
             .into_any_element(),
-            line(theme, "line-manager", true, true, "SENTIENT Platform Manager", format!("Install {}.", found.this_manager), None)
+            line(theme, "line-manager", true, true, "SENTIENT Platform Manager", tf!("Install {}.", found.this_manager), None)
                 .child(self.notes_button("manager-notes", cx))
                 .into_any_element(),
             h_flex()
                 .gap(crate::ui::button_gap())
                 .justify_end()
-                .child(crate::ui::probed(crate::ui::button("install-manager").primary().label("Install the Platform Manager").on_click(cx.listener(|this, _, _, cx| {
+                .child(crate::ui::probed(crate::ui::button("install-manager").primary().label(t!("Install the Platform Manager")).on_click(cx.listener(|this, _, _, cx| {
                     this.tick_manager = true;
                     this.tick_sentient = false;
                     this.run_update(cx);
                 }))))
-                .child(crate::ui::probed(crate::ui::button("close").outline().label("Close").on_click(|_, window, _| window.remove_window())))
+                .child(crate::ui::probed(crate::ui::button("close").outline().label(t!("Close")).on_click(|_, window, _| window.remove_window())))
                 .into_any_element(),
         ]
     }
@@ -586,16 +586,16 @@ impl Maintenance {
         let manager_about = match found.manager_move {
             releases::Move::Newer => {
                 if found.package.is_none() || !self.sentient_tickable() {
-                    format!("{} to {}. SENTIENT is not touched; data and settings are kept.", found.installed_manager_label(), found.this_manager)
+                    tf!("{} to {}. SENTIENT is not touched; data and settings are kept.", found.installed_manager_label(), found.this_manager)
                 } else {
-                    format!("{} to {}.", found.installed_manager_label(), found.this_manager)
+                    tf!("{} to {}.", found.installed_manager_label(), found.this_manager)
                 }
             }
-            _ => format!("{} is installed. This setup is the same version.", found.installed_manager_label()),
+            _ => tf!("{} is installed. This setup is the same version.", found.installed_manager_label()),
         };
         let mut out: Vec<AnyElement> = vec![
-            div().text_size(px(19.)).font_weight(FontWeight::MEDIUM).child(format!("SENTIENT {} is installed on this computer", record.sentient_version)).into_any_element(),
-            div().text_color(theme.muted_foreground).child("Tick what this setup should update.").into_any_element(),
+            div().text_size(px(19.)).font_weight(FontWeight::MEDIUM).child(tf!("SENTIENT {} is installed on this computer", record.sentient_version)).into_any_element(),
+            div().text_color(theme.muted_foreground).child(t!("Tick what this setup should update.")).into_any_element(),
         ];
         let manager_on = self.manager_tickable();
         out.push(
@@ -616,7 +616,7 @@ impl Maintenance {
                     self.tick_sentient,
                     true,
                     "SENTIENT",
-                    format!("{} to {v}. Stopped for about 2 minutes. The database is copied first and put back if the update fails.", record.sentient_version),
+                    tf!("{} to {v}. Stopped for about 2 minutes. The database is copied first and put back if the update fails.", record.sentient_version),
                     None,
                 )
                 .child(self.notes_button("sentient-notes", cx))
@@ -634,9 +634,9 @@ impl Maintenance {
                     false,
                     "SENTIENT",
                     if m == releases::Move::Same {
-                        format!("{v} is already installed. Nothing to update.")
+                        tf!("{v} is already installed. Nothing to update.")
                     } else {
-                        format!("This setup carries {v}, older than the installed {}. Nothing to update.", record.sentient_version)
+                        tf!("This setup carries {v}, older than the installed {}. Nothing to update.", record.sentient_version)
                     },
                     None,
                 )
@@ -650,9 +650,9 @@ impl Maintenance {
                     .bg(theme.accent)
                     .text_sm()
                     .child(if record.engine == Engine::Docker {
-                        "To update SENTIENT, use Update inside the Platform Manager."
+                        t!("To update SENTIENT, use Update inside the Platform Manager.")
                     } else {
-                        "This setup carries no SENTIENT package. To update SENTIENT, use Update inside the Platform Manager or the offline setup."
+                        t!("This setup carries no SENTIENT package. To update SENTIENT, use Update inside the Platform Manager or the offline setup.")
                     })
                     .into_any_element(),
             ),
@@ -664,8 +664,8 @@ impl Maintenance {
                 None => u.about.clone(),
             };
             let title = match installed {
-                Some(v) if !u.older => format!("Sentient Gateway {v} to {}", u.version),
-                _ => format!("Sentient Gateway {}", u.version),
+                Some(v) if !u.older => tf!("Sentient Gateway {v} to {}", u.version),
+                _ => tf!("Sentient Gateway {}", u.version),
             };
             out.push(
                 line(theme, "line-gateway", self.tick_gateway && enabled, enabled, title, about, None)
@@ -690,7 +690,7 @@ impl Maintenance {
                     }
                     this.run_update(cx);
                 }))))
-                .child(crate::ui::probed(crate::ui::button("close").outline().label("Close").on_click(|_, window, _| window.remove_window())))
+                .child(crate::ui::probed(crate::ui::button("close").outline().label(t!("Close")).on_click(|_, window, _| window.remove_window())))
                 .into_any_element(),
         );
         out.push(self.other_choices(theme, cx).into_any_element());
@@ -702,20 +702,20 @@ impl Maintenance {
         let older = found.manager_move == releases::Move::Older;
         let mut out: Vec<AnyElement> = Vec::new();
         if older {
-            out.push(div().text_size(px(19.)).font_weight(FontWeight::MEDIUM).child("A newer Platform Manager is already installed").into_any_element());
+            out.push(div().text_size(px(19.)).font_weight(FontWeight::MEDIUM).child(t!("A newer Platform Manager is already installed")).into_any_element());
             out.push(
                 div()
                     .text_color(theme.muted_foreground)
-                    .child(format!("Installed: {}. This setup: {}.", found.installed_manager, found.this_manager))
+                    .child(tf!("Installed: {}. This setup: {}.", found.installed_manager, found.this_manager))
                     .into_any_element(),
             );
-            out.push(ui::outcome(theme, Tone::Warn, "This older setup will not replace the newer program.").into_any_element());
+            out.push(ui::outcome(theme, Tone::Warn, t!("This older setup will not replace the newer program.")).into_any_element());
         } else {
-            out.push(div().text_size(px(19.)).font_weight(FontWeight::MEDIUM).child(format!("SENTIENT {} is installed on this computer", record.sentient_version)).into_any_element());
+            out.push(div().text_size(px(19.)).font_weight(FontWeight::MEDIUM).child(tf!("SENTIENT {} is installed on this computer", record.sentient_version)).into_any_element());
             out.push(
                 div()
                     .text_color(theme.muted_foreground)
-                    .child(format!("Platform Manager {} is installed. This setup is the same version.", found.installed_manager_label()))
+                    .child(tf!("Platform Manager {} is installed. This setup is the same version.", found.installed_manager_label()))
                     .into_any_element(),
             );
         }
@@ -724,8 +724,8 @@ impl Maintenance {
                 theme,
                 "open-manager",
                 Icon::new(Lucide::Play),
-                "Open the Platform Manager",
-                if older { "Use the installed version for repair, database change or uninstall." } else { "Status, control, updates, backup and logs." },
+                t!("Open the Platform Manager"),
+                if older { t!("Use the installed version for repair, database change or uninstall.") } else { t!("Status, control, updates, backup and logs.") },
                 true,
             )
             .on_click(cx.listener(|_, _, window, _| {
@@ -752,32 +752,32 @@ impl Maintenance {
         let mut notes = Vec::new();
         if found.manager_move == releases::Move::Newer {
             notes.extend(crate::notes::own(&found.installed_manager).into_iter().map(|mut n| {
-                n.version = format!("Platform Manager {}", n.version);
+                n.version = tf!("Platform Manager {}", n.version);
                 n
             }));
         }
         let mut sentient_db = None;
         if let (Some((dir, v)), Some(releases::Move::Newer)) = (&found.package, found.sentient_move(record)) {
             let s = crate::notes::bundled(dir, &record.sentient_version, v);
-            sentient_db = Some(if s.is_empty() { "This package carries no release notes for SENTIENT.".to_string() } else { crate::notes::database_line(&s) });
+            sentient_db = Some(if s.is_empty() { t!("This package carries no release notes for SENTIENT.").to_string() } else { crate::notes::database_line(&s) });
             notes.extend(s.into_iter().map(|mut n| {
-                n.version = format!("SENTIENT {}", n.version);
+                n.version = tf!("SENTIENT {}", n.version);
                 n
             }));
         }
         let carries = match &found.package {
-            Some((_, v)) => format!(" and carries SENTIENT {v}"),
+            Some((_, v)) => tf!(" and carries SENTIENT {v}"),
             None => String::new(),
         };
         vec![
-            div().text_size(px(19.)).font_weight(FontWeight::MEDIUM).child("What's new in this setup").into_any_element(),
+            div().text_size(px(19.)).font_weight(FontWeight::MEDIUM).child(t!("What's new in this setup")).into_any_element(),
             div()
                 .text_color(theme.muted_foreground)
-                .child(format!("Platform Manager {} is installed. This setup is {}{carries}.", found.installed_manager_label(), found.this_manager))
+                .child(tf!("Platform Manager {} is installed. This setup is {}{carries}.", found.installed_manager_label(), found.this_manager))
                 .into_any_element(),
             ui::panel(theme).child(ui::release_notes(theme, &notes)).children(sentient_db.map(|d| div().text_sm().child(d))).into_any_element(),
             h_flex()
-                .child(crate::ui::button("back").outline().label("Back").on_click(cx.listener(|this, _, _, cx| {
+                .child(crate::ui::button("back").outline().label(t!("Back")).on_click(cx.listener(|this, _, _, cx| {
                     this.screen = Screen::Home;
                     cx.notify();
                 })))
@@ -800,24 +800,24 @@ impl Maintenance {
         let what = updated_parts(manager, sentient_v.is_some(), gateway.is_some());
         let what = what.as_str();
         let title = match (finished, install_only) {
-            (None, true) => "Installing the Platform Manager".to_string(),
-            (None, false) => format!("Updating {what}"),
-            (Some(true), true) => "The Platform Manager is installed".to_string(),
-            (Some(true), false) => format!("{} {} updated", capitalise(what), if what.contains(" and ") { "are" } else { "is" }),
-            (Some(false), true) => "The Platform Manager was not installed".to_string(),
-            (Some(false), false) => format!("{} was not updated", capitalise(what)),
+            (None, true) => t!("Installing the Platform Manager").to_string(),
+            (None, false) => tf!("Updating {what}"),
+            (Some(true), true) => t!("The Platform Manager is installed").to_string(),
+            (Some(true), false) => tf!("{} {} updated", capitalise(what), if what.contains(" and ") { "are" } else { "is" }),
+            (Some(false), true) => t!("The Platform Manager was not installed").to_string(),
+            (Some(false), false) => tf!("{} was not updated", capitalise(what)),
         };
         let mut versions = match (manager, &sentient_v) {
-            (true, Some(v)) => format!("Platform Manager {} to {}, SENTIENT {} to {v}", found.installed_manager_label(), found.this_manager, record.sentient_version),
-            (true, None) if install_only => format!("Platform Manager {}", found.this_manager),
-            (true, None) => format!("{} to {}", found.installed_manager_label(), found.this_manager),
-            (false, Some(v)) => format!("SENTIENT {} to {v}", record.sentient_version),
+            (true, Some(v)) => tf!("Platform Manager {} to {}, SENTIENT {} to {v}", found.installed_manager_label(), found.this_manager, record.sentient_version),
+            (true, None) if install_only => tf!("Platform Manager {}", found.this_manager),
+            (true, None) => tf!("{} to {}", found.installed_manager_label(), found.this_manager),
+            (false, Some(v)) => tf!("SENTIENT {} to {v}", record.sentient_version),
             _ => String::new(),
         };
         if let Some((u, _, installed)) = &gateway {
             let g = match installed {
-                Some(v) if !u.older => format!("Sentient Gateway {v} to {}", u.version),
-                _ => format!("the older Python gateway to Sentient Gateway {}", u.version),
+                Some(v) if !u.older => tf!("Sentient Gateway {v} to {}", u.version),
+                _ => tf!("the older Python gateway to Sentient Gateway {}", u.version),
             };
             versions = if versions.is_empty() { capitalise(&g) } else { format!("{versions}, {g}") };
         }
@@ -825,11 +825,11 @@ impl Maintenance {
             JobState::Done(_) => {
                 let now = InstallationRecord::load();
                 let sentient_now = now.as_ref().map(|r| r.sentient_version.clone()).unwrap_or_else(|| record.sentient_version.clone());
-                Some(ui::outcome(theme, Tone::Good, format!("Platform Manager {} is installed. SENTIENT {sentient_now} is running.", if manager { found.this_manager.clone() } else { found.installed_manager_label() })))
+                Some(ui::outcome(theme, Tone::Good, tf!("Platform Manager {} is installed. SENTIENT {sentient_now} is running.", if manager { found.this_manager.clone() } else { found.installed_manager_label() })))
             }
             JobState::Failed(m) => {
                 let keeps = if manager && !install_only {
-                    format!(" Platform Manager {} is still installed and SENTIENT is running.", found.installed_manager_label())
+                    tf!(" Platform Manager {} is still installed and SENTIENT is running.", found.installed_manager_label())
                 } else {
                     String::new()
                 };
@@ -840,16 +840,16 @@ impl Maintenance {
         // Secondary first, the primary at the right end.
         let acts: Vec<AnyElement> = match finished {
             Some(true) => vec![
-                crate::ui::button("close").outline().label("Close").on_click(|_, window, _| window.remove_window()).into_any_element(),
-                crate::ui::button("open").primary().label("Open the Platform Manager").on_click(|_, window, _| {
+                crate::ui::button("close").outline().label(t!("Close")).on_click(|_, window, _| window.remove_window()).into_any_element(),
+                crate::ui::button("open").primary().label(t!("Open the Platform Manager")).on_click(|_, window, _| {
                     if open_manager(&[]) {
                         window.remove_window();
                     }
                 }).into_any_element(),
             ],
             Some(false) => vec![
-                crate::ui::button("close").outline().label("Close").on_click(|_, window, _| window.remove_window()).into_any_element(),
-                crate::ui::button("retry").primary().label("Try again").on_click(cx.listener(|this, _, _, cx| this.run_update(cx))).into_any_element(),
+                crate::ui::button("close").outline().label(t!("Close")).on_click(|_, window, _| window.remove_window()).into_any_element(),
+                crate::ui::button("retry").primary().label(t!("Try again")).on_click(cx.listener(|this, _, _, cx| this.run_update(cx))).into_any_element(),
             ],
             None => Vec::new(),
         };
@@ -863,7 +863,7 @@ impl Maintenance {
     /// Repair and Uninstall, as before.
     fn action_screen(&self, theme: &gpui_kit::component::Theme, action: Action, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let _ = theme;
-        let close = crate::ui::button("close").primary().label("Close").on_click(|_, window, _| window.remove_window()).into_any_element();
+        let close = crate::ui::button("close").primary().label(t!("Close")).on_click(|_, window, _| window.remove_window()).into_any_element();
         vec![crate::manager::jobview::JobView::new("maint-action", action.title(), &self.job).actions([close]).render(cx).into_any_element()]
     }
 }

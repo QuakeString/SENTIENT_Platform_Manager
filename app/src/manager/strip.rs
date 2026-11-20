@@ -115,7 +115,7 @@ pub fn install(cx: &mut App) -> Entity<Strip> {
 /// Whether a job labelled `label` (of `instance`, None: this computer)
 /// starts SENTIENT: Start or Restart.
 pub fn is_start_label(label: &str, instance: Option<&str>) -> bool {
-    instance.is_none() && (label.starts_with("Starting SENTIENT") || label.starts_with("Restarting SENTIENT"))
+    instance.is_none() && (crate::i18n::label_starts(label, "Starting SENTIENT") || crate::i18n::label_starts(label, "Restarting SENTIENT"))
 }
 
 /// SENTIENT on this computer is being started (or restarted) by a job
@@ -149,6 +149,7 @@ pub fn busy(cx: &App) -> bool {
 /// A condition the background checks found (crate::bg_app): a line in the
 /// bell, as a job's would be.
 pub fn push_condition(inst: Option<(String, String, String)>, failed: bool, title: String, detail: String, cx: &mut App) {
+    let (title, detail) = (crate::i18n::dynamic(&title).into_owned(), crate::i18n::dynamic(&detail).into_owned());
     let strip = install(cx);
     strip.update(cx, |s, cx| {
         s.push_event(inst, failed, title, detail.clone(), detail);
@@ -190,7 +191,7 @@ impl Strip {
                 if !lines.is_empty() && !text.contains(crate::remote::DETAILS) {
                     text = format!("{text}{}{}", crate::remote::DETAILS, lines.join("\n"));
                 }
-                let label = self.label.clone().unwrap_or_else(|| "A job".into());
+                let label = self.label.clone().unwrap_or_else(|| t!("A job").into());
                 // The bell's line: the diagnosed cause, else the headline.
                 let head = j.diagnosis().filter(|d| d.is_known()).map(|d| d.cause.clone()).unwrap_or_else(|| crate::remote::split_failure(&m).0);
                 if let Some(d) = j.diagnosis() {
@@ -216,9 +217,9 @@ impl Strip {
                 self.finished_at = Some(Instant::now());
                 // Backups, restores, updates and takeovers that finish are
                 // worth a line in the bell; a start or stop is not.
-                if let Some(l) = self.label.clone().filter(|l| ["Backing up", "Restoring", "Updating", "Taking over", "Moving", "Changing the database"].iter().any(|w| l.starts_with(w))) {
+                if let Some(l) = self.label.clone().filter(|l| [t!("Backing up"), t!("Restoring"), t!("Updating"), t!("Taking over"), t!("Moving"), t!("Changing the database")].iter().any(|w| crate::i18n::label_starts(l, w))) {
                     let inst = job.read(cx).instance();
-                    self.push_event(inst, false, format!("{l}: done"), m.to_string(), m.to_string());
+                    self.push_event(inst, false, tf!("{l}: done"), m.to_string(), m.to_string());
                 }
                 self._hide = Some(cx.spawn(async move |this, cx| {
                     cx.background_executor().timer(SHOW_DONE).await;
@@ -244,7 +245,7 @@ impl Strip {
 }
 
 fn open_details(job: Entity<Job>, label: Option<SharedString>, cx: &mut App) {
-    let title = label.clone().unwrap_or_else(|| "Details".into());
+    let title = label.clone().unwrap_or_else(|| t!("Details").into());
     let view = cx.new(|cx| JobDetails::new(job, cx));
     crate::modal::open(crate::modal::Modal { title, body: view.into(), width: 760., icon: None, on_close: None }, cx);
 }
@@ -254,7 +255,7 @@ impl Strip {
         let id = self.events.iter().map(|e| e.id).max().unwrap_or(0) + 1;
         let (instance, instance_name, color) = match inst {
             Some((i, n, c)) => (Some(i), n, c),
-            None => (None, "This computer".into(), crate::remote::LOCAL_COLOR.into()),
+            None => (None, t!("This computer").into(), crate::remote::LOCAL_COLOR.into()),
         };
         self.events.insert(0, Event { id, failed, title, detail: detail.lines().next().unwrap_or("").to_string(), text, at: chrono::Utc::now().timestamp(), read: false, instance, instance_name, color });
         self.events.truncate(50);
@@ -310,10 +311,10 @@ impl Strip {
     pub fn debug_events(&mut self, n: usize) {
         let now = chrono::Utc::now().timestamp();
         let samples = [
-            (true, "Stopping ClickHouse failed", "ClickHouse did not stop within 30 seconds.", Some("plantb"), "Plant B server", "#6b4fa0"),
-            (false, "Backing up: done", "Backup finished and checked: sentient-2026-11-15-0200, 5.0 GB.", None, "This computer", "#187074"),
-            (true, "Updating the server agent failed", "The agent could not be put in place at /opt/sentient-platform-manager (as administrator).", Some("fabrikam"), "Fabrikam IIoT", "#1f9d4d"),
-            (false, "Updating SENTIENT: done", "SENTIENT 4.4.0.2 is running.", Some("plantb"), "Plant B server", "#6b4fa0"),
+            (true, t!("Stopping ClickHouse failed"), t!("ClickHouse did not stop within 30 seconds."), Some("plantb"), t!("Plant B server"), "#6b4fa0"),
+            (false, t!("Backing up: done"), t!("Backup finished and checked: sentient-2026-11-15-0200, 5.0 GB."), None, t!("This computer"), "#187074"),
+            (true, t!("Updating the server agent failed"), t!("The agent could not be put in place at /opt/sentient-platform-manager (as administrator)."), Some("fabrikam"), t!("Fabrikam IIoT"), "#1f9d4d"),
+            (false, t!("Updating SENTIENT: done"), t!("SENTIENT 4.4.0.2 is running."), Some("plantb"), t!("Plant B server"), "#6b4fa0"),
         ];
         self.events = (0..n)
             .map(|i| {
@@ -399,7 +400,7 @@ impl Render for Strip {
         let job = job_e.read(cx);
         let (tone, text, running) = match job.state() {
             JobState::Running => {
-                let step = job.step().clone();
+                let step: gpui_kit::SharedString = crate::i18n::dynamic(job.step()).into_owned().into();
                 let name = match (&self.label, step.is_empty()) {
                     (Some(l), true) => l.to_string(),
                     // The step adds something only when the name does not say it.
@@ -409,7 +410,7 @@ impl Render for Strip {
                 };
                 (Tone::Neutral, name, true)
             }
-            JobState::Done(_) => (Tone::Good, "Done".to_string(), false),
+            JobState::Done(_) => (Tone::Good, t!("Done").to_string(), false),
             JobState::Failed(m) => (Tone::Bad, crate::remote::split_failure(m).0, false),
             JobState::Idle => return div().into_any_element(),
         };
@@ -522,7 +523,7 @@ impl Render for Strip {
                     .underline()
                     .cursor_pointer()
                     .hover(|d| d.bg(white().opacity(0.12)))
-                    .child("Details")
+                    .child(t!("Details"))
                     .on_click(move |_, _, cx| match job_e.read(cx).details() {
                         Some(open) => open(cx),
                         None => open_details(job_e.clone(), label.clone(), cx),
@@ -582,8 +583,8 @@ impl Render for JobDetails {
         };
         let retry = matches!(job.state(), JobState::Failed(_)).then(|| job.retry()).flatten();
         let again = match job.state() {
-            JobState::Failed(m) => crate::ui::retry_label(m, "Retry"),
-            _ => "Retry",
+            JobState::Failed(m) => crate::ui::retry_label(m, t!("Retry")),
+            _ => t!("Retry"),
         };
         let lines: Vec<SharedString> = job.steps().iter().map(|s| SharedString::from(format!("▸ {s}"))).chain(job.log().iter().cloned()).collect();
         let text = lines.iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n");
@@ -600,21 +601,21 @@ impl Render for JobDetails {
                     .bg(theme.muted)
                     .font_family(theme.mono_font_family.clone())
                     .text_size(px(12.5))
-                    .when(lines.is_empty(), |d| d.child(div().text_color(theme.muted_foreground).child("No output yet.")))
+                    .when(lines.is_empty(), |d| d.child(div().text_color(theme.muted_foreground).child(t!("No output yet."))))
                     .children(lines.into_iter().map(|l| div().child(l))),
             )
             .child(
                 h_flex()
                     .gap(crate::ui::button_gap())
                     .justify_end()
-                    .child(crate::ui::probed(crate::ui::button("job-details-copy").outline().label("Copy").on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(text.clone())))))
+                    .child(crate::ui::probed(crate::ui::button("job-details-copy").outline().label(t!("Copy")).on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(text.clone())))))
                     .when_some(retry.clone(), |r, retry| {
                         r.child(crate::ui::probed(crate::ui::button("job-details-retry").outline().label(again).on_click(move |_, _, cx| {
                             crate::modal::close(cx);
                             retry(cx);
                         })))
                     })
-                    .child(crate::ui::probed(crate::ui::button("job-details-close").primary().label("Close").on_click(|_, _, cx| crate::modal::close(cx)))),
+                    .child(crate::ui::probed(crate::ui::button("job-details-close").primary().label(t!("Close")).on_click(|_, _, cx| crate::modal::close(cx)))),
             )
     }
 }

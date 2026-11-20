@@ -132,8 +132,8 @@ impl EventEmitter<Go> for StatusPage {}
 fn disk_name(record: &InstallationRecord) -> String {
     let p = record.pg_dir.display().to_string();
     match p.chars().next() {
-        Some(c) if cfg!(windows) && p.chars().nth(1) == Some(':') => format!("Disk {}:", c.to_ascii_uppercase()),
-        _ => "The database's disk".into(),
+        Some(c) if cfg!(windows) && p.chars().nth(1) == Some(':') => tf!("Disk {}:", c.to_ascii_uppercase()),
+        _ => t!("The database's disk").into(),
     }
 }
 
@@ -151,11 +151,11 @@ fn small_fact(theme: &gpui_kit::component::Theme, label: &'static str, value: im
 /// such readings exist.
 fn period_fact(theme: &gpui_kit::component::Theme, key: &'static str, first: i64, last: i64) -> Div {
     if first >= crate::dbstatus::VALID_FROM_MS {
-        return small_fact(theme, "Period", format!("{} to {}", crate::dbstatus::day_label(first), crate::dbstatus::day_label(last)));
+        return small_fact(theme, t!("Period"), tf!("{} to {}", crate::dbstatus::day_label(first), crate::dbstatus::day_label(last)));
     }
-    small_fact(theme, "Period", format!("up to {}", crate::dbstatus::day_label(last))).child(ui::info(
+    small_fact(theme, t!("Period"), tf!("up to {}", crate::dbstatus::day_label(last))).child(ui::info(
         SharedString::from(format!("period-{key}")),
-        "Some readings carry a time before 2000, most likely 1970: a device sent its data without a time. They are kept, but the period's start is not shown from them.".into(),
+        t!("Some readings carry a time before 2000, most likely 1970: a device sent its data without a time. They are kept, but the period's start is not shown from them.").into(),
     ))
 }
 
@@ -235,9 +235,9 @@ impl StatusPage {
                         let state = m[..m.len() - note.len()].trim().trim_end_matches('.').to_string();
                         let note = note.to_string();
                         if page.from_tray {
-                            crate::bg_app::desktop_notification(&format!("This computer: {state}"), &note);
+                            crate::bg_app::desktop_notification(&tf!("This computer: {state}"), &note);
                         }
-                        crate::manager::strip::push_condition(None, false, "PostgreSQL stays running".into(), note, cx);
+                        crate::manager::strip::push_condition(None, false, t!("PostgreSQL stays running").into(), note, cx);
                     }
                 }
                 page.svc_busy = None;
@@ -336,9 +336,9 @@ impl StatusPage {
         self.stack_action = Some(action);
         self.job.update(cx, |job, cx| {
             job.set_label(match action {
-                "start" => "Starting SENTIENT",
-                "stop" => "Stopping SENTIENT",
-                _ => "Restarting SENTIENT",
+                "start" => t!("Starting SENTIENT"),
+                "stop" => t!("Stopping SENTIENT"),
+                _ => t!("Restarting SENTIENT"),
             });
             job.start(move |sink| platform.control_stack(sink, action, stop_shared_pg), cx)
         });
@@ -403,7 +403,7 @@ impl StatusPage {
         let header = h_flex()
             .gap_3()
             .items_center()
-            .child(div().font_weight(FontWeight::MEDIUM).child("Database"))
+            .child(div().font_weight(FontWeight::MEDIUM).child(t!("Database")))
             .child(div().flex_1())
             .children(self.db_read_at.clone().map(|t| {
                 div().text_size(px(13.)).text_color(theme.muted_foreground).child(format!("read at {t}"))
@@ -411,20 +411,20 @@ impl StatusPage {
             .child(
                 crate::ui::button("db-read")
                     .outline()
-                    .label(if self.db_reading { "Reading" } else if self.db.is_none() { "Read" } else { "Refresh" })
+                    .label(if self.db_reading { t!("Reading") } else if self.db.is_none() { t!("Read") } else { t!("Refresh") })
                     .disabled(self.db_reading)
                     .on_click(cx.listener(|this, _, _, cx| this.read_db(cx))),
             );
         let panel = ui::panel(theme).child(header);
         let Some(db) = &self.db else {
             return panel.child(div().text_sm().text_color(theme.muted_foreground).child(if self.db_reading {
-                "Reading the database's size and state…"
+                t!("Reading the database's size and state…")
             } else if crate::dbstatus::after_sign_in(record) {
-                "The database's size and state are available after you sign in again."
+                t!("The database's size and state are available after you sign in again.")
             } else if crate::dbstatus::needs_admin(record) {
-                "Read shows the database's size and state. It asks for the administrator password once; after a Repair it reads without one."
+                t!("Read shows the database's size and state. It asks for the administrator password once; after a Repair it reads without one.")
             } else {
-                "Not read."
+                t!("Not read.")
             }));
         };
         let this = cx.entity().downgrade();
@@ -436,7 +436,7 @@ impl StatusPage {
         };
         let last_backup = match &self.last_backup {
             Some(b) => format!("{}{}", crate::dbstatus::ago_label(&b.at, chrono::Local::now()), b.bytes.map(|n| format!(", {}", bytes_label(n))).unwrap_or_default()),
-            None => "None".to_string(),
+            None => t!("None").to_string(),
         };
         db_details(
             theme,
@@ -447,7 +447,7 @@ impl StatusPage {
             last_backup,
             DbActions {
                 move_data: (crate::movedata::unsupported(record).is_none()).then(|| -> std::rc::Rc<dyn Fn(&mut Window, &mut App)> {
-                    std::rc::Rc::new(|window, cx| crate::manager::movedata::open(crate::movedata::Target::Local, "This computer", None, window, cx))
+                    std::rc::Rc::new(|window, cx| crate::manager::movedata::open(crate::movedata::Target::Local, t!("This computer"), None, window, cx))
                 }),
                 set_limit: Some(go(Go::Settings)),
                 remove_kept: Some(go(Go::Migration)),
@@ -496,13 +496,13 @@ impl StatusPage {
 
     fn confirm_adopt(&mut self, candidate: Candidate, window: &mut Window, cx: &mut Context<Self>) {
         let this = cx.entity().downgrade();
-        let text = format!(
+        let text = tf!(
             "The Platform Manager checks it can reach this instance's databases, then manages it from now on: status, start and stop, logs, updates, backups and the rest. \
              Nothing is reinstalled, moved or restarted. {}",
             if candidate.record.stack.external.is_some() {
-                "It runs from a compose file the Platform Manager did not write."
+                t!("It runs from a compose file the Platform Manager did not write.")
             } else if candidate.sets_admin_password {
-                "The Platform Manager does not know the PostgreSQL admin (postgres) password, which updates need: it sets a new one and keeps it in its secret store. Anything else that signs in to PostgreSQL as postgres will need the new password."
+                t!("The Platform Manager does not know the PostgreSQL admin (postgres) password, which updates need: it sets a new one and keeps it in its secret store. Anything else that signs in to PostgreSQL as postgres will need the new password.")
             } else {
                 ""
             }
@@ -510,7 +510,7 @@ impl StatusPage {
         crate::modal::alert(window, cx, move |dialog, _, _| {
             let this = this.clone();
             let candidate = candidate.clone();
-            dialog.title("Add this existing instance?").description(text.clone()).confirm().ok_text("Add instance").on_ok(move |_, _, cx| {
+            dialog.title(t!("Add this existing instance?")).description(text.clone()).confirm().ok_text(t!("Add instance")).on_ok(move |_, _, cx| {
                 let candidate = candidate.clone();
                 this.update(cx, |page, cx| {
                     page.adopt_job.update(cx, |job, cx| job.start(move |sink| crate::adopt::adopt_as_needed(&candidate, None, sink), cx));
@@ -529,13 +529,13 @@ impl StatusPage {
             _ => None,
         };
         let step = job.step_with_time();
-        let mut panel = ui::panel(theme).child(div().font_weight(FontWeight::MEDIUM).child("Add existing instance"));
+        let mut panel = ui::panel(theme).child(div().font_weight(FontWeight::MEDIUM).child(t!("Add existing instance")));
         let Some(found) = &self.found else {
-            return panel.child(div().text_sm().text_color(theme.muted_foreground).child("Looking for SENTIENT instances on this computer…"));
+            return panel.child(div().text_sm().text_color(theme.muted_foreground).child(t!("Looking for SENTIENT instances on this computer…")));
         };
         if found.is_empty() {
             return panel.child(div().text_sm().text_color(theme.muted_foreground).child(
-                "No existing SENTIENT instance was found on this computer. One started some other way (SENTIENT compose files, an older installer) is listed in this panel, so the Platform Manager can manage it.",
+                t!("No existing SENTIENT instance was found on this computer. One started some other way (SENTIENT compose files, an older installer) is listed in this panel, so the Platform Manager can manage it."),
             ));
         }
         panel = panel
@@ -543,15 +543,15 @@ impl StatusPage {
                 h_flex()
                     .gap_1()
                     .items_center()
-                    .child(div().text_sm().text_color(theme.muted_foreground).child("Found on this computer."))
-                    .child(ui::info("existing-help".into(), "Add one and the Platform Manager manages it as it is, without reinstalling anything.".into())),
+                    .child(div().text_sm().text_color(theme.muted_foreground).child(t!("Found on this computer.")))
+                    .child(ui::info("existing-help".into(), t!("Add one and the Platform Manager manages it as it is, without reinstalling anything.").into())),
             )
             .when(busy, |p| p.child(div().text_sm().child(step)))
             .children(failed.map(|m| ui::outcome(theme, Tone::Bad, m)));
         for (i, c) in found.iter().enumerate() {
             let candidate = c.clone();
             let from = c.facts().into_iter().find(|(l, _)| *l == "From").map(|(_, v)| v).unwrap_or_default();
-            let mut help = format!("Started from: {from}");
+            let mut help = tf!("Started from: {from}");
             for n in &c.notes {
                 help.push_str("\n\n");
                 help.push_str(n);
@@ -566,9 +566,9 @@ impl StatusPage {
                     .rounded(theme.radius)
                     // The essentials; where it came from and the notes behind an
                     // (i); a short amber line only when its compose file is gone.
-                    .children(c.facts().into_iter().filter(|(l, _)| ["Runs as", "Version", "Database type", "State", "Web port"].contains(l)).map(|(label, value)| ui::fact(theme, label, value)))
-                    .when(missing, |d| d.child(div().mt_1().text_sm().text_color(if theme.mode.is_dark() { theme.warning_foreground } else { gpui::rgb(0xb45309).into() }).child("Compose file missing")))
-                    .children(c.problem.clone().map(|p| ui::outcome(theme, Tone::Warn, format!("Cannot be added: {p}"))))
+                    .children(c.facts().into_iter().filter(|(l, _)| [t!("Runs as"), t!("Version"), t!("Database type"), t!("State"), t!("Web port")].contains(l)).map(|(label, value)| ui::fact(theme, label, value)))
+                    .when(missing, |d| d.child(div().mt_1().text_sm().text_color(if theme.mode.is_dark() { theme.warning_foreground } else { gpui::rgb(0xb45309).into() }).child(t!("Compose file missing"))))
+                    .children(c.problem.clone().map(|p| ui::outcome(theme, Tone::Warn, tf!("Cannot be added: {p}"))))
                     .child(
                         h_flex()
                             .mt_2()
@@ -577,7 +577,7 @@ impl StatusPage {
                             .child(
                                 crate::ui::button(("adopt", i))
                                     .primary()
-                                    .label("Add this instance")
+                                    .label(t!("Add this instance"))
                                     .disabled(busy || c.problem.is_some())
                                     .on_click(cx.listener(move |this, _, window, cx| this.confirm_adopt(candidate.clone(), window, cx))),
                             )
@@ -592,16 +592,16 @@ impl StatusPage {
 /// The places a search for SENTIENT looked in, and what to do about the
 /// ones it could not look in.
 fn looked_help(looked: &[String]) -> String {
-    let mut text = String::from("Looked in:");
+    let mut text = String::from(t!("Looked in:"));
     for l in looked {
         text.push('\n');
         text.push_str(l);
     }
     if looked.iter().any(|l| l.contains("stopped, not looked in")) {
-        text.push_str("\n\nA stopped WSL distro is not started just to look in it. Start it and keep it running (SENTIENT in it needs that too), then open Status again.");
+        text.push_str(t!("\n\nA stopped WSL distro is not started just to look in it. Start it and keep it running (SENTIENT in it needs that too), then open Status again."));
     }
     if looked.iter().any(|l| l.starts_with("WSL distro")) {
-        text.push_str("\n\nWSL distros belong to a Windows account: these are the ones of the account the Platform Manager runs as.");
+        text.push_str(t!("\n\nWSL distros belong to a Windows account: these are the ones of the account the Platform Manager runs as."));
     }
     text
 }
@@ -609,7 +609,7 @@ fn looked_help(looked: &[String]) -> String {
 impl Render for StatusPage {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
-        let page = ui::page(&theme, "Status", "Services, version, database type and ports.");
+        let page = ui::page(&theme, t!("Status"), t!("Services, version, database type and ports."));
         let Some(record) = &self.record else {
             // The Flatpak build finds nothing on this computer: it says why.
             if sentient_installer_core::host::in_flatpak() {
@@ -624,7 +624,7 @@ impl Render for StatusPage {
                     h_flex()
                         .gap_1()
                         .items_center()
-                        .child(div().text_sm().text_color(theme.muted_foreground).child("No SENTIENT started some other way was found on this computer."))
+                        .child(div().text_sm().text_color(theme.muted_foreground).child(t!("No SENTIENT started some other way was found on this computer.")))
                         .child(ui::info("looked-help".into(), looked_help(&self.looked).into())),
                 )
             });
@@ -634,7 +634,7 @@ impl Render for StatusPage {
 
         let busy_action = self.stack_action.filter(|_| self.job.read(cx).is_running());
         let (overall, tone) = match &self.snapshot {
-            None => ("Checking…", Tone::Neutral),
+            None => (t!("Checking…"), Tone::Neutral),
             Some(s) => overall_state(s.serving, &s.services.iter().map(|v| (v.name.as_str(), v.running, v.starting)).collect::<Vec<_>>(), busy_action),
         };
         let stopped = self.snapshot.as_ref().is_some_and(|s| !s.serving);
@@ -656,12 +656,12 @@ impl Render for StatusPage {
                     .bg(theme.danger.opacity(0.14))
                     .text_color(theme.danger)
                     .text_sm()
-                    .child(div().flex_1().child(format!(
+                    .child(div().flex_1().child(tf!(
                         "The newest backup, {}, is damaged: {}",
                         e.name,
                         e.check.map(|c| c.summary).unwrap_or_default()
                     )))
-                    .child(crate::ui::button("backup-damaged").outline().label("Back up now").on_click(cx.listener(|_, _, _, cx| cx.emit(Go::Backup)))),
+                    .child(crate::ui::button("backup-damaged").outline().label(t!("Back up now")).on_click(cx.listener(|_, _, _, cx| cx.emit(Go::Backup)))),
             )
         });
         // B7: changes from a newer Platform Manager, waiting quietly.
@@ -676,13 +676,13 @@ impl Render for StatusPage {
                     .rounded(theme.radius)
                     .bg(theme.accent)
                     .text_sm()
-                    .child(div().flex_1().child(format!(
+                    .child(div().flex_1().child(tf!(
                         "{waiting} change{} from Platform Manager {} {} waiting.",
                         if waiting == 1 { "" } else { "s" },
                         crate::updates::manager_version(),
                         if waiting == 1 { "is" } else { "are" }
                     )))
-                    .child(crate::ui::button("changes-waiting").outline().label("Apply").on_click(cx.listener(|_, _, _, cx| cx.emit(OpenUpdate)))),
+                    .child(crate::ui::button("changes-waiting").outline().label(t!("Apply")).on_click(cx.listener(|_, _, _, cx| cx.emit(OpenUpdate)))),
             )
         });
 
@@ -717,22 +717,22 @@ impl Render for StatusPage {
                         move |_, _, cx| ui::open_sentient(record.stack.http_port, record.opens_as_kiosk(), cx)
                     }))),
             )
-            .child(ui::card_fact(&theme, "SENTIENT version", self.shown_version.clone().unwrap_or_else(|| record.sentient_version.clone())))
-            .child(ui::card_fact(&theme, "Database", flavor_label(record.flavor())))
+            .child(ui::card_fact(&theme, t!("SENTIENT version"), self.shown_version.clone().unwrap_or_else(|| record.sentient_version.clone())))
+            .child(ui::card_fact(&theme, t!("Database"), flavor_label(record.flavor())))
             .child(ui::card_fact(
                 &theme,
-                "Runs as",
+                t!("Runs as"),
                 match record.engine {
-                    crate::installation::Engine::Native if cfg!(windows) => "Windows services",
+                    crate::installation::Engine::Native if cfg!(windows) => t!("Windows services"),
                     crate::installation::Engine::Native => "systemd services",
-                    crate::installation::Engine::Docker => "Docker containers",
+                    crate::installation::Engine::Docker => t!("Docker containers"),
                 },
             ))
-            .child(ui::card_fact(&theme, "Address", record.url()))
+            .child(ui::card_fact(&theme, t!("Address"), record.url()))
             .child(ui::card_fact(
                 &theme,
-                "Ports",
-                format!(
+                t!("Ports"),
+                tf!(
                     "Web {} · MQTT {} / {} · CoAP {} / {} · PostgreSQL {}",
                     st.http_port, st.mqtt_port, st.mqtts_port, st.coap_port, st.coaps_port, st.pg_port
                 ),
@@ -742,9 +742,9 @@ impl Render for StatusPage {
                 Some(ext) => {
                     let gone = st.vanished_files();
                     let files: Vec<&String> = ext.files.iter().filter(|f| !gone.contains(f)).collect();
-                    ui::card_fact(&theme, "Runs from", format!("a compose file the Platform Manager did not write ({})", files.iter().map(|f| f.as_str()).collect::<Vec<_>>().join(", ")))
+                    ui::card_fact(&theme, t!("Runs from"), tf!("a compose file the Platform Manager did not write ({})", files.iter().map(|f| f.as_str()).collect::<Vec<_>>().join(", ")))
                 }
-                None => ui::card_fact(&theme, "Installed in", record.install_dir.display().to_string()),
+                None => ui::card_fact(&theme, t!("Installed in"), record.install_dir.display().to_string()),
             })
             .children(ui::card_actions(
                 &theme,
@@ -794,22 +794,22 @@ impl StatusPage {
     fn gateway_card(&self, theme: &gpui_kit::component::Theme, cx: &mut Context<Self>) -> Div {
         let newer = self.updates.read(cx).gateway_notice();
         let (tone, pill, line): (Tone, &str, String) = match &self.gateway {
-            None => (Tone::Neutral, "Checking…", String::new()),
+            None => (Tone::Neutral, t!("Checking…"), String::new()),
             // The older Python gateway alone: its update to the Rust one.
             Some(g) if !g.installed && g.legacy.is_some() => (
                 Tone::Neutral,
-                "Update available",
-                format!("The older Python gateway{}", newer.as_ref().map(|o| format!(" · Sentient Gateway {} available", o.version)).unwrap_or_default()),
+                t!("Update available"),
+                tf!("The older Python gateway{}", newer.as_ref().map(|o| tf!(" · Sentient Gateway {} available", o.version)).unwrap_or_default()),
             ),
-            Some(g) if !g.installed => (Tone::Neutral, "Not installed", "No Sentient Gateway on this computer.".into()),
+            Some(g) if !g.installed => (Tone::Neutral, t!("Not installed"), t!("No Sentient Gateway on this computer.").into()),
             Some(g) => (
                 if g.running { Tone::Good } else { Tone::Bad },
-                if g.running { "Running" } else { "Stopped" },
-                format!(
+                if g.running { t!("Running") } else { t!("Stopped") },
+                tf!(
                     "Sentient Gateway {}{}{}",
-                    g.version.clone().unwrap_or_else(|| "(version unknown)".into()),
-                    g.host.as_ref().map(|h| format!(" · sends to {h}{}", g.port.map(|p| format!(":{p}")).unwrap_or_default())).unwrap_or_default(),
-                    newer.as_ref().map(|o| format!(" · {} available", o.version)).unwrap_or_default()
+                    g.version.clone().unwrap_or_else(|| t!("(version unknown)").into()),
+                    g.host.as_ref().map(|h| tf!(" · sends to {h}{}", g.port.map(|p| format!(":{p}")).unwrap_or_default())).unwrap_or_default(),
+                    newer.as_ref().map(|o| tf!(" · {} available", o.version)).unwrap_or_default()
                 ),
             ),
         };
@@ -826,7 +826,7 @@ impl StatusPage {
                     .child(
                         crate::ui::button("open-gateway")
                             .outline()
-                            .label(if installed { "Manage" } else { "Install" })
+                            .label(if installed { t!("Manage") } else { t!("Install") })
                             .on_click(cx.listener(|_, _, _, cx| cx.emit(OpenGateway))),
                     ),
             )
@@ -839,16 +839,16 @@ pub(crate) fn service_job_label(name: &str, action: &str) -> String {
     format!(
         "{} {plain}",
         match action {
-            "start" => "Starting",
-            "stop" => "Stopping",
-            _ => "Restarting",
+            "start" => t!("Starting"),
+            "stop" => t!("Stopping"),
+            _ => t!("Restarting"),
         }
     )
 }
 
 /// The Services card's title, as tall as the SENTIENT card's header row.
 pub(crate) fn services_title() -> Div {
-    h_flex().min_h(px(32.)).items_center().child(div().font_weight(FontWeight::MEDIUM).child("Services"))
+    h_flex().min_h(px(32.)).items_center().child(div().font_weight(FontWeight::MEDIUM).child(t!("Services")))
 }
 
 /// A service row's Logs: the Logs page on that service's source.
@@ -872,13 +872,13 @@ pub(crate) fn service_act(serving: bool, run: std::rc::Rc<dyn Fn(String, &'stati
         });
         let n = name.to_lowercase();
         if (n.contains("postgres") || n.contains("clickhouse")) && serving && action != "start" {
-            let title = format!("{} {plain}?", if action == "stop" { "Stop" } else { "Restart" });
+            let title = format!("{} {plain}?", if action == "stop" { t!("Stop") } else { t!("Restart") });
             crate::modal::alert(window, cx, move |d, _, _| {
                 let go = go.clone();
                 d.title(title.clone())
-                    .description("SENTIENT loses its database until it is back: devices and dashboards stop updating meanwhile.")
+                    .description(t!("SENTIENT loses its database until it is back: devices and dashboards stop updating meanwhile."))
                     .confirm()
-                    .ok_text(if action == "stop" { "Stop" } else { "Restart" })
+                    .ok_text(if action == "stop" { t!("Stop") } else { t!("Restart") })
                     .on_ok(move |_, _, cx| {
                         go(cx);
                         true
@@ -899,34 +899,34 @@ pub(crate) fn overall_state(serving: bool, services: &[(&str, bool, bool)], acti
     // The databases by name; the gateway counts for neither; the rest is
     // SENTIENT (a stack may name its containers freely).
     let is_db = |n: &str| matches!(ui::service_label(n), Some("Database (PostgreSQL)" | "ClickHouse"));
-    let is_app = |n: &str| !is_db(n) && ui::service_label(n) != Some("Gateway");
+    let is_app = |n: &str| !is_db(n) && ui::service_label(n) != Some(t!("Gateway"));
     match action {
-        Some("start") => return ("Starting", Tone::Warn),
-        Some("restart") => return ("Restarting", Tone::Warn),
-        Some("stop") => return ("Stopping", Tone::Warn),
+        Some("start") => return (t!("Starting"), Tone::Warn),
+        Some("restart") => return (t!("Restarting"), Tone::Warn),
+        Some("stop") => return (t!("Stopping"), Tone::Warn),
         _ => {}
     }
     // Its port answers but none of its own services runs: some other
     // program is serving there.
     if serving && !services.is_empty() && !services.iter().any(|s| s.1 || s.2) {
-        return ("Another program answers on SENTIENT's port", Tone::Warn);
+        return (t!("Another program answers on SENTIENT's port"), Tone::Warn);
     }
     let has_app = services.iter().any(|s| is_app(s.0));
     let app_up = serving || services.iter().any(|s| is_app(s.0) && s.1);
     let dep_down = services.iter().any(|s| is_db(s.0) && !s.1);
     if app_up && dep_down {
-        return ("Partly running", Tone::Warn);
+        return (t!("Partly running"), Tone::Warn);
     }
     if serving {
-        return ("SENTIENT is running", Tone::Good);
+        return (t!("SENTIENT is running"), Tone::Good);
     }
     if has_app && app_up {
-        return ("SENTIENT does not answer yet", Tone::Warn);
+        return (t!("SENTIENT does not answer yet"), Tone::Warn);
     }
     if services.iter().any(|s| s.2) {
-        return ("SENTIENT is starting with Windows", Tone::Warn);
+        return (t!("SENTIENT is starting with Windows"), Tone::Warn);
     }
-    ("SENTIENT is stopped", Tone::Bad)
+    (t!("SENTIENT is stopped"), Tone::Bad)
 }
 
 /// Lists the databases that keep a shared PostgreSQL running (blocking).
@@ -953,7 +953,7 @@ pub(crate) fn confirm_stop(cx: &mut App, probe: Option<PgProbe>, stop: std::rc::
         }
         d
     });
-    crate::modal::open(crate::modal::Modal { title: "Stop SENTIENT?".into(), body: view.into(), width: 480., icon: None, on_close: None }, cx);
+    crate::modal::open(crate::modal::Modal { title: t!("Stop SENTIENT?").into(), body: view.into(), width: 480., icon: None, on_close: None }, cx);
 }
 
 struct StopDialog {
@@ -970,7 +970,7 @@ impl Render for StopDialog {
         let theme = cx.theme().clone();
         let kept: Option<(String, Option<String>)> = match &self.others {
             Some(Ok(list)) if !list.is_empty() => Some((format!("{}.", sentient_installer_core::stack_order::stays_running_text(list)), None)),
-            Some(Err(e)) => Some(("PostgreSQL stays running: its databases could not be listed.".into(), Some(e.clone()))),
+            Some(Err(e)) => Some((t!("PostgreSQL stays running: its databases could not be listed.").into(), Some(e.clone()))),
             _ => None,
         };
         let force = self.force;
@@ -978,7 +978,7 @@ impl Render for StopDialog {
         v_flex()
             .gap_4()
             .child(div().text_sm().text_color(theme.muted_foreground).child(
-                "SENTIENT stops, then its databases. Devices lose their connection and dashboards stop updating until SENTIENT is started again.",
+                t!("SENTIENT stops, then its databases. Devices lose their connection and dashboards stop updating until SENTIENT is started again."),
             ))
             .when(self.probing, |c| {
                 c.child(
@@ -988,7 +988,7 @@ impl Render for StopDialog {
                         .text_sm()
                         .text_color(theme.muted_foreground)
                         .child(ui::skeleton_block(&theme, "stop-probe", px(14.).into(), 14.))
-                        .child("Checking what else PostgreSQL holds…"),
+                        .child(t!("Checking what else PostgreSQL holds…")),
                 )
             })
             .when_some(kept, |c, (text, why)| {
@@ -1003,8 +1003,8 @@ impl Render for StopDialog {
                                 h_flex()
                                     .gap_1()
                                     .items_center()
-                                    .child("Stop it anyway")
-                                    .child(ui::info("stop-pg-anyway".into(), "Stops PostgreSQL with SENTIENT. Every other program that uses its databases loses them until it is started again.".into())),
+                                    .child(t!("Stop it anyway"))
+                                    .child(ui::info("stop-pg-anyway".into(), t!("Stops PostgreSQL with SENTIENT. Every other program that uses its databases loses them until it is started again.").into())),
                             )
                             .child(gpui_kit::component::switch::Switch::new("stop-pg-anyway-switch").checked(force).on_click(cx.listener(|d, v: &bool, _, cx| {
                                 d.force = *v;
@@ -1016,8 +1016,8 @@ impl Render for StopDialog {
                 h_flex()
                     .gap_2()
                     .justify_end()
-                    .child(crate::ui::button("stop-cancel").outline().label("Cancel").on_click(|_, _, cx| crate::modal::close(cx)))
-                    .child(crate::modal::danger_button(&theme, "stop-ok", "Stop".into(), move |_, _, cx| {
+                    .child(crate::ui::button("stop-cancel").outline().label(t!("Cancel")).on_click(|_, _, cx| crate::modal::close(cx)))
+                    .child(crate::modal::danger_button(&theme, "stop-ok", t!("Stop").into(), move |_, _, cx| {
                         crate::modal::close(cx);
                         stop(force, cx);
                     })),
@@ -1046,7 +1046,7 @@ pub(crate) fn control_buttons(
     restart: std::rc::Rc<dyn Fn(&mut Window, &mut App)>,
     stop: std::rc::Rc<dyn Fn(&mut Window, &mut App)>,
 ) -> Div {
-    ui::button_row(service_buttons(theme, id, busy, running, "Stop", start, restart, stop))
+    ui::button_row(service_buttons(theme, id, busy, running, t!("Stop"), start, restart, stop))
 }
 
 /// Start, Stop and Restart of a service, the one row every service card
@@ -1092,15 +1092,15 @@ pub(crate) fn service_buttons(
     let probe = |b: AnyElement| div().relative().child(b).child(ui::layout_probe("svc-button")).into_any_element();
     vec![
         // Secondary first, Start (the primary while stopped) rightmost.
-        probe(btn("restart", "Restart", IconName::RotateCw, false, any_up).on_click(move |_, w, cx| restart(w, cx)).into_any_element()),
+        probe(btn("restart", t!("Restart"), IconName::RotateCw, false, any_up).on_click(move |_, w, cx| restart(w, cx)).into_any_element()),
         probe(btn("stop", stop_label, IconName::Square, false, any_up).hover_colors(bg, border, fg).on_click(move |_, w, cx| stop(w, cx)).into_any_element()),
-        probe(btn("start", "Start", IconName::Play, down, !serving).on_click(move |_, w, cx| start(w, cx)).into_any_element()),
+        probe(btn("start", t!("Start"), IconName::Play, down, !serving).on_click(move |_, w, cx| start(w, cx)).into_any_element()),
     ]
 }
 
 /// The Logs button beside a service's controls (the same height, an icon).
 pub(crate) fn logs_button(id: &str, on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static) -> AnyElement {
-    let b = crate::ui::button(SharedString::from(format!("{id}logs"))).outline().label("Logs").icon(gpui_kit::component::Icon::new(gpui_kit::component::IconName::File)).on_click(on_click);
+    let b = crate::ui::button(SharedString::from(format!("{id}logs"))).outline().label(t!("Logs")).icon(gpui_kit::component::Icon::new(gpui_kit::component::IconName::File)).on_click(on_click);
     div().relative().child(b).child(ui::layout_probe("svc-button")).into_any_element()
 }
 
@@ -1137,7 +1137,7 @@ impl BrokenParts {
             v.reload(cx);
             v
         });
-        crate::modal::open(crate::modal::Modal { title: "ClickHouse parts set aside".into(), body: view.into(), width: 640., icon: None, on_close: None }, cx);
+        crate::modal::open(crate::modal::Modal { title: t!("ClickHouse parts set aside").into(), body: view.into(), width: 640., icon: None, on_close: None }, cx);
     }
 
     fn reload(&mut self, cx: &mut Context<Self>) {
@@ -1181,10 +1181,11 @@ impl BrokenParts {
 fn summarize(out: &str, attach: bool) -> String {
     let ok = out.lines().filter(|l| l.starts_with("ok ")).count();
     let failed: Vec<&str> = out.lines().filter(|l| l.starts_with("failed ")).collect();
-    let verb = if attach { "restored" } else { "deleted" };
-    let mut s = format!("{ok} part{} {verb}.", if ok == 1 { "" } else { "s" });
+    // Whole sentences per verb: a translation cannot take an English verb in.
+    let mut s = if attach { tf!("Parts restored: {ok}.") } else { tf!("Parts deleted: {ok}.") };
     if !failed.is_empty() {
-        s.push_str(&format!(" {} could not be {verb}:\n{}", failed.len(), failed.iter().map(|l| l.trim_start_matches("failed ")).collect::<Vec<_>>().join("\n")));
+        let why = failed.iter().map(|l| l.trim_start_matches("failed ")).collect::<Vec<_>>().join("\n");
+        s.push_str(&if attach { tf!(" Could not be restored ({}):\n{why}", failed.len()) } else { tf!(" Could not be deleted ({}):\n{why}", failed.len()) });
     } else if ok == 0 && !out.trim().is_empty() {
         s = out.trim().to_string();
     }
@@ -1195,12 +1196,12 @@ impl Render for BrokenParts {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
         let mut col = v_flex().gap_3().child(div().text_sm().text_color(theme.muted_foreground).child(
-            "Parts of the telemetry history ClickHouse set aside after an unclean stop. Their readings are missing from the history. Try to restore brings back the ones it can read; Delete removes them for good.",
+            t!("Parts of the telemetry history ClickHouse set aside after an unclean stop. Their readings are missing from the history. Try to restore brings back the ones it can read; Delete removes them for good."),
         ));
         match &self.list {
             None => col = col.child(ui::skeleton_card(&theme, "parts", None, &["", ""])),
-            Some(Err(e)) => col = col.child(ui::notice(&theme, Tone::Bad, format!("The list could not be read.\n{e}"))),
-            Some(Ok(list)) if list.is_empty() => col = col.child(ui::notice(&theme, Tone::Good, "No parts are set aside.")),
+            Some(Err(e)) => col = col.child(ui::notice(&theme, Tone::Bad, tf!("The list could not be read.\n{e}"))),
+            Some(Ok(list)) if list.is_empty() => col = col.child(ui::notice(&theme, Tone::Good, t!("No parts are set aside."))),
             Some(Ok(list)) => {
                 // Grouped by table and month.
                 let mut groups: Vec<(String, String, usize, u64)> = Vec::new();
@@ -1225,7 +1226,7 @@ impl Render for BrokenParts {
                             .text_sm()
                             .child(div().flex_1().min_w_0().overflow_hidden().text_ellipsis().child(table))
                             .child(div().w(px(80.)).child(month))
-                            .child(div().w(px(80.)).text_right().child(format!("{n} part{}", if n == 1 { "" } else { "s" })))
+                            .child(div().w(px(80.)).text_right().child(tf!("{n} part{}", if n == 1 { "" } else { "s" })))
                             .child(div().w(px(80.)).text_right().child(crate::dbstatus::bytes_label(bytes))),
                     );
                 }
@@ -1242,8 +1243,8 @@ impl Render for BrokenParts {
                 .gap(crate::ui::button_gap())
                 .justify_end()
                 .when(self.confirm_delete, |r| {
-                    r.child(div().flex_1().text_sm().text_color(theme.danger).child("Delete them for good? Their readings cannot come back."))
-                        .child(crate::ui::probed(crate::ui::button("parts-delete-no").outline().label("Cancel").on_click(cx.listener(|v, _, _, cx| {
+                    r.child(div().flex_1().text_sm().text_color(theme.danger).child(t!("Delete them for good? Their readings cannot come back.")))
+                        .child(crate::ui::probed(crate::ui::button("parts-delete-no").outline().label(t!("Cancel")).on_click(cx.listener(|v, _, _, cx| {
                             v.confirm_delete = false;
                             cx.notify();
                         }))))
@@ -1260,17 +1261,17 @@ impl Render for BrokenParts {
                                 .text_sm()
                                 .font_weight(FontWeight::MEDIUM)
                                 .cursor_pointer()
-                                .child("Delete")
+                                .child(t!("Delete"))
                                 .on_click(cx.listener(|v, _, _, cx| v.run(false, cx))),
                         ))
                 })
                 .when(!self.confirm_delete, |r| {
-                    r.child(crate::ui::probed(crate::ui::button("parts-delete").outline().text_color(theme.danger).label("Delete").disabled(!has || busy).on_click(cx.listener(|v, _, _, cx| {
+                    r.child(crate::ui::probed(crate::ui::button("parts-delete").outline().text_color(theme.danger).label(t!("Delete")).disabled(!has || busy).on_click(cx.listener(|v, _, _, cx| {
                         v.confirm_delete = true;
                         cx.notify();
                     }))))
-                    .child(crate::ui::probed(crate::ui::button("parts-restore").primary().label("Try to restore").loading(busy).disabled(!has || busy).on_click(cx.listener(|v, _, _, cx| v.run(true, cx)))))
-                    .child(crate::ui::probed(crate::ui::button("parts-close").outline().label("Close").on_click(|_, _, cx| crate::modal::close(cx))))
+                    .child(crate::ui::probed(crate::ui::button("parts-restore").primary().label(t!("Try to restore")).loading(busy).disabled(!has || busy).on_click(cx.listener(|v, _, _, cx| v.run(true, cx)))))
+                    .child(crate::ui::probed(crate::ui::button("parts-close").outline().label(t!("Close")).on_click(|_, _, cx| crate::modal::close(cx))))
                 }),
         )
     }
@@ -1293,7 +1294,7 @@ pub(crate) fn db_details(
     use crate::dbstatus::{CRITICAL_DISK, LOW_DISK, bytes_label, count_label, month_label, plain_table};
     // SENTIENT stopped: nothing was read, and nothing failed.
     if db.stopped {
-        return panel.child(div().text_sm().text_color(theme.muted_foreground).child(crate::dbstatus::STOPPED));
+        return panel.child(div().text_sm().text_color(theme.muted_foreground).child(crate::i18n::t(crate::dbstatus::STOPPED)));
     }
     let mut panel = panel;
         let pg_bytes = db.pg.as_ref().map(|p| p.db_bytes).unwrap_or(0);
@@ -1313,8 +1314,8 @@ pub(crate) fn db_details(
             _ => (theme.warning, theme.warning_foreground),
         };
         let when = match &lasts {
-            Some(l) => format!(" At this rate it is full in {}, and SENTIENT stops storing data when it is.", l.trim_start_matches("about ").replace("less than a day", "less than a day")),
-            None => " SENTIENT stops storing data when it is full.".to_string(),
+            Some(l) => tf!(" At this rate it is full in {}, and SENTIENT stops storing data when it is.", l.trim_start_matches("about ").replace("less than a day", "less than a day")),
+            None => t!(" SENTIENT stops storing data when it is full.").to_string(),
         };
         let kept = db.kept_bytes.filter(|b| *b > 0);
         panel = panel.child(
@@ -1328,25 +1329,25 @@ pub(crate) fn db_details(
                 .bg(bg)
                 .text_color(fg)
                 .text_sm()
-                .child(div().flex_1().min_w(px(240.)).child(format!("{drive} is almost full ({} free).{when}", bytes_label(f))))
+                .child(div().flex_1().min_w(px(240.)).child(tf!("{drive} is almost full ({} free).{when}", bytes_label(f))))
                 .when_some(actions.move_data.clone(), |r, open| {
                     r.child(crate::ui::probed(
                         crate::ui::button("low-move")
                             .primary()
                             .icon(gpui_kit::component::Icon::empty().path("icons/move-data.svg"))
-                            .label("Move data to another disk")
+                            .label(t!("Move data to another disk"))
                             .on_click(move |_, window, cx| open(window, cx)),
                     ))
                 })
                 .when(db.hybrid && actions.set_limit.is_some(), |r| {
                     let set_limit = actions.set_limit.clone().unwrap();
-                    r.child(crate::ui::probed(crate::ui::button("low-limit").outline().label("Set a history limit").on_click({ let f = set_limit.clone(); move |_, _, cx| f(cx) })))
+                    r.child(crate::ui::probed(crate::ui::button("low-limit").outline().label(t!("Set a history limit")).on_click({ let f = set_limit.clone(); move |_, _, cx| f(cx) })))
                 })
                 .when_some(kept.zip(actions.remove_kept.clone()), |r, (k, remove_kept)| {
                     r.child(crate::ui::probed(
                         crate::ui::button("low-kept")
                             .outline()
-                            .label(format!("Remove kept copies ({})", bytes_label(k)))
+                            .label(tf!("Remove kept copies ({})", bytes_label(k)))
                             .on_click(move |_, _, cx| remove_kept(cx)),
                     ))
                 }),
@@ -1362,7 +1363,7 @@ pub(crate) fn db_details(
         let segs: Vec<(Hsla, u64, &str)> = [
             (theme.primary, pg_bytes, "PostgreSQL"),
             (ch_color, ch_bytes, "ClickHouse"),
-            (theme.muted_foreground.opacity(0.45), other, "Other files"),
+            (theme.muted_foreground.opacity(0.45), other, t!("Other files")),
         ]
         .into_iter()
         .filter(|(_, b, name)| *b > 0 || *name == "PostgreSQL")
@@ -1376,7 +1377,7 @@ pub(crate) fn db_details(
             .children(segs.iter().map(|(c, b, name)| {
                 h_flex().gap_1p5().items_center().child(div().size(px(9.)).rounded_sm().bg(*c)).child(format!("{name} {}", bytes_label(*b)))
             }))
-            .child(h_flex().gap_1p5().items_center().child(div().size(px(9.)).rounded_sm().bg(theme.secondary)).child(format!("Free {}", bytes_label(free))));
+            .child(h_flex().gap_1p5().items_center().child(div().size(px(9.)).rounded_sm().bg(theme.secondary)).child(tf!("Free {}", bytes_label(free))));
         panel = panel
             .child(div().pt_1().text_size(px(13.)).font_weight(FontWeight::MEDIUM).text_color(theme.muted_foreground).child({
                 // Sentence case, like "Largest tables".
@@ -1389,15 +1390,15 @@ pub(crate) fn db_details(
             .child(bar)
             .child(legend);
     } else if let Some(f) = free {
-        panel = panel.child(ui::fact(theme, "Free disk", bytes_label(f)));
+        panel = panel.child(ui::fact(theme, t!("Free disk"), bytes_label(f)));
     }
     panel = panel
-        .when_some(growth, |p, growth| p.child(ui::fact(theme, "Growth", match growth {
-            Some((per_day, days)) if per_day > 0 => format!("about {} a day over the last {days} day{}", bytes_label(per_day as u64), if days == 1 { "" } else { "s" }),
-            Some((_, days)) => format!("not growing over the last {days} day{}", if days == 1 { "" } else { "s" }),
-            None => "shown once a day of size readings is kept".into(),
+        .when_some(growth, |p, growth| p.child(ui::fact(theme, t!("Growth"), match growth {
+            Some((per_day, days)) if per_day > 0 => tf!("about {} a day over the last {days} day{}", bytes_label(per_day as u64), if days == 1 { "" } else { "s" }),
+            Some((_, days)) => tf!("not growing over the last {days} day{}", if days == 1 { "" } else { "s" }),
+            None => t!("shown once a day of size readings is kept").into(),
         })))
-        .when_some(lasts.clone(), |p, l| p.child(ui::fact(theme, "Disk lasts", format!("{l} at this rate"))));
+        .when_some(lasts.clone(), |p, l| p.child(ui::fact(theme, t!("Disk lasts"), tf!("{l} at this rate"))));
 
     // PostgreSQL.
     let pg_col = {
@@ -1412,20 +1413,20 @@ pub(crate) fn db_details(
                             .child(ui::database_logo("postgresql", 16.))
                             .when(pg.timescaledb.is_some(), |r| r.child(ui::database_logo("timescale", 16.)))
                             .child(div().text_size(px(13.)).font_weight(FontWeight::MEDIUM).text_color(theme.muted_foreground).child(match &pg.timescaledb {
-                                Some(ts) => format!("PostgreSQL {} · TimescaleDB {ts}", pg.version),
-                                None => format!("PostgreSQL {}", pg.version),
+                                Some(ts) => tf!("PostgreSQL {} · TimescaleDB {ts}", pg.version),
+                                None => tf!("PostgreSQL {}", pg.version),
                             })),
                     )
-                    .child(small_fact(theme, "Size", bytes_label(pg.db_bytes)))
-                    .child(small_fact(theme, "Connections", format!("{} open of {} allowed", pg.connections, pg.max_connections)))
+                    .child(small_fact(theme, t!("Size"), bytes_label(pg.db_bytes)))
+                    .child(small_fact(theme, t!("Connections"), tf!("{} open of {} allowed", pg.connections, pg.max_connections)))
                     // Telemetry history kept in PostgreSQL: the same rows as
                     // ClickHouse shows (approximate count from statistics).
                     .when(!db.hybrid, |c| {
                         let ts_bytes = pg.tables.iter().find(|t| t.name == "ts_kv").map(|t| t.bytes);
                         c.when(pg.ts_rows.is_some() || ts_bytes.is_some(), |c| {
-                            c.child(small_fact(theme, "Telemetry history", match (pg.ts_rows, ts_bytes) {
-                                (Some(r), Some(b)) => format!("about {} values, {}", count_label(r), bytes_label(b)),
-                                (Some(r), None) => format!("about {} values", count_label(r)),
+                            c.child(small_fact(theme, t!("Telemetry history"), match (pg.ts_rows, ts_bytes) {
+                                (Some(r), Some(b)) => tf!("about {} values, {}", count_label(r), bytes_label(b)),
+                                (Some(r), None) => tf!("about {} values", count_label(r)),
                                 (None, Some(b)) => bytes_label(b),
                                 (None, None) => String::new(),
                             }))
@@ -1437,11 +1438,11 @@ pub(crate) fn db_details(
                             .gap_2()
                             .items_center()
                             .text_sm()
-                            .child(div().w_32().flex_shrink_0().text_color(theme.muted_foreground).child("Last backup"))
+                            .child(div().w_32().flex_shrink_0().text_color(theme.muted_foreground).child(t!("Last backup")))
                             .child(div().flex_1().min_w_0().child(last_backup.clone()))
-                            .when_some(actions.back_up.clone(), |r, f| r.child(crate::ui::button("backup-now").outline().label("Back up now").on_click(move |_, _, cx| f(cx)))),
+                            .when_some(actions.back_up.clone(), |r, f| r.child(crate::ui::button("backup-now").outline().label(t!("Back up now")).on_click(move |_, _, cx| f(cx)))),
                     )
-                    .child(div().pt_1().text_size(px(13.)).text_color(theme.muted_foreground).child("Largest tables"));
+                    .child(div().pt_1().text_size(px(13.)).text_color(theme.muted_foreground).child(t!("Largest tables")));
                 let shown: Vec<&crate::dbstatus::Table> = pg.tables.iter().filter(|t| t.bytes > 0).take(5).collect();
                 let max = shown.iter().map(|t| t.bytes).max().unwrap_or(1).max(1);
                 for t in &shown {
@@ -1453,10 +1454,10 @@ pub(crate) fn db_details(
                 let rest = pg.db_bytes.saturating_sub(shown_bytes);
                 let rest_count = (pg.table_count as usize).saturating_sub(shown.len());
                 if rest_count > 0 {
-                    col = col.child(table_row(theme, "Everything else".into(), format!("{rest_count} tables"), rest as f32 / max as f32, bytes_label(rest)));
+                    col = col.child(table_row(theme, t!("Everything else").into(), tf!("{rest_count} tables"), rest as f32 / max as f32, bytes_label(rest)));
                 }
             }
-            (None, Some(e)) => col = col.child(ui::outcome(theme, Tone::Warn, format!("Could not read PostgreSQL: {e}"))),
+            (None, Some(e)) => col = col.child(ui::outcome(theme, Tone::Warn, tf!("Could not read PostgreSQL: {e}"))),
             (None, None) => {}
         }
         col
@@ -1476,32 +1477,32 @@ pub(crate) fn db_details(
                             .gap_2()
                             .items_center()
                             .child(ui::database_logo("clickhouse", 14.))
-                            .child(div().text_size(px(13.)).font_weight(FontWeight::MEDIUM).text_color(theme.muted_foreground).child(format!("ClickHouse {}", ch.version))),
+                            .child(div().text_size(px(13.)).font_weight(FontWeight::MEDIUM).text_color(theme.muted_foreground).child(tf!("ClickHouse {}", ch.version))),
                     )
-                    .child(small_fact(theme, "Size", if ch.uncompressed_bytes > ch.disk_bytes {
-                        format!("{} on disk ({} before compression)", bytes_label(ch.disk_bytes), bytes_label(ch.uncompressed_bytes))
+                    .child(small_fact(theme, t!("Size"), if ch.uncompressed_bytes > ch.disk_bytes {
+                        tf!("{} on disk ({} before compression)", bytes_label(ch.disk_bytes), bytes_label(ch.uncompressed_bytes))
                     } else {
-                        format!("{} on disk", bytes_label(ch.disk_bytes))
+                        tf!("{} on disk", bytes_label(ch.disk_bytes))
                     }))
-                    .child(small_fact(theme, "Telemetry history", format!("{} values, {}", count_label(ch.rows), bytes_label(ch.disk_bytes))))
+                    .child(small_fact(theme, t!("Telemetry history"), tf!("{} values, {}", count_label(ch.rows), bytes_label(ch.disk_bytes))))
                     .children(match (ch.first_ms, ch.last_ms) {
                         (Some(a), Some(b)) => Some(period_fact(theme, "ch", a, b)),
                         _ => None,
                     })
                     .when(ch.invalid_rows > 0, |c| {
-                        c.child(div().pl(px(136.)).text_size(px(13.)).text_color(theme.muted_foreground).child(format!("{} values with no valid time", count_label(ch.invalid_rows))))
+                        c.child(div().pl(px(136.)).text_size(px(13.)).text_color(theme.muted_foreground).child(tf!("{} values with no valid time", count_label(ch.invalid_rows))))
                     })
                     .child(
                         h_flex()
                             .gap_2()
                             .items_center()
                             .text_sm()
-                            .child(div().w_32().flex_shrink_0().text_color(theme.muted_foreground).child("Kept for"))
+                            .child(div().w_32().flex_shrink_0().text_color(theme.muted_foreground).child(t!("Kept for")))
                             .child(div().flex_1().child(match ch.ttl_days {
-                                Some(d) => format!("{d} days"),
+                                Some(d) => tf!("{d} days"),
                                 None => "forever".into(),
                             }))
-                            .when_some(actions.set_limit.clone(), |r, f| r.child(crate::ui::button("history-limit").outline().label("Set a limit").on_click(move |_, _, cx| f(cx)))),
+                            .when_some(actions.set_limit.clone(), |r, f| r.child(crate::ui::button("history-limit").outline().label(t!("Set a limit")).on_click(move |_, _, cx| f(cx)))),
                     )
                     .when_some(broken, |c, n| {
                         let open = actions.broken_parts.clone();
@@ -1510,36 +1511,36 @@ pub(crate) fn db_details(
                                 .gap_2()
                                 .items_center()
                                 .text_sm()
-                                .child(div().w_32().flex_shrink_0().text_color(theme.muted_foreground).child("Health"))
+                                .child(div().w_32().flex_shrink_0().text_color(theme.muted_foreground).child(t!("Health")))
                                 .child(
                                     div()
                                         .id("broken-parts")
                                         .when(open.is_some(), |d| d.cursor_pointer())
-                                        .child(ui::pill(theme, Tone::Warn, format!("{n} damaged part{} set aside ›", if n == 1 { "" } else { "s" })))
+                                        .child(ui::pill(theme, Tone::Warn, tf!("{n} damaged part{} set aside ›", if n == 1 { "" } else { "s" })))
                                         .when_some(open, |d, f| d.on_click(move |_, _, cx| f(cx))),
                                 )
                                 .child(ui::info(
                                     "broken-help".into(),
-                                    "After an unclean stop (a power cut, a full disk) ClickHouse moves parts of the history it cannot read aside. They are kept, not deleted, but their readings are missing from the history until restored. Open the list to try to restore them or delete them.".into(),
+                                    t!("After an unclean stop (a power cut, a full disk) ClickHouse moves parts of the history it cannot read aside. They are kept, not deleted, but their readings are missing from the history until restored. Open the list to try to restore them or delete them.").into(),
                                 )),
                         )
                     });
                 if !ch.months.is_empty() {
-                    col = col.child(div().pt_1().text_size(px(13.)).text_color(theme.muted_foreground).child("History by month"));
+                    col = col.child(div().pt_1().text_size(px(13.)).text_color(theme.muted_foreground).child(t!("History by month")));
                     let max = ch.months.iter().map(|(_, b)| *b).max().unwrap_or(1).max(1);
                     let this_month = chrono::Local::now().format("%Y%m").to_string();
                     for (p, b) in ch.months.iter().take(3) {
-                        let label = if p.trim_matches('\'') == this_month { format!("{} so far", month_label(p)) } else { month_label(p) };
+                        let label = if p.trim_matches('\'') == this_month { tf!("{} so far", month_label(p)) } else { month_label(p) };
                         col = col.child(table_row(theme, label, String::new(), *b as f32 / max as f32, bytes_label(*b)));
                     }
                     let older: Vec<&(String, u64)> = ch.months.iter().skip(3).collect();
                     if !older.is_empty() {
                         let bytes: u64 = older.iter().map(|(_, b)| *b).sum();
-                        col = col.child(table_row(theme, "Older".into(), format!("{} months", older.len()), bytes as f32 / max as f32, bytes_label(bytes)));
+                        col = col.child(table_row(theme, t!("Older").into(), tf!("{} months", older.len()), bytes as f32 / max as f32, bytes_label(bytes)));
                     }
                 }
             }
-            (None, Some(e)) => col = col.child(ui::outcome(theme, Tone::Warn, format!("Could not read ClickHouse: {e}"))),
+            (None, Some(e)) => col = col.child(ui::outcome(theme, Tone::Warn, tf!("Could not read ClickHouse: {e}"))),
             (None, None) => {}
         }
         col

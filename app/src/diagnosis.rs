@@ -88,7 +88,7 @@ impl DiagnosisView {
                         let id = crate::remote::start_job(&inst, &["diagnose-fix", &json])?;
                         crate::remote::follow(&inst, &id, &sink)
                     }
-                    None if remote => Err("The server is no longer in the list.".into()),
+                    None if remote => Err(n!("The server is no longer in the list.").into()),
                     None => sentient_installer_core::diagnose::apply(&action, &sink).map(|message| sink(sentient_installer_core::progress::Progress::Done { message })),
                 },
                 cx,
@@ -126,7 +126,7 @@ pub(crate) fn command_box_in(theme: &gpui_kit::component::Theme, id: SharedStrin
                         .ghost()
                         
                         .icon(IconName::Copy)
-                        .tooltip("Copy the command")
+                        .tooltip(t!("Copy the command"))
                         .on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()))),
                 ),
         )
@@ -193,7 +193,7 @@ impl Render for DiagnosisView {
                         c.child(match &fix_state {
                             JobState::Running => div().text_color(theme.foreground).child(format!("{label}: {fix_step}")).into_any_element(),
                             JobState::Done(m) => ui::outcome(&theme, ui::Tone::Good, m.to_string()).into_any_element(),
-                            JobState::Failed(m) => ui::outcome(&theme, ui::Tone::Bad, format!("{label} did not finish: {}", crate::remote::split_failure(m).0)).into_any_element(),
+                            JobState::Failed(m) => ui::outcome(&theme, ui::Tone::Bad, tf!("{label} did not finish: {}", crate::remote::split_failure(m).0)).into_any_element(),
                             JobState::Idle => div().into_any_element(),
                         })
                         .when(fixing && !fix_log.is_empty(), |c| {
@@ -205,7 +205,7 @@ impl Render for DiagnosisView {
                     .child(
                         v_flex()
                             .gap_1()
-                            .child(div().text_xs().font_weight(FontWeight::MEDIUM).child(if d.is_known() { "What it printed last" } else { "The last lines it printed" }))
+                            .child(div().text_xs().font_weight(FontWeight::MEDIUM).child(if d.is_known() { t!("What it printed last") } else { t!("The last lines it printed") }))
                             .child(
                                 v_flex()
                                     .id("diag-last")
@@ -244,7 +244,7 @@ impl Render for DiagnosisView {
                                 ui::button("diag-show-log")
                                     .ghost()
                                     
-                                    .label(if show_log { "Hide the full log" } else { "Show the full log" })
+                                    .label(if show_log { t!("Hide the full log") } else { t!("Show the full log") })
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.show_log = !this.show_log;
                                         cx.notify();
@@ -254,7 +254,7 @@ impl Render for DiagnosisView {
                                 ui::button("diag-copy-details")
                                     .ghost()
                                     
-                                    .label(if copied { "Copied" } else { "Copy details" })
+                                    .label(if copied { t!("Copied") } else { t!("Copy details") })
                                     .on_click(cx.listener(move |this, _, _, cx| {
                                         cx.write_to_clipboard(ClipboardItem::new_string(details.clone()));
                                         this.copied = true;
@@ -278,16 +278,16 @@ pub fn debug_diagnosis() -> Option<Diagnosis> {
             ev.units.push(UnitLog {
                 unit: "postgresql.service".into(),
                 journal: vec![
-                    "An old version of the database format was found.".into(),
-                    "See https://wiki.archlinux.org/index.php/PostgreSQL#Upgrading_PostgreSQL".into(),
-                    "postgresql.service: Failed with result 'exit-code'.".into(),
+                    t!("An old version of the database format was found.").into(),
+                    t!("See https://wiki.archlinux.org/index.php/PostgreSQL#Upgrading_PostgreSQL").into(),
+                    t!("postgresql.service: Failed with result 'exit-code'.").into(),
                 ],
             });
             ev
         }
         "port-in-use" => {
             let mut ev = Evidence::from_text("pkexec exited with 43", &[
-                "!! PostgreSQL stopped while starting. Its log:".into(),
+                t!("!! PostgreSQL stopped while starting. Its log:").into(),
                 "LOG:  could not bind IPv4 address \"127.0.0.1\": Address already in use".into(),
                 "HINT:  Is another postmaster already running on port 5432? If not, wait a few seconds and retry.".into(),
                 "FATAL:  could not create any TCP/IP sockets".into(),
@@ -295,16 +295,16 @@ pub fn debug_diagnosis() -> Option<Diagnosis> {
             ev.ports.push(PortUse { port: 5432, owner: "postgres in /opt/pgsql-17/bin".into(), free: Some(5433) });
             ev
         }
-        "auth-cancelled" => Evidence::from_text("Administrator authorisation was refused or cancelled.", &["Error executing command as another user: Request dismissed".into()]),
+        "auth-cancelled" => Evidence::from_text(t!("Administrator authorisation was refused or cancelled."), &[t!("Error executing command as another user: Request dismissed").into()]),
         "disk-full" => {
             let mut ev = Evidence::from_text("tar exited with 2", &["tar: /opt/sentient/ui/assets/main.js: Cannot write: No space left on device".into()]);
             ev.disks.push(sentient_installer_core::diagnose::Disk { mount: "/".into(), avail: 52_000_000, used_pct: 100 });
             ev.cache = Some(("/home/ops/.cache/sentient-platform-manager/downloads".into(), 1_380_000_000));
             ev
         }
-        _ => Evidence::from_text("pkexec exited with 3", &["copying files".into(), "tar: sentient.tar: Cannot open: Input/output error".into()]),
+        _ => Evidence::from_text("pkexec exited with 3", &["copying files".into(), t!("tar: sentient.tar: Cannot open: Input/output error").into()]),
     };
-    ev.lines.insert(0, ">> Installing PostgreSQL from your distribution".into());
+    ev.lines.insert(0, t!(">> Installing PostgreSQL from your distribution").into());
     Some(diagnose(&ev))
 }
 

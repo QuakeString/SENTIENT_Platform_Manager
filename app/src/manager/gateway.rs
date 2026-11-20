@@ -215,18 +215,18 @@ impl GatewayPage {
                 if self.settings_job.read(cx).is_running() {
                     return;
                 }
-                self.shown = Some("Applying the gateway's settings".into());
+                self.shown = Some(t!("Applying the gateway's settings").into());
                 let names = format!("{}. {}", plan.names().join(", "), plan.restart_words(status.kind()));
                 self.settings_job.update(cx, |job, cx| {
-                    job.set_label("Applying the gateway's settings");
+                    job.set_label(t!("Applying the gateway's settings"));
                     job.set_plan(vec![
-                        sentient_installer_core::progress::PlanStep::new("Applying the settings").detail(names).weight(3.),
-                        sentient_installer_core::progress::PlanStep::new("Reading the settings back"),
+                        sentient_installer_core::progress::PlanStep::new(n!("Applying the settings")).detail(names).weight(3.),
+                        sentient_installer_core::progress::PlanStep::new(n!("Reading the settings back")),
                     ]);
                     job.set_on_page(true);
                     job.start(
                         move |sink| {
-                            sink(sentient_installer_core::progress::Progress::Step { name: "Applying the settings".into() });
+                            sink(sentient_installer_core::progress::Progress::Step { name: n!("Applying the settings").into() });
                             if canned {
                                 sink(sentient_installer_core::progress::Progress::Done { message: "Screens: a canned gateway; nothing was changed.".into() });
                                 return Ok(());
@@ -251,14 +251,14 @@ impl GatewayPage {
                 if self.settings_job.read(cx).is_running() {
                     return;
                 }
-                self.shown = Some("Changing the web page's password".into());
+                self.shown = Some(t!("Changing the web page's password").into());
                 self.settings_job.update(cx, |job, cx| {
-                    job.set_label("Changing the gateway page's password");
-                    job.set_plan(vec![sentient_installer_core::progress::PlanStep::new("Setting the password")]);
+                    job.set_label(t!("Changing the gateway page's password"));
+                    job.set_plan(vec![sentient_installer_core::progress::PlanStep::new(n!("Setting the password"))]);
                     job.set_on_page(true);
                     job.start(
                         move |sink| {
-                            sink(sentient_installer_core::progress::Progress::Step { name: "Setting the password".into() });
+                            sink(sentient_installer_core::progress::Progress::Step { name: n!("Setting the password").into() });
                             if canned {
                                 sink(sentient_installer_core::progress::Progress::Done { message: "Screens: a canned gateway; nothing was changed.".into() });
                                 return Ok(());
@@ -286,7 +286,7 @@ impl GatewayPage {
             return None;
         }
         let this = cx.entity().downgrade();
-        let back = crate::manager::jobview::back_button("gw-job-back", "Gateway", move |_, cx| {
+        let back = crate::manager::jobview::back_button("gw-job-back", t!("Gateway"), move |_, cx| {
             this.update(cx, |p, cx| {
                 p.shown = None;
                 p.settings_job.update(cx, |j, cx| j.reset(cx));
@@ -344,8 +344,8 @@ impl GatewayPage {
                     let s = admin_read()?;
                     sink(sentient_installer_core::progress::Progress::Done {
                         message: match (&s.host, s.port) {
-                            (Some(h), Some(p)) => format!("Read as administrator: it sends to {h}:{p}."),
-                            _ => "Read as administrator: it is not commissioned yet.".to_string(),
+                            (Some(h), Some(p)) => nf!("Read as administrator: it sends to {h}:{p}."),
+                            _ => n!("Read as administrator: it is not commissioned yet.").to_string(),
                         },
                     });
                     Ok(())
@@ -446,23 +446,23 @@ impl RemoveTarget {
 
     /// What the removal does, in one sentence.
     fn what(&self) -> String {
-        let place = self.server.as_ref().map(|s| format!(" on {s}")).unwrap_or_default();
+        let place = self.server.as_ref().map(|s| tf!(" on {s}")).unwrap_or_default();
         match self.kind.as_str() {
-            "docker" => format!("The Docker container {} is stopped and removed{place}. A compose file it came from is not changed.", self.name),
+            "docker" => tf!("The Docker container {} is stopped and removed{place}. A compose file it came from is not changed.", self.name),
             "service" => match &self.package {
-                Some(p) => format!("The service {} is stopped and disabled, and the package {p} is removed{place}.", self.name),
-                None => format!("The service {} is stopped and disabled, and its unit file and program are removed{place}.", self.name),
+                Some(p) => tf!("The service {} is stopped and disabled, and the package {p} is removed{place}.", self.name),
+                None => tf!("The service {} is stopped and disabled, and its unit file and program are removed{place}.", self.name),
             },
-            "windows-service" => format!("The Windows service SentientGateway is stopped and the gateway is uninstalled{place}."),
-            _ => format!("The gateway's program {} is removed{place}.", self.name),
+            "windows-service" => tf!("The Windows service SentientGateway is stopped and the gateway is uninstalled{place}."),
+            _ => tf!("The gateway's program {} is removed{place}.", self.name),
         }
     }
 
     /// Where "Keep its configuration and data" keeps them.
     fn kept_where(&self) -> String {
         match self.kind.as_str() {
-            "docker" if !self.volumes.is_empty() => format!("Its volumes are kept: {}. A new gateway container can use them again.", self.volumes.join(", ")),
-            "docker" => "The container has no volumes: its configuration lives in the container and goes with it.".into(),
+            "docker" if !self.volumes.is_empty() => tf!("Its volumes are kept: {}. A new gateway container can use them again.", self.volumes.join(", ")),
+            "docker" => t!("The container has no volumes: its configuration lives in the container and goes with it.").into(),
             "windows-service" => "Moved to a dated folder: ProgramData\\Sentient Gateway kept <date>.".into(),
             _ => "The configuration (/etc/sentient-gateway, with the platform's access token) and the local buffer (/var/lib/sentient-gateway) are moved to a dated folder: /var/backups/sentient-gateway-<date>-<time>.".into(),
         }
@@ -473,7 +473,7 @@ impl RemoveTarget {
 /// switch (on), and for a container the image too (off). `on_ok(keep, image)`.
 pub(crate) fn open_remove_dialog(target: RemoveTarget, on_ok: std::rc::Rc<dyn Fn(bool, bool, &mut App)>, cx: &mut App) {
     let view = cx.new(|_| RemoveDialog { target, keep: true, image: false, on_ok });
-    crate::modal::open(crate::modal::Modal { title: "Remove the Sentient Gateway?".into(), body: view.into(), width: 520., icon: None, on_close: None }, cx);
+    crate::modal::open(crate::modal::Modal { title: t!("Remove the Sentient Gateway?").into(), body: view.into(), width: 520., icon: None, on_close: None }, cx);
 }
 
 struct RemoveDialog {
@@ -489,7 +489,7 @@ impl Render for RemoveDialog {
         let theme = cx.theme().clone();
         let t = &self.target;
         let docker = t.kind == "docker";
-        let ok = if self.keep { "Remove" } else { "Remove and delete the data" };
+        let ok = if self.keep { t!("Remove") } else { t!("Remove and delete the data") };
         let (keep, image) = (self.keep, self.image);
         let on_ok = self.on_ok.clone();
         v_flex()
@@ -505,7 +505,7 @@ impl Render for RemoveDialog {
                             .min_w_0()
                             .gap_1()
                             .items_center()
-                            .child(div().text_sm().child("Keep its configuration and data"))
+                            .child(div().text_sm().child(t!("Keep its configuration and data")))
                             .child(ui::info("gw-remove-keep".into(), t.kept_where().into())),
                     )
                     .child(Switch::new("gw-remove-keep-switch").checked(self.keep).on_click(cx.listener(|d, v: &bool, _, cx| {
@@ -516,7 +516,7 @@ impl Render for RemoveDialog {
             .when(docker && t.image.is_some(), |b| {
                 b.child(
                     Checkbox::new("gw-remove-image")
-                        .label(format!("Also remove the image {}", t.image.clone().unwrap_or_default()))
+                        .label(tf!("Also remove the image {}", t.image.clone().unwrap_or_default()))
                         .checked(self.image)
                         .on_change(cx.listener(|d, v: &bool, _, cx| {
                             d.image = *v;
@@ -529,9 +529,9 @@ impl Render for RemoveDialog {
                     &theme,
                     Tone::Bad,
                     if docker {
-                        "Its volumes are deleted: the gateway's configuration, its access token and the data it buffered. This can't be undone."
+                        t!("Its volumes are deleted: the gateway's configuration, its access token and the data it buffered. This can't be undone.")
                     } else {
-                        "Its configuration, its access token and the data it buffered are deleted. This can't be undone."
+                        t!("Its configuration, its access token and the data it buffered are deleted. This can't be undone.")
                     },
                 ))
             })
@@ -539,7 +539,7 @@ impl Render for RemoveDialog {
                 h_flex()
                     .gap(crate::ui::button_gap())
                     .justify_end()
-                    .child(crate::ui::probed(crate::ui::button("gw-remove-cancel").outline().label("Cancel").on_click(|_, _, cx| crate::modal::close(cx))))
+                    .child(crate::ui::probed(crate::ui::button("gw-remove-cancel").outline().label(t!("Cancel")).on_click(|_, _, cx| crate::modal::close(cx))))
                     .child(crate::ui::probed(
                         crate::ui::solid_button("gw-remove-ok", ok.into(), theme.danger, gpui_kit::white(), move |_, _, cx| {
                             crate::modal::close(cx);
@@ -553,13 +553,13 @@ impl Render for RemoveDialog {
 /// How the gateway runs, for "Runs as": a container also says who manages it.
 pub(crate) fn runs_as(kind: &str, name: &str, managed: bool, recorded: bool) -> String {
     match kind {
-        "docker" if managed => format!("Docker container {name}"),
-        "docker" if recorded => format!("Docker container {name}, managed here (it was installed outside the Platform Manager)"),
-        "docker" => format!("Docker container {name}, installed outside the Platform Manager"),
-        "service" if recorded => format!("Service {name}, managed here"),
-        "service" => format!("Service {name}"),
-        "process" => format!("A process ({name}), started outside a service"),
-        _ => "Windows service SentientGateway".to_string(),
+        "docker" if managed => tf!("Docker container {name}"),
+        "docker" if recorded => tf!("Docker container {name}, managed here (it was installed outside the Platform Manager)"),
+        "docker" => tf!("Docker container {name}, installed outside the Platform Manager"),
+        "service" if recorded => tf!("Service {name}, managed here"),
+        "service" => tf!("Service {name}"),
+        "process" => tf!("A process ({name}), started outside a service"),
+        _ => t!("Windows service SentientGateway").to_string(),
     }
 }
 
@@ -569,8 +569,8 @@ impl Render for GatewayPage {
         let theme = cx.theme().clone();
         let page = ui::page(
             &theme,
-            "Gateway",
-            "The Sentient Gateway on this computer: it collects data from the plant's devices and sends it to SENTIENT.",
+            t!("Gateway"),
+            t!("The Sentient Gateway on this computer: it collects data from the plant's devices and sends it to SENTIENT."),
         );
         let u = self.updates.read(cx);
         let newest = u.found.as_ref().map(|f| f.gateway.clone());
@@ -581,7 +581,7 @@ impl Render for GatewayPage {
         let busy = job.is_running();
 
         let Some(status) = self.status.clone() else {
-            return page.child(ui::panel(&theme).child(div().text_sm().text_color(theme.muted_foreground).child("Looking for the gateway…")));
+            return page.child(ui::panel(&theme).child(div().text_sm().text_color(theme.muted_foreground).child(t!("Looking for the gateway…"))));
         };
         let offer: Option<Offer> = match &newest {
             Some(Ok(Some(o))) => Some(o.clone()),
@@ -610,8 +610,8 @@ impl Render for GatewayPage {
             let o = offer.clone();
             let why = o.as_ref().and_then(|o| gateway::offer_blocker(&status, o, cfg!(windows)));
             let looking = match &newest {
-                Some(Err(e)) => Some(format!("Gateway updates: {e}")),
-                Some(Ok(None)) => Some("No gateway release on this channel.".to_string()),
+                Some(Err(e)) => Some(tf!("Gateway updates: {e}")),
+                Some(Ok(None)) => Some(t!("No gateway release on this channel.").to_string()),
                 _ => None,
             };
             let this = cx.entity().downgrade();
@@ -637,7 +637,7 @@ impl Render for GatewayPage {
             )
             .children(outcome.clone().map(|(tone, m)| ui::outcome(&theme, tone, m)))
         } else if status.installed {
-            let (pill, tone) = if status.running { ("Gateway is running", Tone::Good) } else { ("Gateway is stopped", Tone::Bad) };
+            let (pill, tone) = if status.running { (t!("Gateway is running"), Tone::Good) } else { (t!("Gateway is stopped"), Tone::Bad) };
             ui::panel(&theme)
                 .child(
                     h_flex()
@@ -651,34 +651,34 @@ impl Render for GatewayPage {
                         .children(crate::manager::gateway_settings::connected_pill(&theme, self.settings.as_ref(), status.running))
                         .child(div().flex_1())
                         .when_some(status.page_url.clone(), |r, url| {
-                            r.child(crate::ui::button("gw-page").outline().label("Open local page").on_click(move |_, _, cx| ui::open_url(&url, cx)))
+                            r.child(crate::ui::button("gw-page").outline().label(t!("Open local page")).on_click(move |_, _, cx| ui::open_url(&url, cx)))
                         }),
                 )
                 .children(legacy)
-                .child(ui::fact(&theme, "Version", status.version.clone().unwrap_or_else(|| "unknown".into())))
+                .child(ui::fact(&theme, t!("Version"), status.version.clone().unwrap_or_else(|| "unknown".into())))
                 .child(match (&status.host, status.port) {
-                    (Some(h), Some(p)) => ui::fact(&theme, "Sends to", format!("{h}:{p}")),
-                    (Some(h), None) => ui::fact(&theme, "Sends to", h.clone()),
-                    _ if unreadable => ui::fact_help(&theme, "Sends to", "Readable by an administrator only", UNREADABLE_HELP),
-                    _ => ui::fact(&theme, "Sends to", "Not commissioned (set the platform on its local page)"),
+                    (Some(h), Some(p)) => ui::fact(&theme, t!("Sends to"), format!("{h}:{p}")),
+                    (Some(h), None) => ui::fact(&theme, t!("Sends to"), h.clone()),
+                    _ if unreadable => ui::fact_help(&theme, t!("Sends to"), t!("Readable by an administrator only"), UNREADABLE_HELP),
+                    _ => ui::fact(&theme, t!("Sends to"), t!("Not commissioned (set the platform on its local page)")),
                 })
-                .child(ui::fact(&theme, "Runs as", runs_as(status.kind(), &RemoveTarget::of(&status, None).name, status.managed, recorded)))
+                .child(ui::fact(&theme, t!("Runs as"), runs_as(status.kind(), &RemoveTarget::of(&status, None).name, status.managed, recorded)))
                 .children(self.settings.as_ref().and_then(|s| s.as_ref().ok()).and_then(|s| {
                     let path = s.config_path.clone()?;
                     let n = s.connectors.len();
-                    Some(ui::fact(&theme, "Configuration", format!("{path} · {n} connector{}", if n == 1 { "" } else { "s" })))
+                    Some(ui::fact(&theme, t!("Configuration"), tf!("{path} · {n} connector{}", if n == 1 { "" } else { "s" })))
                 }))
                 .when_some(status.compose_dir.clone(), |p, dir| {
-                    p.child(ui::fact(&theme, "Compose", match &status.compose_project {
-                        Some(proj) => format!("{proj}, in {dir}"),
+                    p.child(ui::fact(&theme, t!("Compose"), match &status.compose_project {
+                        Some(proj) => tf!("{proj}, in {dir}"),
                         None => dir,
                     }))
                 })
-                .when(!status.volumes.is_empty(), |p| p.child(ui::fact(&theme, "Volumes", status.volumes.join(", "))))
+                .when(!status.volumes.is_empty(), |p| p.child(ui::fact(&theme, t!("Volumes"), status.volumes.join(", "))))
                 .child(match status.page_url.clone() {
-                    Some(url) => ui::fact(&theme, "Web page", url),
-                    None if unreadable => ui::fact_help(&theme, "Web page", "Not known", "Nothing answers on its usual address (127.0.0.1:8642). Its settings may name another one: they are readable by an administrator only."),
-                    None => ui::fact_help(&theme, "Web page", "Off", page_off_help(status.kind())),
+                    Some(url) => ui::fact(&theme, t!("Web page"), url),
+                    None if unreadable => ui::fact_help(&theme, t!("Web page"), t!("Not known"), t!("Nothing answers on its usual address (127.0.0.1:8642). Its settings may name another one: they are readable by an administrator only.")),
+                    None => ui::fact_help(&theme, t!("Web page"), t!("Off"), page_off_help(status.kind())),
                 })
                 .children({
                     let this = cx.entity().downgrade();
@@ -689,7 +689,7 @@ impl Render for GatewayPage {
                         })
                     };
                     let running = Some(crate::manager::status::Running { serving: status.running, any_up: status.running });
-                    let services = if controllable { crate::manager::status::service_buttons(&theme, "gw-", busy, running, "Stop", act("start"), act("restart"), act("stop")) } else { Vec::new() };
+                    let services = if controllable { crate::manager::status::service_buttons(&theme, "gw-", busy, running, t!("Stop"), act("start"), act("restart"), act("stop")) } else { Vec::new() };
                     ui::card_actions(
                         &theme,
                         h_flex()
@@ -698,21 +698,21 @@ impl Render for GatewayPage {
                             // A wrapped line ends at the right too.
                             .justify_end()
                             .items_center()
-                            .child(crate::ui::probed(crate::ui::button("gw-remove").danger().label("Remove the Gateway").disabled(busy).on_click(cx.listener(|p, _, _, cx| p.open_remove(cx)))))
+                            .child(crate::ui::probed(crate::ui::button("gw-remove").danger().label(t!("Remove the Gateway")).disabled(busy).on_click(cx.listener(|p, _, _, cx| p.open_remove(cx)))))
                             .when(unreadable, |r| {
                                 r.child(crate::ui::probed(
                                     h_flex()
                                         .gap_1()
                                         .items_center()
-                                        .child(crate::ui::button("gw-read").outline().label("Read its settings").disabled(busy).on_click(cx.listener(|p, _, _, cx| p.read_as_admin(cx))))
+                                        .child(crate::ui::button("gw-read").outline().label(t!("Read its settings")).disabled(busy).on_click(cx.listener(|p, _, _, cx| p.read_as_admin(cx))))
                                         .child(ui::info("gw-read-help".into(), UNREADABLE_HELP.into())),
                                 ))
                             })
                             .when(outside, |r| {
                                 r.child(crate::ui::probed(
-                                    h_flex().gap_1().items_center().child(crate::ui::button("gw-adopt").outline().label("Manage it here").disabled(busy).on_click(cx.listener(|p, _, _, cx| p.adopt(cx)))).child(ui::info(
+                                    h_flex().gap_1().items_center().child(crate::ui::button("gw-adopt").outline().label(t!("Manage it here")).disabled(busy).on_click(cx.listener(|p, _, _, cx| p.adopt(cx)))).child(ui::info(
                                         "gw-adopt-help".into(),
-                                        "Records this gateway as the one the Platform Manager manages: it lists it, starts and stops it, and offers its removal. Nothing about it changes: the container, its compose file and its volumes stay as they are.".into(),
+                                        t!("Records this gateway as the one the Platform Manager manages: it lists it, starts and stops it, and offers its removal. Nothing about it changes: the container, its compose file and its volumes stay as they are.").into(),
                                     )),
                                 ))
                             })
@@ -736,7 +736,7 @@ impl Render for GatewayPage {
                                     .child({
                                         let why = gateway::offer_blocker(&status, o, cfg!(windows)).unwrap_or_default();
                                         let blocked = !why.is_empty();
-                                        let button = crate::ui::button("gw-update").primary().label(format!("Update to {}", o.version)).disabled(busy || blocked).on_click(cx.listener(move |p, _, _, cx| p.update_to(o2.clone(), cx)));
+                                        let button = crate::ui::button("gw-update").primary().label(tf!("Update to {}", o.version)).disabled(busy || blocked).on_click(cx.listener(move |p, _, _, cx| p.update_to(o2.clone(), cx)));
                                         // A disabled button carries its reason as a tooltip.
                                         if blocked {
                                             div().id("gw-update-why").child(button).tooltip(crate::ui::tooltip(why.clone())).into_any_element()
@@ -744,48 +744,48 @@ impl Render for GatewayPage {
                                             button.into_any_element()
                                         }
                                     })
-                                    .child(div().text_sm().text_color(theme.muted_foreground).child(format!("Released {}", o.date)))
+                                    .child(div().text_sm().text_color(theme.muted_foreground).child(tf!("Released {}", o.date)))
                                     .child(ui::info("gw-update-help".into(), {
-                                        let mut t = if status.managed { "The configuration and the web page's password are kept.".to_string() } else { String::new() };
+                                        let mut t = if status.managed { t!("The configuration and the web page's password are kept.").to_string() } else { String::new() };
                                         if !o.notes.is_empty() {
                                             if !t.is_empty() {
                                                 t.push_str("\n\n");
                                             }
                                             t.push_str(&o.notes);
                                         }
-                                        if t.is_empty() { "What's in it: see the gateway's change log.".into() } else { t.into() }
+                                        if t.is_empty() { t!("What's in it: see the gateway's change log.").into() } else { t.into() }
                                     })),
                             )
                             .into_any_element()
                     }
-                    (None, Some(Err(e))) => div().text_sm().text_color(theme.muted_foreground).child(format!("Gateway updates: {e}")).into_any_element(),
+                    (None, Some(Err(e))) => div().text_sm().text_color(theme.muted_foreground).child(tf!("Gateway updates: {e}")).into_any_element(),
                     // Up to date only against a known version.
                     (None, Some(Ok(_))) if status.version.is_none() => div()
                         .text_sm()
                         .text_color(theme.muted_foreground)
-                        .child("Its version is not known, so updates cannot be checked.")
+                        .child(t!("Its version is not known, so updates cannot be checked."))
                         .into_any_element(),
                     (None, Some(Ok(_))) => div()
                         .text_sm()
                         .text_color(theme.muted_foreground)
-                        .child(format!("Up to date on the {} channel.", channel.label()))
+                        .child(tf!("Up to date on the {} channel.", channel.label()))
                         .into_any_element(),
-                    (None, None) => div().text_sm().text_color(theme.muted_foreground).child("Looking for gateway updates…").into_any_element(),
+                    (None, None) => div().text_sm().text_color(theme.muted_foreground).child(t!("Looking for gateway updates…")).into_any_element(),
                 })
                 .children(stale.clone().map(|n| div().text_size(px(13.)).text_color(theme.muted_foreground).child(n)))
         } else {
             let o = offer.clone();
             ui::panel(&theme)
-                .child(h_flex().gap_3().items_center().child(ui::product_logo(ui::Product::Gateway, 28.)).child(div().font_weight(FontWeight::MEDIUM).child("No gateway on this computer")))
+                .child(h_flex().gap_3().items_center().child(ui::product_logo(ui::Product::Gateway, 28.)).child(div().font_weight(FontWeight::MEDIUM).child(t!("No gateway on this computer"))))
                 .child(div().text_sm().text_color(theme.muted_foreground).child(
-                    "The gateway reads devices next to this computer. In SENTIENT, add a gateway device and copy its access token (Manage credentials).",
+                    t!("The gateway reads devices next to this computer. In SENTIENT, add a gateway device and copy its access token (Manage credentials)."),
                 ))
                 .child(self.form.fields(&theme, cfg!(windows), None, install_runs_as(cfg!(windows), None, "this computer").ok()))
                 .children(outcome.clone().map(|(tone, m)| ui::outcome(&theme, tone, m)))
                 .children(self.problem.clone().map(|p| ui::outcome(&theme, Tone::Bad, p)))
                 .child(match o {
                     Some(o) => {
-                        let label = format!("Install Sentient Gateway {}", o.version);
+                        let label = tf!("Install Sentient Gateway {}", o.version);
                         // Docker pulls the image: not before it is published.
                         let unpublished = (o.image_missing && !cfg!(windows)).then(|| sentient_installer_core::dockerhub::not_published(&o.version));
                         h_flex()
@@ -801,8 +801,8 @@ impl Render for GatewayPage {
                             )
                             .child(div().text_sm().text_color(theme.muted_foreground).child(match unpublished {
                                 Some(why) => why,
-                                None if cfg!(windows) => "the installer from the SENTIENT releases site, checked before use".to_string(),
-                                None => "the quakestring/sentient-gateway-rs image, run by Docker".to_string(),
+                                None if cfg!(windows) => t!("the installer from the SENTIENT releases site, checked before use").to_string(),
+                                None => t!("the quakestring/sentient-gateway-rs image, run by Docker").to_string(),
                             }))
                             .children(stale.clone().map(|n| div().text_size(px(13.)).text_color(theme.muted_foreground).child(n)))
                             .into_any_element()
@@ -811,9 +811,9 @@ impl Render for GatewayPage {
                         .text_sm()
                         .text_color(theme.muted_foreground)
                         .child(match &newest {
-                            Some(Err(e)) => format!("The gateway releases could not be read: {e}"),
-                            Some(Ok(_)) => "No gateway release on this channel.".to_string(),
-                            None => "Looking for the newest gateway…".to_string(),
+                            Some(Err(e)) => tf!("The gateway releases could not be read: {e}"),
+                            Some(Ok(_)) => t!("No gateway release on this channel.").to_string(),
+                            None => t!("Looking for the newest gateway…").to_string(),
                         })
                         .into_any_element(),
                 })
@@ -875,20 +875,20 @@ pub(crate) fn job_clears_form(args: &[String]) -> bool {
 }
 
 /// The (i) on a server's token: where it goes.
-pub(crate) const REMOTE_TOKEN_HELP: &str = "It travels to the server over the encrypted SSH connection and is written there to a file only root can read. It is not kept on this computer.";
+pub(crate) const REMOTE_TOKEN_HELP: &str = n!("It travels to the server over the encrypted SSH connection and is written there to a file only root can read. It is not kept on this computer.");
 
 impl InstallForm {
     /// `host` empty: a placeholder asks for SENTIENT's address.
     pub fn new(host: &str, port: u16, window: &mut Window, cx: &mut App) -> Self {
         let h = host.to_string();
         let host_input = cx.new(|cx| {
-            let i = InputState::new(window, cx).placeholder("SENTIENT's address, as the gateway reaches it");
+            let i = InputState::new(window, cx).placeholder(t!("SENTIENT's address, as the gateway reaches it"));
             if h.is_empty() { i } else { i.default_value(h.clone()) }
         });
         let port_input = cx.new(|cx| InputState::new(window, cx).default_value(port.to_string()));
-        let token = cx.new(|cx| InputState::new(window, cx).masked(true).placeholder("From SENTIENT: the gateway device, Manage credentials"));
-        let password = cx.new(|cx| InputState::new(window, cx).masked(true).placeholder("8 characters or more"));
-        let password2 = cx.new(|cx| InputState::new(window, cx).masked(true).placeholder("Again"));
+        let token = cx.new(|cx| InputState::new(window, cx).masked(true).placeholder(t!("From SENTIENT: the gateway device, Manage credentials")));
+        let password = cx.new(|cx| InputState::new(window, cx).masked(true).placeholder(t!("8 characters or more")));
+        let password2 = cx.new(|cx| InputState::new(window, cx).masked(true).placeholder(t!("Again")));
         Self { host: host_input, port: port_input, token, password, password2, default_host: host.to_string(), default_port: port.to_string(), clear_pending: false }
     }
 
@@ -906,20 +906,20 @@ impl InstallForm {
     pub fn settings(&self, cx: &App, page_password: bool) -> Result<Settings, String> {
         let port: u16 = match Self::value(&self.port, cx).parse() {
             Ok(p) if p > 0 => p,
-            _ => return Err("The MQTT port is a number from 1 to 65535.".into()),
+            _ => return Err(t!("The MQTT port is a number from 1 to 65535.").into()),
         };
         let host = Self::value(&self.host, cx);
         let token = Self::value(&self.token, cx);
         if host.is_empty() || token.is_empty() {
-            return Err("Enter the SENTIENT host and the gateway device's access token.".into());
+            return Err(t!("Enter the SENTIENT host and the gateway device's access token.").into());
         }
         let (p1, p2) = (Self::value(&self.password, cx), Self::value(&self.password2, cx));
         if page_password && (!p1.is_empty() || !p2.is_empty()) {
             if p1.len() < 8 {
-                return Err("The local page's password needs 8 characters or more.".into());
+                return Err(t!("The local page's password needs 8 characters or more.").into());
             }
             if p1 != p2 {
-                return Err("The two passwords differ.".into());
+                return Err(t!("The two passwords differ.").into());
             }
         }
         Ok(Settings { host, port, token, ui_password: if page_password { p1 } else { String::new() } })
@@ -960,20 +960,20 @@ impl InstallForm {
             .child(
                 h_flex()
                     .gap_3()
-                    .child(field(label("SENTIENT host", None), ui::probed_input(Input::new(&self.host)).into_any_element()).flex_1())
-                    .child(field(label("MQTT port", None), ui::probed_input(Input::new(&self.port)).into_any_element()).w_24()),
+                    .child(field(label(t!("SENTIENT host"), None), ui::probed_input(Input::new(&self.host)).into_any_element()).flex_1())
+                    .child(field(label(t!("MQTT port"), None), ui::probed_input(Input::new(&self.port)).into_any_element()).w_24()),
             )
-            .child(field(label("Device access token", token_help.map(|h| ("gw-token-help", h.to_string()))), ui::probed_input(Input::new(&self.token).mask_toggle()).into_any_element()))
+            .child(field(label(t!("Device access token"), token_help.map(|h| ("gw-token-help", h.to_string()))), ui::probed_input(Input::new(&self.token).mask_toggle()).into_any_element()))
             .when(page_password, |p| {
                 p.child(
                     h_flex()
                         .gap_3()
-                        .child(field(label("Local page password", None), div().child(Input::new(&self.password).mask_toggle()).into_any_element()).flex_1())
-                        .child(field(label("Again", None), div().child(Input::new(&self.password2).mask_toggle()).into_any_element()).flex_1()),
+                        .child(field(label(t!("Local page password"), None), div().child(Input::new(&self.password).mask_toggle()).into_any_element()).flex_1())
+                        .child(field(label(t!("Again"), None), div().child(Input::new(&self.password2).mask_toggle()).into_any_element()).flex_1()),
                 )
             })
             .when_some(runs_as, |p, (value, help)| {
-                p.child(field(label("Runs as", Some(("gw-runs-help", help))), div().text_sm().child(value).into_any_element()))
+                p.child(field(label(t!("Runs as"), Some(("gw-runs-help", help))), div().text_sm().child(value).into_any_element()))
             })
     }
 }
@@ -983,14 +983,14 @@ impl InstallForm {
 /// agent). Err: nothing it can run (its reason, for the disabled Install).
 pub(crate) fn install_runs_as(windows: bool, docker: Option<bool>, place: &str) -> Result<(String, String), String> {
     if windows {
-        return Ok(("Windows service SentientGateway".into(), format!("Only what {place} can run\n\nOn Windows the gateway runs as the service SentientGateway, from its installer.")));
+        return Ok((t!("Windows service SentientGateway").into(), tf!("Only what {place} can run\n\nOn Windows the gateway runs as the service SentientGateway, from its installer.")));
     }
     if docker == Some(false) {
-        return Err(format!("Docker is not on {place}. Install Docker Engine there and refresh: the Platform Manager runs the gateway on Linux as a Docker container."));
+        return Err(tf!("Docker is not on {place}. Install Docker Engine there and refresh: the Platform Manager runs the gateway on Linux as a Docker container."));
     }
     Ok((
-        format!("Docker container {}", gateway::CONTAINER),
-        format!("Only what {place} can run\n\nOn Linux the Platform Manager runs the gateway as the Docker container {}, its configuration, data and logs in volumes of their own.", gateway::CONTAINER),
+        tf!("Docker container {}", gateway::CONTAINER),
+        tf!("Only what {place} can run\n\nOn Linux the Platform Manager runs the gateway as the Docker container {}, its configuration, data and logs in volumes of their own.", gateway::CONTAINER),
     ))
 }
 
@@ -1003,7 +1003,7 @@ pub(crate) fn remove_panel(theme: &gpui_kit::component::Theme, id: &'static str,
                 .gap_1()
                 .items_center()
                 .child(div().text_sm().text_color(theme.muted_foreground).child(runs_as))
-                .child(ui::info(SharedString::from(format!("{id}-help")), "Remove the Gateway stops it and removes it. Its configuration and data are kept unless you choose otherwise. SENTIENT is not touched.".into())),
+                .child(ui::info(SharedString::from(format!("{id}-help")), t!("Remove the Gateway stops it and removes it. Its configuration and data are kept unless you choose otherwise. SENTIENT is not touched.").into())),
         )
         .child(ui::button_row(vec![button]))
 }
@@ -1014,14 +1014,14 @@ const UNREADABLE_HELP: &str = "The gateway keeps its settings in /etc/sentient-g
 
 /// The one line for an older Python gateway's container (Status::legacy).
 pub(crate) fn legacy_line(name: &str, place: &str) -> String {
-    format!("The older Sentient Gateway (the Python one) is on {place}, in the container {name}. The Platform Manager leaves it as it is.")
+    tf!("The older Sentient Gateway (the Python one) is on {place}, in the container {name}. The Platform Manager leaves it as it is.")
 }
 
 /// The (i) beside "Update to <v>" for the older Python gateway: what the
 /// update does and what does not carry over
 /// (sentient_installer_core::distro::gateway_legacy).
 pub(crate) fn legacy_update_help() -> String {
-    let mut t = "Updates the older Python gateway to the Sentient Gateway in Docker. Its configuration is backed up first; the connection, the connectors and the gateway's identity (token, client id) carry over, so SENTIENT sees the same gateway. The older gateway is removed only once the new one is connected; if anything fails, it runs again as before.\n\nWhat does not carry over:".to_string();
+    let mut t = t!("Updates the older Python gateway to the Sentient Gateway in Docker. Its configuration is backed up first; the connection, the connectors and the gateway's identity (token, client id) carry over, so SENTIENT sees the same gateway. The older gateway is removed only once the new one is connected; if anything fails, it runs again as before.\n\nWhat does not carry over:").to_string();
     for n in sentient_installer_core::distro::gateway_legacy::NOT_CARRIED {
         t.push_str("\n• ");
         t.push_str(n);
@@ -1036,8 +1036,8 @@ fn legacy_version(image: Option<&str>) -> String {
         .and_then(|i| i.rsplit_once(':'))
         .map(|(_, t)| t)
         .filter(|t| !t.contains('/') && t.chars().next().is_some_and(|c| c.is_ascii_digit()))
-        .map(|t| format!("{t} (the older Python gateway)"))
-        .unwrap_or_else(|| "the older Python gateway".into())
+        .map(|t| tf!("{t} (the older Python gateway)"))
+        .unwrap_or_else(|| t!("the older Python gateway").into())
 }
 
 /// The older Python gateway alone, here or on a server: what it is and
@@ -1061,7 +1061,7 @@ pub(crate) fn legacy_panel(
         Some(o) => {
             let button = crate::ui::button(SharedString::from(format!("{id}-update")))
                 .primary()
-                .label(format!("Update to {}", o.version))
+                .label(tf!("Update to {}", o.version))
                 .disabled(busy || why.is_some())
                 .on_click(move |_, w, cx| on_update(w, cx));
             let button = match why {
@@ -1075,7 +1075,7 @@ pub(crate) fn legacy_panel(
                     .flex_wrap()
                     .justify_end()
                     .items_center()
-                    .child(div().text_sm().text_color(theme.muted_foreground).child(format!("Released {}", o.date)))
+                    .child(div().text_sm().text_color(theme.muted_foreground).child(tf!("Released {}", o.date)))
                     .child(ui::info(SharedString::from(format!("{id}-update-help")), legacy_update_help().into()))
                     .child(crate::ui::probed(button)),
             )
@@ -1083,7 +1083,7 @@ pub(crate) fn legacy_panel(
             .map(IntoElement::into_any_element)
             .collect()
         }
-        None => vec![div().text_sm().text_color(theme.muted_foreground).child(looking.unwrap_or_else(|| "Looking for gateway updates…".into())).into_any_element()],
+        None => vec![div().text_sm().text_color(theme.muted_foreground).child(looking.unwrap_or_else(|| t!("Looking for gateway updates…").into())).into_any_element()],
     };
     ui::panel(theme)
         .child(
@@ -1094,12 +1094,12 @@ pub(crate) fn legacy_panel(
                 .child(ui::product_logo(ui::Product::Gateway, 28.))
                 .child(div().font_weight(FontWeight::MEDIUM).child("Sentient Gateway"))
                 .child(ui::pill(theme, Tone::Neutral, match offer {
-                    Some(o) => format!("Update available: Sentient Gateway {}", o.version),
-                    None => "Update available".to_string(),
+                    Some(o) => tf!("Update available: Sentient Gateway {}", o.version),
+                    None => t!("Update available").to_string(),
                 })),
         )
-        .child(ui::fact(theme, "Version", legacy_version(image)))
-        .child(ui::fact(theme, "Runs as", format!("Docker container {name}")))
+        .child(ui::fact(theme, t!("Version"), legacy_version(image)))
+        .child(ui::fact(theme, t!("Runs as"), tf!("Docker container {name}")))
         .children(update)
 }
 
@@ -1125,7 +1125,7 @@ pub(crate) fn gateway_update(s: &Status, offer: Option<&Offer>, windows: bool) -
         let name = s.legacy.clone()?;
         return Some(GatewayUpdate {
             version: o.version.clone(),
-            about: format!(
+            about: tf!(
                 "The older Python gateway (the container {name}) to Sentient Gateway {}. Its configuration is backed up and carried over with the same identity; if anything fails, it runs again as before.",
                 o.version
             ),
@@ -1138,17 +1138,17 @@ pub(crate) fn gateway_update(s: &Status, offer: Option<&Offer>, windows: bool) -
         return None;
     }
     let keeps = match s.kind() {
-        "docker" => " The container starts again with its volumes and settings.",
-        "windows-service" => " The configuration and the web page's password are kept.",
+        "docker" => t!(" The container starts again with its volumes and settings."),
+        "windows-service" => t!(" The configuration and the web page's password are kept."),
         _ => "",
     };
-    Some(GatewayUpdate { version: o.version.clone(), about: format!("{installed} to {}.{keeps}", o.version), why, older: false })
+    Some(GatewayUpdate { version: o.version.clone(), about: tf!("{installed} to {}.{keeps}", o.version), why, older: false })
 }
 
 /// The line's "Update to <v>": off with its reason as a tooltip, and for
 /// the older gateway an (i) with what does not carry over.
 pub(crate) fn update_button(_theme: &gpui_kit::component::Theme, id: &'static str, u: &GatewayUpdate, busy: bool, on_click: std::rc::Rc<dyn Fn(&mut Window, &mut App)>) -> Div {
-    let button = crate::ui::button(id).primary().label(format!("Update to {}", u.version)).disabled(busy || u.why.is_some()).on_click(move |_, w, cx| on_click(w, cx));
+    let button = crate::ui::button(id).primary().label(tf!("Update to {}", u.version)).disabled(busy || u.why.is_some()).on_click(move |_, w, cx| on_click(w, cx));
     let button = match &u.why {
         Some(w) => div().id(SharedString::from(format!("{id}-why"))).child(button).tooltip(crate::ui::tooltip(w.clone())).into_any_element(),
         None => button.into_any_element(),
@@ -1165,23 +1165,23 @@ pub(crate) fn update_button(_theme: &gpui_kit::component::Theme, id: &'static st
 /// container started again on the new image.
 pub(crate) fn update_plan(older: bool, windows_service: bool, version: &str) -> Vec<sentient_installer_core::progress::PlanStep> {
     use sentient_installer_core::progress::PlanStep;
-    let start = format!("Starting Sentient Gateway {version}");
+    let start = tf!("Starting Sentient Gateway {version}");
     if older {
         vec![
-            PlanStep::new("Pulling the new gateway").when(&["Pulling "]).weight(3.),
-            PlanStep::new("Backing up the configuration").when(&["Backing up the gateway's configuration"]),
-            PlanStep::new("Stopping the older gateway").when(&["Stopping the older gateway"]),
+            PlanStep::new(n!("Pulling the new gateway")).when(&[n!("Pulling ")]).weight(3.),
+            PlanStep::new(n!("Backing up the configuration")).when(&[n!("Backing up the gateway's configuration")]),
+            PlanStep::new(n!("Stopping the older gateway")).when(&[n!("Stopping the older gateway")]),
             PlanStep::new(start),
-            PlanStep::new("Waiting for the new gateway to connect to SENTIENT").weight(2.),
-            PlanStep::new("Removing the older gateway's container").when(&["Removing the older gateway's container"]),
+            PlanStep::new(n!("Waiting for the new gateway to connect to SENTIENT")).weight(2.),
+            PlanStep::new(n!("Removing the older gateway's container")).when(&[n!("Removing the older gateway's container")]),
         ]
     } else if windows_service {
         vec![
-            PlanStep::new("Downloading the installer").when(&["Downloading Sentient Gateway"]).weight(3.),
-            PlanStep::new(format!("Installing Sentient Gateway {version}")).weight(2.),
+            PlanStep::new(n!("Downloading the installer")).when(&[n!("Downloading Sentient Gateway")]).weight(3.),
+            PlanStep::new(nf!("Installing Sentient Gateway {version}")).weight(2.),
         ]
     } else {
-        vec![PlanStep::new("Pulling the new gateway").when(&["Pulling "]).weight(3.), PlanStep::new(start)]
+        vec![PlanStep::new(n!("Pulling the new gateway")).when(&[n!("Pulling ")]).weight(3.), PlanStep::new(start)]
     }
 }
 
@@ -1191,12 +1191,12 @@ pub(crate) fn gateway_summary(s: &Status, checked: Option<bool>) -> Option<(Stri
     if !s.installed && s.legacy.is_none() {
         return None;
     }
-    let what = if s.installed { s.version.clone().map(|v| format!("{v} installed")).unwrap_or_else(|| "Installed, its version not known".into()) } else { "The older Python gateway".into() };
+    let what = if s.installed { s.version.clone().map(|v| tf!("{v} installed")).unwrap_or_else(|| t!("Installed, its version not known").into()) } else { t!("The older Python gateway").into() };
     Some(match checked {
-        None => (format!("{what}. Checking…"), None),
-        Some(false) => (format!("{what}."), Some((Tone::Neutral, "Not checked"))),
-        Some(true) if s.installed && s.version.is_none() => (format!("{what}: updates cannot be checked."), None),
-        Some(true) => (format!("{what}. Up to date."), Some((Tone::Good, "Up to date"))),
+        None => (tf!("{what}. Checking…"), None),
+        Some(false) => (format!("{what}."), Some((Tone::Neutral, t!("Not checked")))),
+        Some(true) if s.installed && s.version.is_none() => (tf!("{what}: updates cannot be checked."), None),
+        Some(true) => (tf!("{what}. Up to date."), Some((Tone::Good, t!("Up to date")))),
     })
 }
 
@@ -1204,7 +1204,7 @@ pub(crate) fn gateway_summary(s: &Status, checked: Option<bool>) -> Option<(Stri
 pub(crate) fn page_off_help(kind: &str) -> &'static str {
     match kind {
         "docker" => "The gateway's own web page is off. In a container it is turned on with ST_GW_UI=on (the container is created again).",
-        "windows-service" => "The gateway's own web page is off in its settings (localUi in st_gateway.json, or ST_GW_UI in the service's environment). The gateway's installer turns it on again.",
+        "windows-service" => t!("The gateway's own web page is off in its settings (localUi in st_gateway.json, or ST_GW_UI in the service's environment). The gateway's installer turns it on again."),
         _ => "The gateway's own web page is off in its settings (localUi.enabled in /etc/sentient-gateway/st_gateway.json, or ST_GW_UI in the service's environment).",
     }
 }
@@ -1245,7 +1245,7 @@ fn admin_read() -> Result<Status, String> {
         }
     });
     crate::rootjob::run(&["gateway-status".to_string()], &sink)?;
-    let line = lines.lock().ok().and_then(|v| v.iter().rev().find(|l| l.starts_with("installed=")).cloned()).ok_or("The administrator's read gave no gateway state.")?;
+    let line = lines.lock().ok().and_then(|v| v.iter().rev().find(|l| l.starts_with("installed=")).cloned()).ok_or(t!("The administrator's read gave no gateway state."))?;
     let s = status_of_line(&line);
     // The card's values in the same helper (no second prompt).
     let quiet: sentient_installer_core::progress::ProgressFn = std::sync::Arc::new(|_| {});
@@ -1301,14 +1301,14 @@ pub(crate) fn local_settings(status: &Status) -> Result<GwSettings, String> {
     // a canned gateway is never read for real.
     #[cfg(debug_assertions)]
     if let Some(n) = std::env::var("SPM_DEBUG_GATEWAY_SETTINGS").ok().or_else(|| std::env::var("SPM_DEBUG_GATEWAY").ok()) {
-        return crate::manager::gateway_settings::debug_settings(&n).ok_or_else(|| format!("no settings fixture {n}"));
+        return crate::manager::gateway_settings::debug_settings(&n).ok_or_else(|| tf!("no settings fixture {n}"));
     }
     if status.kind() == "service" && cfg!(target_os = "linux") && !crate::rootjob::is_root() {
         if let Some(s) = ADMIN_READ.lock().ok().and_then(|g| g.as_ref().filter(|r| r.of == native_key(status)).and_then(|r| r.settings.clone())) {
             return Ok(s);
         }
         if status.config_unreadable {
-            return Err("readable by an administrator only. Read its settings (above) reads them, once with your password.".into());
+            return Err(t!("readable by an administrator only. Read its settings (above) reads them, once with your password.").into());
         }
     }
     Ok(gs::read(status))
@@ -1330,7 +1330,7 @@ fn test_here(status: &Status, as_root: bool) -> Result<String, String> {
     });
     crate::rootjob::run(&["gateway-test".to_string()], &sink)?;
     let m = done.lock().ok().and_then(|g| g.clone());
-    m.ok_or_else(|| "The test gave no answer.".to_string())
+    m.ok_or_else(|| t!("The test gave no answer.").to_string())
 }
 
 /// Screens: canned gateways by name, one per way it runs (fictional names).

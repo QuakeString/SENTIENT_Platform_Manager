@@ -44,13 +44,13 @@ pub enum Work {
 
 pub type RunFn = Rc<dyn Fn(Work, &mut Window, &mut App)>;
 
-pub const TITLES: [&str; 7] = ["Connection to SENTIENT", "Local web page", "Connectors", "Storage", "Logging", "Statistics", "Advanced"];
+pub const TITLES: [&str; 7] = [n!("Connection to SENTIENT"), n!("Local web page"), n!("Connectors"), n!("Storage"), n!("Logging"), n!("Statistics"), n!("Advanced")];
 /// The settings card's least height: its tabs, three rows and the Apply
 /// bar, so that under the status card the bar is in view on the smallest
 /// window (760 px tall); below that the page scrolls.
 const CARD_MIN_H: f32 = 290.;
-const LEVEL_WORDS: [&str; 3] = ["Errors", "Normal", "Detailed"];
-const LISTEN_WORDS: [&str; 3] = ["This computer", "All interfaces", "One address"];
+const LEVEL_WORDS: [&str; 3] = [n!("Errors"), n!("Normal"), n!("Detailed")];
+const LISTEN_WORDS: [&str; 3] = [n!("This computer"), n!("All interfaces"), n!("One address")];
 
 /// The values the card edits, as read or as changed.
 #[derive(Clone, Debug, PartialEq, Default)]
@@ -249,15 +249,15 @@ impl GatewaySettingsCard {
         if self.edit.ui_on {
             let port = Self::text(&self.port, cx);
             if !port.parse::<u16>().is_ok_and(|p| p > 0) {
-                return Some((1, "The page's port needs a number from 1 to 65535.".into()));
+                return Some((1, t!("The page's port needs a number from 1 to 65535.").into()));
             }
             if self.edit.listen_mode == 2 && Self::text(&self.addr, cx).is_empty() {
-                return Some((1, "Name the address the page listens on.".into()));
+                return Some((1, t!("Name the address the page listens on.").into()));
             }
         }
         for (n, _) in self.env_now(cx) {
             if !valid_name(&n) {
-                return Some((6, format!("{n}: not a usable variable name (letters, digits and _).")));
+                return Some((6, tf!("{n}: not a usable variable name (letters, digits and _).")));
             }
         }
         None
@@ -315,7 +315,7 @@ impl GatewaySettingsCard {
         let run = self.run.clone();
         let server = self.server.clone();
         let view = cx.new(|cx| PasswordDialog::new(server, run, window, cx));
-        crate::modal::open(crate::modal::Modal { title: "Change the web page's password".into(), body: view.into(), width: 460., icon: None, on_close: None }, cx);
+        crate::modal::open(crate::modal::Modal { title: t!("Change the web page's password").into(), body: view.into(), width: 460., icon: None, on_close: None }, cx);
     }
 }
 
@@ -327,7 +327,7 @@ fn valid_name(n: &str) -> bool {
 /// The status card's pill for the connection to SENTIENT (None: not known).
 pub fn connected_pill(theme: &gpui_kit::component::Theme, s: Option<&Result<GwSettings, String>>, running: bool) -> Option<Div> {
     let c = s.and_then(|s| s.as_ref().ok()).and_then(|s| s.connected)?;
-    running.then(|| if c { ui::pill(theme, Tone::Good, "Connected to SENTIENT") } else { ui::pill(theme, Tone::Bad, "Not connected to SENTIENT") })
+    running.then(|| if c { ui::pill(theme, Tone::Good, t!("Connected to SENTIENT")) } else { ui::pill(theme, Tone::Bad, t!("Not connected to SENTIENT")) })
 }
 
 /// Whether the connection is SENTIENT's now: connected, or not known.
@@ -398,7 +398,7 @@ fn notice(theme: &gpui_kit::component::Theme, id: &str, text: &str, why: &str, u
                     .font_weight(FontWeight::MEDIUM)
                     .cursor_pointer()
                     .hover(|d| d.underline())
-                    .child("Open in SENTIENT")
+                    .child(t!("Open in SENTIENT"))
                     .on_click(move |_, _, cx| ui::open_url(&url, cx)),
             )
         })
@@ -421,7 +421,7 @@ fn info_line(theme: &gpui_kit::component::Theme, id: &str, text: &str, why: Opti
         .child(div().flex_1().min_w_0().child(text.to_string()))
 }
 
-const OWNED: &str = "SENTIENT manages this for the gateway and sends it again on every connection; a change made on this computer would be undone. Change it in SENTIENT › Gateways › this gateway › Configuration.";
+const OWNED: &str = n!("SENTIENT manages this for the gateway and sends it again on every connection; a change made on this computer would be undone. Change it in SENTIENT › Gateways › this gateway › Configuration.");
 
 impl Render for GatewaySettingsCard {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -442,7 +442,7 @@ impl Render for GatewaySettingsCard {
         };
         let s = match &self.settings {
             None => return shell(v_flex().p(px(18.)).gap_2().child(ui::skeleton_line(&theme, "gw-set-1", 220.)).child(ui::skeleton_line(&theme, "gw-set-2", 320.)).into_any_element()).into_any_element(),
-            Some(Err(e)) => return shell(div().p(px(18.)).text_sm().text_color(theme.muted_foreground).child(format!("Its settings: {e}")).into_any_element()).into_any_element(),
+            Some(Err(e)) => return shell(div().p(px(18.)).text_sm().text_color(theme.muted_foreground).child(tf!("Its settings: {e}")).into_any_element()).into_any_element(),
             Some(Ok(s)) => s.clone(),
         };
         self.fill(&s, window, cx);
@@ -466,9 +466,9 @@ impl Render for GatewaySettingsCard {
             0 => self.connection(&theme, &s, cx),
             1 => self.page(&theme, &s, window, cx),
             2 => self.connectors(&theme, &s),
-            3 => self.owned(&theme, &s, "storage", "SENTIENT manages storage for this gateway. A change there takes effect at once, with no restart.", "Buffer", &s.storage, cx),
+            3 => self.owned(&theme, &s, "storage", t!("SENTIENT manages storage for this gateway. A change there takes effect at once, with no restart."), t!("Buffer"), &s.storage, cx),
             4 => self.logging(&theme, &s, cx),
-            5 => self.owned(&theme, &s, "statistics", "SENTIENT manages statistics for this gateway.", "Sent to SENTIENT", &s.statistics, cx),
+            5 => self.owned(&theme, &s, "statistics", t!("SENTIENT manages statistics for this gateway."), t!("Sent to SENTIENT"), &s.statistics, cx),
             _ => self.advanced(&theme, &s, window, cx),
         };
         let changes = page_n + log_n + adv_n;
@@ -484,7 +484,7 @@ impl Render for GatewaySettingsCard {
                 }
                 names.push_str(plan.restart_words(&s.machine.kind));
                 if self.server.is_some() {
-                    names.push_str(" Applied by the server's agent.");
+                    names.push_str(t!(" Applied by the server's agent."));
                 }
                 names
             }
@@ -522,41 +522,41 @@ impl GatewaySettingsCard {
     fn connection(&mut self, theme: &gpui_kit::component::Theme, s: &GwSettings, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let c = &s.conn;
         let locked_now = connection_locked(s);
-        let host = c.host.clone().unwrap_or_else(|| "Not commissioned".into());
+        let host = c.host.clone().unwrap_or_else(|| t!("Not commissioned").into());
         let port = c.port.map(|p| p.to_string()).unwrap_or_else(|| "—".into());
         let cred = c.credential_words();
-        let tls = if c.tls { "On" } else { "Off" };
+        let tls = if c.tls { t!("On") } else { t!("Off") };
         let mut out: Vec<AnyElement> = Vec::new();
         let rows: Vec<SettingRow> = if locked_now {
             let why = match s.connected {
-                Some(true) => "Connected: SENTIENT owns the connection now. Change it in SENTIENT › Gateways › this gateway › Configuration › General. The gateway takes a change made on this computer only while it is not connected.".to_string(),
-                _ => "Whether the gateway is connected is not known (it does not report it), so the connection is treated as SENTIENT's.".to_string(),
+                Some(true) => t!("Connected: SENTIENT owns the connection now. Change it in SENTIENT › Gateways › this gateway › Configuration › General. The gateway takes a change made on this computer only while it is not connected.").to_string(),
+                _ => t!("Whether the gateway is connected is not known (it does not report it), so the connection is treated as SENTIENT's.").to_string(),
             };
             out.push(
-                notice(theme, "conn", if s.connected == Some(true) { "Connected: SENTIENT owns the connection now." } else { "Not known whether it is connected: treated as SENTIENT's." }, &why, self.platform_url.as_deref())
+                notice(theme, "conn", if s.connected == Some(true) { t!("Connected: SENTIENT owns the connection now.") } else { t!("Not known whether it is connected: treated as SENTIENT's.") }, &why, self.platform_url.as_deref())
                     .into_any_element(),
             );
-            vec![locked(theme, "host", "Host", host, &why), locked(theme, "port", "MQTT port", port, &why), locked(theme, "cred", "Credential", cred, &why), locked(theme, "tls", "TLS", tls, &why)]
+            vec![locked(theme, "host", t!("Host"), host, &why), locked(theme, "port", t!("MQTT port"), port, &why), locked(theme, "cred", t!("Credential"), cred, &why), locked(theme, "tls", "TLS", tls, &why)]
         } else {
-            let how = s.connected_how.clone().map(|h| format!(" (from {h})")).unwrap_or_default();
+            let how = s.connected_how.clone().map(|h| tf!(" (from {h})")).unwrap_or_default();
             out.push(
                 info_line(
                     theme,
                     "conn",
-                    &format!("Not connected to SENTIENT{how}."),
+                    &tf!("Not connected to SENTIENT{how}."),
                     Some("The gateway lets its connection be changed only while it is not connected. Changing it from the Platform Manager comes in a later version; until then use the gateway's own page or its --install command."),
                 )
                 .into_any_element(),
             );
-            let env = if c.from_env { Some("Set in the container's environment: it is created again to change it.".to_string()) } else { None };
-            vec![plain(theme, "Host", env.clone(), host), plain(theme, "MQTT port", env, port), plain(theme, "Credential", Some("Never shown in full: \"set\" or its last four characters at most.".into()), cred), plain(theme, "TLS", None, tls)]
+            let env = if c.from_env { Some(t!("Set in the container's environment: it is created again to change it.").to_string()) } else { None };
+            vec![plain(theme, t!("Host"), env.clone(), host), plain(theme, t!("MQTT port"), env, port), plain(theme, t!("Credential"), Some(t!("Never shown in full: \"set\" or its last four characters at most.").into()), cred), plain(theme, "TLS", None, tls)]
         };
-        out.push(ui::group(theme, "Platform", rows, vec![], cx).into_any_element());
+        out.push(ui::group(theme, t!("Platform"), rows, vec![], cx).into_any_element());
         let busy = self.busy || self.testing;
         let button = crate::ui::probed(
             crate::ui::button("gw-test")
                 .outline()
-                .label("Test")
+                .label(t!("Test"))
                 .loading(self.testing)
                 .disabled(busy || c.host.is_none())
                 .on_click(cx.listener(|c, _, window, cx| {
@@ -567,12 +567,12 @@ impl GatewaySettingsCard {
                 })),
         );
         let mut test = SettingRow::wide(
-            "Test connection",
-            Some("Checks that SENTIENT's MQTT answers where the gateway connects: a TCP connection, and a TLS handshake when it uses TLS. The gateway's credentials are not tried yet, so its own connection is never disturbed.".into()),
+            t!("Test connection"),
+            Some(t!("Checks that SENTIENT's MQTT answers where the gateway connects: a TCP connection, and a TLS handshake when it uses TLS. The gateway's credentials are not tried yet, so its own connection is never disturbed.").into()),
             ui::on_control_line(button),
         );
         test.first = true;
-        out.push(ui::group(theme, "Check", vec![test], self.test.clone().map(|(t, m)| ui::outcome(theme, t, m).into_any_element()).into_iter().collect(), cx).into_any_element());
+        out.push(ui::group(theme, t!("Check"), vec![test], self.test.clone().map(|(t, m)| ui::outcome(theme, t, m).into_any_element()).into_iter().collect(), cx).into_any_element());
         out
     }
 
@@ -580,18 +580,18 @@ impl GatewaySettingsCard {
         let mut out: Vec<AnyElement> = Vec::new();
         let editable = s.machine.not_editable.is_none();
         if let Some(why) = &s.machine.not_editable {
-            out.push(info_line(theme, "page", "Shown as it is: these settings are not changed from here.", Some(why)).into_any_element());
+            out.push(info_line(theme, "page", t!("Shown as it is: these settings are not changed from here."), Some(why)).into_any_element());
         } else if !s.caps.ui_listen && !s.machine.kind.contains("docker") {
-            out.push(info_line(theme, "page-old", "This gateway is older than 4.12: its page is set on its own command line only.", None).into_any_element());
+            out.push(info_line(theme, "page-old", t!("This gateway is older than 4.12: its page is set on its own command line only."), None).into_any_element());
         }
         let can_page = editable && (s.caps.ui_listen || s.machine.kind == "docker");
         let (b, e) = (self.base.clone(), self.edit.clone());
         let mut rows = Vec::new();
         let this = cx.entity().downgrade();
-        let page_help = "The gateway's own page for commissioning and looking at values. Off: no web listener at all.".to_string();
+        let page_help = t!("The gateway's own page for commissioning and looking at values. Off: no web listener at all.").to_string();
         rows.push(if can_page {
             SettingRow {
-                label: "Web page".into(),
+                label: t!("Web page").into(),
                 help: Some(page_help),
                 desc: None,
                 restart: e.ui_on != b.ui_on,
@@ -602,11 +602,11 @@ impl GatewaySettingsCard {
                 }))
                 .into_any_element(),
                 wide: false,
-                current: Some(if b.ui_on { "On".into() } else { "Off".into() }),
+                current: Some(if b.ui_on { t!("On").into() } else { t!("Off").into() }),
                 first: false,
             }
         } else {
-            plain(theme, "Web page", Some(page_help), if s.ui.enabled { "On" } else { "Off" })
+            plain(theme, t!("Web page"), Some(page_help), if s.ui.enabled { t!("On") } else { t!("Off") })
         });
         if can_page && e.ui_on {
             let pick: Rc<dyn Fn(usize, &mut Window, &mut App)> = Rc::new(move |i, _, cx| {
@@ -618,8 +618,8 @@ impl GatewaySettingsCard {
             });
             let mode_changed = e.listen_mode != b.listen_mode;
             rows.push(SettingRow {
-                label: "Listen on".into(),
-                help: Some("This computer: 127.0.0.1, plain HTTP. All interfaces or one address: reachable from the network, served over HTTPS only.".into()),
+                label: t!("Listen on").into(),
+                help: Some(t!("This computer: 127.0.0.1, plain HTTP. All interfaces or one address: reachable from the network, served over HTTPS only.").into()),
                 desc: None,
                 restart: mode_changed,
                 changed: mode_changed,
@@ -632,8 +632,8 @@ impl GatewaySettingsCard {
                 if let Some(addr) = self.addr.clone() {
                     let changed = Self::text(&self.addr, cx) != self.base_addr;
                     rows.push(SettingRow {
-                        label: "Address".into(),
-                        help: Some("One of this computer's own addresses.".into()),
+                        label: t!("Address").into(),
+                        help: Some(t!("One of this computer's own addresses.").into()),
                         desc: None,
                         restart: changed,
                         changed,
@@ -647,9 +647,9 @@ impl GatewaySettingsCard {
             if let Some(port) = self.port.clone() {
                 let now = Self::text(&self.port, cx);
                 let changed = now != self.base_port;
-                let bad = (!now.parse::<u16>().is_ok_and(|p| p > 0)).then(|| "A number from 1 to 65535".to_string());
+                let bad = (!now.parse::<u16>().is_ok_and(|p| p > 0)).then(|| t!("A number from 1 to 65535").to_string());
                 rows.push(SettingRow {
-                    label: "Port".into(),
+                    label: t!("Port").into(),
                     help: None,
                     desc: None,
                     restart: changed,
@@ -661,20 +661,20 @@ impl GatewaySettingsCard {
                 });
             }
         } else if !can_page && s.ui.enabled {
-            rows.push(plain(theme, "Listen on", None, s.ui.listen.clone()));
+            rows.push(plain(theme, t!("Listen on"), None, s.ui.listen.clone()));
         }
         let names = if s.ui.hostnames.is_empty() { "none".to_string() } else { s.ui.hostnames.join(", ") };
         rows.push(plain(
             theme,
-            "Extra host names",
+            t!("Extra host names"),
             Some(if s.caps.ui_hostname {
-                "Names besides the computer's own, written into the page's certificate.".into()
+                t!("Names besides the computer's own, written into the page's certificate.").into()
             } else {
-                "Names besides the computer's own, written into the page's certificate. This gateway sets them in its file only (localUi.hostnames); the Platform Manager changes them once the gateway's command can.".into()
+                t!("Names besides the computer's own, written into the page's certificate. This gateway sets them in its file only (localUi.hostnames); the Platform Manager changes them once the gateway's command can.").into()
             }),
             names,
         ));
-        out.push(ui::group(theme, "Page", rows, vec![], cx).into_any_element());
+        out.push(ui::group(theme, t!("Page"), rows, vec![], cx).into_any_element());
         let pw_word = match s.ui.password_set {
             Some(true) => "set",
             Some(false) => "not set",
@@ -682,26 +682,26 @@ impl GatewaySettingsCard {
         };
         let can_pw = editable && s.caps.ui_password && !self.busy;
         let mut pw = SettingRow {
-            label: "Administrator password".into(),
+            label: t!("Administrator password").into(),
             help: Some("Set through the gateway's own command (--ui-password, the password on its standard input; never on a command line or in a log). Every browser signed in to the page is signed out. No restart needed.".into()),
             desc: None,
             restart: false,
             changed: false,
             control: h_flex()
                 .w(px(ui::FIELD_W))
-                .child(crate::ui::probed(crate::ui::button("gw-pw").outline().label("Change password").disabled(!can_pw).on_click(cx.listener(|c, _, window, cx| c.open_password(window, cx)))))
+                .child(crate::ui::probed(crate::ui::button("gw-pw").outline().label(t!("Change password")).disabled(!can_pw).on_click(cx.listener(|c, _, window, cx| c.open_password(window, cx)))))
                 .into_any_element(),
             wide: false,
             current: Some(pw_word.to_string()),
             first: false,
         };
         pw.first = true;
-        out.push(ui::group(theme, "Sign-in", vec![pw], vec![], cx).into_any_element());
+        out.push(ui::group(theme, t!("Sign-in"), vec![pw], vec![], cx).into_any_element());
         out
     }
 
     fn connectors(&self, theme: &gpui_kit::component::Theme, s: &GwSettings) -> Vec<AnyElement> {
-        let mut out: Vec<AnyElement> = vec![notice(theme, "connectors", "SENTIENT manages the connectors for this gateway.", OWNED, self.platform_url.as_deref()).into_any_element()];
+        let mut out: Vec<AnyElement> = vec![notice(theme, "connectors", t!("SENTIENT manages the connectors for this gateway."), crate::i18n::t(OWNED), self.platform_url.as_deref()).into_any_element()];
         let cell = |t: String, w: f32| div().w(px(w)).flex_shrink_0().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap().child(t);
         let head = h_flex()
             .px(px(18.))
@@ -718,12 +718,12 @@ impl GatewaySettingsCard {
             .child(div().w(px(22.)));
         out.push(head.into_any_element());
         if s.connectors.is_empty() {
-            out.push(div().px(px(18.)).py(px(10.)).text_sm().text_color(theme.muted_foreground).child("No connectors yet.").into_any_element());
+            out.push(div().px(px(18.)).py(px(10.)).text_sm().text_color(theme.muted_foreground).child(t!("No connectors yet.")).into_any_element());
         }
         for (i, c) in s.connectors.iter().enumerate() {
             let state = c.state.clone().unwrap_or_else(|| match c.enabled {
-                Some(false) => "Off".into(),
-                _ => "On".into(),
+                Some(false) => t!("Off").into(),
+                _ => t!("On").into(),
             });
             let on = !matches!(state.to_ascii_lowercase().as_str(), "off" | "stopped" | "failed" | "disabled");
             out.push(
@@ -747,7 +747,7 @@ impl GatewaySettingsCard {
                             .child(state),
                     )
                     .child(cell(c.devices.map(|d| d.to_string()).unwrap_or_else(|| "—".into()), 70.))
-                    .child(ui::lock_tip(format!("conn-lock-{i}").into(), OWNED.into()))
+                    .child(ui::lock_tip(format!("conn-lock-{i}").into(), crate::i18n::t(OWNED).into()))
                     .into_any_element(),
             );
         }
@@ -756,24 +756,24 @@ impl GatewaySettingsCard {
 
     #[allow(clippy::too_many_arguments)]
     fn owned(&self, theme: &gpui_kit::component::Theme, _s: &GwSettings, id: &str, text: &str, group: &str, facts: &[gs::Fact], cx: &App) -> Vec<AnyElement> {
-        let rows: Vec<SettingRow> = facts.iter().map(|f| locked(theme, &format!("{id}-{}", f.label), &f.label, f.value.clone(), OWNED)).collect();
-        vec![notice(theme, id, text, OWNED, self.platform_url.as_deref()).into_any_element(), ui::group(theme, group, rows, vec![], cx).into_any_element()]
+        let rows: Vec<SettingRow> = facts.iter().map(|f| locked(theme, &format!("{id}-{}", f.label), &f.label, f.value.clone(), crate::i18n::t(OWNED))).collect();
+        vec![notice(theme, id, text, crate::i18n::t(OWNED), self.platform_url.as_deref()).into_any_element(), ui::group(theme, group, rows, vec![], cx).into_any_element()]
     }
 
     fn logging(&mut self, theme: &gpui_kit::component::Theme, s: &GwSettings, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let levels: Vec<SettingRow> = if s.logging.is_empty() {
-            vec![locked(theme, "log-none", "Levels", "The gateway's own (no logs.json)", OWNED)]
+            vec![locked(theme, "log-none", t!("Levels"), t!("The gateway's own (no logs.json)"), crate::i18n::t(OWNED))]
         } else {
-            s.logging.iter().map(|f| locked(theme, &format!("log-{}", f.label), &f.label, f.value.clone(), OWNED)).collect()
+            s.logging.iter().map(|f| locked(theme, &format!("log-{}", f.label), &f.label, f.value.clone(), crate::i18n::t(OWNED))).collect()
         };
         let mut out = vec![
-            notice(theme, "logging", "SENTIENT sets these levels (logs_configuration, RemoteLoggingLevel).", OWNED, self.platform_url.as_deref()).into_any_element(),
-            ui::group(theme, "Levels from SENTIENT", levels, vec![], cx).into_any_element(),
+            notice(theme, "logging", t!("SENTIENT sets these levels (logs_configuration, RemoteLoggingLevel)."), crate::i18n::t(OWNED), self.platform_url.as_deref()).into_any_element(),
+            ui::group(theme, t!("Levels from SENTIENT"), levels, vec![], cx).into_any_element(),
         ];
         let editable = s.machine.not_editable.is_none();
         let (b, e) = (self.base.level, self.edit.level);
-        let current = s.machine.rust_log.clone().unwrap_or_else(|| "info (the gateway's own)".into());
-        let help = "RUST_LOG for the service or the container: how much the gateway writes until SENTIENT's levels take over. Errors: error. Normal: info. Detailed: debug.".to_string();
+        let current = s.machine.rust_log.clone().unwrap_or_else(|| t!("info (the gateway's own)").into());
+        let help = t!("RUST_LOG for the service or the container: how much the gateway writes until SENTIENT's levels take over. Errors: error. Normal: info. Detailed: debug.").to_string();
         let mut row = if editable {
             let this = cx.entity().downgrade();
             let pick: Rc<dyn Fn(usize, &mut Window, &mut App)> = Rc::new(move |i, _, cx| {
@@ -783,13 +783,13 @@ impl GatewaySettingsCard {
                 })
                 .ok();
             });
-            SettingRow { label: "Level before SENTIENT connects".into(), help: Some(help), desc: None, restart: e != b, changed: e != b, control: ui::chips(theme, "gw-level", &LEVEL_WORDS, e, pick).into_any_element(), wide: false, current: Some(current), first: false }
+            SettingRow { label: t!("Level before SENTIENT connects").into(), help: Some(help), desc: None, restart: e != b, changed: e != b, control: ui::chips(theme, "gw-level", &LEVEL_WORDS, e, pick).into_any_element(), wide: false, current: Some(current), first: false }
         } else {
-            plain(theme, "Level before SENTIENT connects", Some(help), current)
+            plain(theme, t!("Level before SENTIENT connects"), Some(help), current)
         };
         row.first = true;
-        let files = plain(theme, "Log files", Some("The gateway's rotating log files; the Logs button shows them.".into()), s.log_files.clone().unwrap_or_else(|| "In its data folder".into()));
-        out.push(ui::group(theme, "This computer", vec![row, files], vec![], cx).into_any_element());
+        let files = plain(theme, t!("Log files"), Some(t!("The gateway's rotating log files; the Logs button shows them.").into()), s.log_files.clone().unwrap_or_else(|| t!("In its data folder").into()));
+        out.push(ui::group(theme, t!("This computer"), vec![row, files], vec![], cx).into_any_element());
         out
     }
 
@@ -797,19 +797,19 @@ impl GatewaySettingsCard {
         let mut out: Vec<AnyElement> = Vec::new();
         let editable = s.machine.not_editable.is_none();
         if let Some(why) = &s.machine.not_editable {
-            out.push(info_line(theme, "adv", "Shown as it is: these settings are not changed from here.", Some(why)).into_any_element());
+            out.push(info_line(theme, "adv", t!("Shown as it is: these settings are not changed from here."), Some(why)).into_any_element());
         }
         let (b, e) = (self.base.clone(), self.edit.clone());
         let mut service: Vec<SettingRow> = Vec::new();
         let restart_help = match s.machine.kind.as_str() {
-            "docker" => "The container's restart policy: unless-stopped when on, no when off. The container is created again with the same volumes.",
-            "windows-service" => "What Windows does when the service fails: start it again after 5 seconds.",
+            "docker" => t!("The container's restart policy: unless-stopped when on, no when off. The container is created again with the same volumes."),
+            "windows-service" => t!("What Windows does when the service fails: start it again after 5 seconds."),
             _ => "systemd Restart=always, RestartSec=5, in a drop-in of the Platform Manager's (the unit file is not changed).",
         };
         let restart_word = s.machine.restart_word.clone().unwrap_or_else(|| "not known".into());
         service.push(if editable && s.machine.restart_always.is_some() {
             SettingRow {
-                label: "Restart after a failure".into(),
+                label: t!("Restart after a failure").into(),
                 help: Some(restart_help.into()),
                 desc: None,
                 restart: e.restart_on != b.restart_on && s.machine.kind != "windows-service",
@@ -824,17 +824,17 @@ impl GatewaySettingsCard {
                 first: false,
             }
         } else {
-            plain(theme, "Restart after a failure", Some(restart_help.into()), restart_word)
+            plain(theme, t!("Restart after a failure"), Some(restart_help.into()), restart_word)
         });
         let serial = &s.machine.serial;
         match serial.mode.as_str() {
             "group" => {
                 let g = serial.group.clone().unwrap_or_else(|| "dialout".into());
                 let acc = serial.account.clone().unwrap_or_default();
-                let help = format!("The service's account {acc} joins the group {g}, which may open serial ports (Modbus RTU and other serial connectors). Found here: {}.", if serial.available.is_empty() { "no serial adapter".to_string() } else { serial.available.join(", ") });
+                let help = tf!("The service's account {acc} joins the group {g}, which may open serial ports (Modbus RTU and other serial connectors). Found here: {}.", if serial.available.is_empty() { t!("no serial adapter").to_string() } else { serial.available.join(", ") });
                 service.push(if editable && serial.group.is_some() {
                     SettingRow {
-                        label: "Serial ports".into(),
+                        label: t!("Serial ports").into(),
                         help: Some(help),
                         desc: None,
                         restart: e.serial_group != b.serial_group,
@@ -845,11 +845,11 @@ impl GatewaySettingsCard {
                         }))
                         .into_any_element(),
                         wide: false,
-                        current: Some(if b.serial_group { format!("in {g}") } else { format!("not in {g}") }),
+                        current: Some(if b.serial_group { tf!("in {g}") } else { tf!("not in {g}") }),
                         first: false,
                     }
                 } else {
-                    plain(theme, "Serial ports", Some(help), if serial.in_group { format!("in {g}") } else { "no serial group".into() })
+                    plain(theme, t!("Serial ports"), Some(help), if serial.in_group { tf!("in {g}") } else { t!("no serial group").into() })
                 });
             }
             "devices" => {
@@ -860,10 +860,10 @@ impl GatewaySettingsCard {
                         all.push(c.clone());
                     }
                 }
-                let help = "Each chosen adapter is given to the container at the same path (its /dev/serial/by-id name stays the one a connector names), with its group added. The container is created again with the same volumes.".to_string();
+                let help = t!("Each chosen adapter is given to the container at the same path (its /dev/serial/by-id name stays the one a connector names), with its group added. The container is created again with the same volumes.").to_string();
                 let changed = e.serial_devices != b.serial_devices;
                 let list = if all.is_empty() {
-                    ui::row_text("No serial adapter on this computer").text_color(theme.muted_foreground).into_any_element()
+                    ui::row_text(t!("No serial adapter on this computer")).text_color(theme.muted_foreground).into_any_element()
                 } else {
                     v_flex()
                         .gap(px(6.))
@@ -886,14 +886,14 @@ impl GatewaySettingsCard {
                         }))
                         .into_any_element()
                 };
-                let mut r = SettingRow::wide("Serial ports", Some(help), list);
+                let mut r = SettingRow::wide(t!("Serial ports"), Some(help), list);
                 r.changed = changed;
                 r.restart = changed;
                 service.push(r);
             }
             _ => {}
         }
-        out.push(ui::group(theme, "Service", service, vec![], cx).into_any_element());
+        out.push(ui::group(theme, t!("Service"), service, vec![], cx).into_any_element());
         // Environment overrides.
         let mut env_rows: Vec<SettingRow> = Vec::new();
         let mut remove: Option<usize> = None;
@@ -907,12 +907,12 @@ impl GatewaySettingsCard {
                         Some((n, Some(old))) => name.trim() != n || v.read(cx).value() != old.as_str(),
                         _ => false,
                     };
-                    let bad = (!valid_name(name.trim())).then(|| "Letters, digits and _".to_string());
+                    let bad = (!valid_name(name.trim())).then(|| t!("Letters, digits and _").to_string());
                     let control = h_flex()
                         .gap(px(8.))
                         .items_center()
                         .child(ui::field_input(theme, v, None, bad, false, window, cx))
-                        .child(crate::ui::probed(crate::ui::button(SharedString::from(format!("gw-env-rm-{i}"))).ghost().label("Remove").on_click(cx.listener(move |c, _, _, cx| {
+                        .child(crate::ui::probed(crate::ui::button(SharedString::from(format!("gw-env-rm-{i}"))).ghost().label(t!("Remove")).on_click(cx.listener(move |c, _, _, cx| {
                             if i < c.env.len() {
                                 if c.env[i].was.is_some() {
                                     c.removed += 1;
@@ -923,8 +923,8 @@ impl GatewaySettingsCard {
                         }))));
                     env_rows.push(SettingRow { label: name.into(), help: None, desc: None, restart: changed, changed, control: control.into_any_element(), wide: true, current: None, first: false });
                 }
-                (None, _) => env_rows.push(plain(theme, &name, Some("A secret: kept as it is, never shown.".into()), "set")),
-                (Some(v), false) => env_rows.push(plain(theme, &name, Some(format!("From {}; not changed here.", r.origin)), v.read(cx).value().to_string())),
+                (None, _) => env_rows.push(plain(theme, &name, Some(t!("A secret: kept as it is, never shown.").into()), "set")),
+                (Some(v), false) => env_rows.push(plain(theme, &name, Some(tf!("From {}; not changed here.", r.origin)), v.read(cx).value().to_string())),
             }
         }
         let mut extra: Vec<AnyElement> = Vec::new();
@@ -939,7 +939,7 @@ impl GatewaySettingsCard {
                         .flex_wrap()
                         .child(div().w(px(200.)).child(Input::new(&n)))
                         .child(div().w(px(200.)).child(Input::new(&v)))
-                        .child(crate::ui::probed(crate::ui::button("gw-env-add").outline().label("Add").disabled(!ok).on_click(cx.listener(|c, _, window, cx| {
+                        .child(crate::ui::probed(crate::ui::button("gw-env-add").outline().label(t!("Add")).disabled(!ok).on_click(cx.listener(|c, _, window, cx| {
                             let name = Self::text(&c.new_name, cx);
                             let value = c.new_value.as_ref().map(|v| v.read(cx).value().to_string()).unwrap_or_default();
                             let n = c.input(name, "", window, cx);
@@ -955,31 +955,31 @@ impl GatewaySettingsCard {
             }
         }
         if env_rows.is_empty() && extra.is_empty() {
-            env_rows.push(plain(theme, "Environment overrides", Some(env_help(&s.machine.kind).into()), "none"));
+            env_rows.push(plain(theme, t!("Environment overrides"), Some(env_help(&s.machine.kind).into()), "none"));
         }
-        out.push(ui::group(theme, "Environment overrides", env_rows, extra, cx).into_any_element());
+        out.push(ui::group(theme, t!("Environment overrides"), env_rows, extra, cx).into_any_element());
         // SENTIENT's.
         let mut platform: Vec<SettingRow> = s
             .platform
             .iter()
             .map(|f| {
-                let why = if f.label == "Remote shell" { "SENTIENT turns remote shell on or off (general_configuration › remoteShell). It is off by default." } else { OWNED };
+                let why = if f.label == "Remote shell" { t!("SENTIENT turns remote shell on or off (general_configuration › remoteShell). It is off by default.") } else { crate::i18n::t(OWNED) };
                 locked(theme, &format!("adv-{}", f.label), &f.label, f.value.clone(), why)
             })
             .collect();
         if platform.is_empty() {
-            platform.push(locked(theme, "adv-none", "Remote shell", "Off", OWNED));
+            platform.push(locked(theme, "adv-none", t!("Remote shell"), t!("Off"), crate::i18n::t(OWNED)));
         }
-        out.push(ui::group(theme, "From SENTIENT", platform, vec![], cx).into_any_element());
+        out.push(ui::group(theme, t!("From SENTIENT"), platform, vec![], cx).into_any_element());
         out
     }
 }
 
 fn env_help(kind: &str) -> &'static str {
     match kind {
-        "docker" => "Variables for the gateway's container (ST_GW_* override its file). The container is created again with them; its connection and secrets stay as they are.",
-        "windows-service" => "Variables in the service's Environment (ST_GW_* override its file). The service restarts with them.",
-        _ => "Variables in the Platform Manager's drop-in for the service (ST_GW_* override its file); those in the unit file are shown but not changed. The service restarts with them.",
+        "docker" => t!("Variables for the gateway's container (ST_GW_* override its file). The container is created again with them; its connection and secrets stay as they are."),
+        "windows-service" => t!("Variables in the service's Environment (ST_GW_* override its file). The service restarts with them."),
+        _ => t!("Variables in the Platform Manager's drop-in for the service (ST_GW_* override its file); those in the unit file are shown but not changed. The service restarts with them."),
     }
 }
 
@@ -995,8 +995,8 @@ struct PasswordDialog {
 
 impl PasswordDialog {
     fn new(server: Option<String>, run: RunFn, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let a = cx.new(|cx| InputState::new(window, cx).masked(true).placeholder("8 characters or more"));
-        let b = cx.new(|cx| InputState::new(window, cx).masked(true).placeholder("Again"));
+        let a = cx.new(|cx| InputState::new(window, cx).masked(true).placeholder(t!("8 characters or more")));
+        let b = cx.new(|cx| InputState::new(window, cx).masked(true).placeholder(t!("Again")));
         let subs = vec![cx.subscribe(&a, |_, _, _: &InputEvent, cx| cx.notify()), cx.subscribe(&b, |_, _, _: &InputEvent, cx| cx.notify())];
         Self { a, b, server, problem: None, run, _subs: subs }
     }
@@ -1006,26 +1006,26 @@ impl Render for PasswordDialog {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
         let field = |label: &'static str, input: &Entity<InputState>| v_flex().gap_1p5().child(div().text_size(px(13.)).font_weight(FontWeight::MEDIUM).text_color(theme.muted_foreground).child(label)).child(Input::new(input).mask_toggle());
-        let place = self.server.as_ref().map(|s| format!(" It goes to the gateway on {s} over the server's agent, on its standard input.")).unwrap_or_default();
+        let place = self.server.as_ref().map(|s| tf!(" It goes to the gateway on {s} over the server's agent, on its standard input.")).unwrap_or_default();
         v_flex()
             .gap_4()
             .child(div().text_sm().text_color(theme.muted_foreground).child(format!("The gateway's own command sets it (--ui-password); every browser signed in to the page is signed out.{place}")))
-            .child(field("New password", &self.a))
-            .child(field("Again", &self.b))
+            .child(field(t!("New password"), &self.a))
+            .child(field(t!("Again"), &self.b))
             .children(self.problem.clone().map(|p| ui::outcome(&theme, Tone::Bad, p)))
             .child(
                 h_flex()
                     .gap(crate::ui::button_gap())
                     .justify_end()
-                    .child(crate::ui::probed(crate::ui::button("gw-pw-cancel").outline().label("Cancel").on_click(|_, _, cx| crate::modal::close(cx))))
-                    .child(crate::ui::probed(crate::ui::button("gw-pw-ok").primary().label("Change password").on_click(cx.listener(|d, _, window, cx| {
+                    .child(crate::ui::probed(crate::ui::button("gw-pw-cancel").outline().label(t!("Cancel")).on_click(|_, _, cx| crate::modal::close(cx))))
+                    .child(crate::ui::probed(crate::ui::button("gw-pw-ok").primary().label(t!("Change password")).on_click(cx.listener(|d, _, window, cx| {
                         let (a, b) = (d.a.read(cx).value().to_string(), d.b.read(cx).value().to_string());
                         if a.chars().count() < 8 {
-                            d.problem = Some("The password needs 8 characters or more.".into());
+                            d.problem = Some(t!("The password needs 8 characters or more.").into());
                         } else if a != b {
-                            d.problem = Some("The two passwords differ.".into());
+                            d.problem = Some(t!("The two passwords differ.").into());
                         } else if a.contains('\n') {
-                            d.problem = Some("The password cannot hold a line break.".into());
+                            d.problem = Some(t!("The password cannot hold a line break.").into());
                         } else {
                             crate::modal::close(cx);
                             (d.run)(Work::Password(a), window, cx);
@@ -1058,26 +1058,26 @@ pub fn debug_settings(name: &str) -> Option<GwSettings> {
         "native" | "native-connected" | "native-hand" => {
             s.config_path = Some("/etc/sentient-gateway/st_gateway.json".into());
             s.connected = Some(true);
-            s.connected_how = Some("the gateway's open connections".into());
+            s.connected_how = Some(t!("the gateway's open connections").into());
             s.machine.kind = "service".into();
             s.machine.serial = gs::Serial { mode: "group".into(), group: Some("dialout".into()), account: Some("sentient-gateway".into()), in_group: true, chosen: vec![], available: vec!["/dev/serial/by-id/usb-Example_RS485_A1-if00-port0".into()] };
             s.machine.env = vec![
-                gs::EnvVar { name: "ST_GW_STATE_INTERVAL".into(), value: Some("30".into()), editable: true, origin: "the unit file".into() },
-                gs::EnvVar { name: "ST_GW_DATA_DIR".into(), value: Some("/var/lib/sentient-gateway".into()), editable: false, origin: "the unit file".into() },
+                gs::EnvVar { name: "ST_GW_STATE_INTERVAL".into(), value: Some("30".into()), editable: true, origin: t!("the unit file").into() },
+                gs::EnvVar { name: "ST_GW_DATA_DIR".into(), value: Some("/var/lib/sentient-gateway".into()), editable: false, origin: t!("the unit file").into() },
             ];
         }
         "windows" => {
             s.config_path = Some(r"C:\ProgramData\Sentient Gateway\config\st_gateway.json".into());
             s.connected = Some(true);
             s.machine.kind = "windows-service".into();
-            s.machine.restart_word = Some("restart after a failure".into());
+            s.machine.restart_word = Some(t!("restart after a failure").into());
             s.log_files = Some(r"C:\ProgramData\Sentient Gateway\data\logs".into());
         }
         "docker" | "docker-disconnected" | "docker-legacy" => {
             s.conn.host = Some("127.0.0.1".into());
             s.conn.from_env = true;
             s.connected = Some(false);
-            s.connected_how = Some("the gateway's open connections".into());
+            s.connected_how = Some(t!("the gateway's open connections").into());
             s.ui.enabled = false;
             s.ui.listen = "0.0.0.0:8642".into();
             s.ui.password_set = Some(false);
@@ -1091,7 +1091,7 @@ pub fn debug_settings(name: &str) -> Option<GwSettings> {
             s.connected = Some(true);
             s.machine.not_editable = Some("This container comes from a compose file in /srv/example-site/gateway: change its settings in that file and run docker compose up -d.".into());
         }
-        "unreadable" | "native-unreadable" => return Some(GwSettings { source: "none".into(), note: Some("Readable by an administrator only: Read its settings reads them once with your password.".into()), ..GwSettings::default() }),
+        "unreadable" | "native-unreadable" => return Some(GwSettings { source: "none".into(), note: Some(t!("Readable by an administrator only: Read its settings reads them once with your password.").into()), ..GwSettings::default() }),
         _ => return None,
     }
     Some(s)

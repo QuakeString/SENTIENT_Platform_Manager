@@ -35,18 +35,18 @@ use crate::jobs::{Job, JobState};
 use crate::ui;
 
 const STEPS: [&str; 12] = [
-    "Welcome",
-    "System check",
-    "Location",
-    "Database",
-    "Database settings",
-    "Network ports",
-    "Administrator",
-    "Configuration",
-    "Shortcuts and startup",
-    "Summary",
-    "Install",
-    "Finish",
+    n!("Welcome"),
+    n!("System check"),
+    n!("Location"),
+    n!("Database"),
+    n!("Database settings"),
+    n!("Network ports"),
+    n!("Administrator"),
+    n!("Configuration"),
+    n!("Shortcuts and startup"),
+    n!("Summary"),
+    n!("Install"),
+    n!("Finish"),
 ];
 const SHORTCUTS: usize = 8;
 const SUMMARY: usize = 9;
@@ -212,7 +212,7 @@ pub struct Installer {
 pub(crate) fn parse_start_delay(text: &str) -> Result<u32, String> {
     match text.trim().parse::<u32>() {
         Ok(n) if n <= 3600 => Ok(n),
-        _ => Err("Start delay: enter whole seconds from 0 to 3600 (0 starts SENTIENT as soon as Windows starts).".into()),
+        _ => Err(n!("Start delay: enter whole seconds from 0 to 3600 (0 starts SENTIENT as soon as Windows starts).").into()),
     }
 }
 
@@ -225,7 +225,7 @@ fn input(window: &mut Window, cx: &mut Context<Installer>, value: &str) -> Entit
 /// from `debug_env`.
 fn loc_input(window: &mut Window, cx: &mut Context<Installer>, debug_env: &str) -> Entity<InputState> {
     let value = if cfg!(debug_assertions) { std::env::var(debug_env).unwrap_or_default() } else { String::new() };
-    cx.new(|cx| InputState::new(window, cx).placeholder("Docker's own folder").default_value(value))
+    cx.new(|cx| InputState::new(window, cx).placeholder(t!("Docker's own folder")).default_value(value))
 }
 
 fn secret(window: &mut Window, cx: &mut Context<Installer>) -> Entity<InputState> {
@@ -286,7 +286,7 @@ impl Installer {
             autologin_password: secret(window, cx),
             start_delay: input(window, cx, &sentient_installer_core::native::DEFAULT_START_DELAY_SECS.to_string()),
             search: cx.new(|cx| {
-                InputState::new(window, cx).placeholder("Search by name or variable, e.g. batch or RULE_ENGINE")
+                InputState::new(window, cx).placeholder(t!("Search by name or variable, e.g. batch or RULE_ENGINE"))
             }),
             loc_one: loc_input(window, cx, "SPM_DEBUG_LOC_ONE"),
             loc_pg: loc_input(window, cx, "SPM_DEBUG_LOC_PG"),
@@ -300,7 +300,7 @@ impl Installer {
         for setting in groups.iter().flat_map(|g| g.settings.iter()) {
             let value = recommended.get(&setting.env).cloned().unwrap_or_default();
             let placeholder = if setting.default.is_empty() {
-                "SENTIENT default".to_string()
+                t!("SENTIENT default").to_string()
             } else {
                 setting.default.clone()
             };
@@ -330,7 +330,7 @@ impl Installer {
             }
             // Stopped for the restart: the run after it starts where this
             // one's bar got to (plan::take_pending_progress).
-            if matches!(job.read(cx).state(), JobState::Failed(m) if m.as_ref() == plan::RESTART_REQUIRED) {
+            if matches!(job.read(cx).state(), JobState::Failed(m) if m.as_ref() == plan::RESTART_REQUIRED || m.as_ref() == crate::i18n::t(plan::RESTART_REQUIRED)) {
                 plan::save_pending_progress(job.read(cx).overall());
             }
             cx.notify();
@@ -340,7 +340,7 @@ impl Installer {
             .as_ref()
             .and_then(|dir| std::fs::read_to_string(dir.join("VERSION")).ok())
             .map(|v| v.trim().to_string())
-            .unwrap_or_else(|| "in this package".into());
+            .unwrap_or_else(|| t!("in this package").into());
 
         let mut this = Self {
             step: 0,
@@ -449,7 +449,7 @@ impl Installer {
                 let found = cx.background_executor().spawn(async move { crate::online::latest() }).await;
                 this.update(cx, |page, cx| {
                     if let Ok(m) = &found {
-                        page.sentient_version = format!("{} (downloaded)", m.version).into();
+                        page.sentient_version = tf!("{} (downloaded)", m.version).into();
                     }
                     page.online = Some(found);
                     if page.fit_engine_to_glibc() {
@@ -508,8 +508,8 @@ impl Installer {
                     job.set_plan(plan::screen_steps());
                     job.start(
                         |sink| {
-                            sink(sentient_installer_core::progress::Progress::Step { name: "Installing the Platform Manager".into() });
-                            sink(sentient_installer_core::progress::Progress::Step { name: "Installing PostgreSQL from your distribution".into() });
+                            sink(sentient_installer_core::progress::Progress::Step { name: n!("Installing the Platform Manager").into() });
+                            sink(sentient_installer_core::progress::Progress::Step { name: n!("Installing PostgreSQL from your distribution").into() });
                             Err("pkexec exited with 42".into())
                         },
                         cx,
@@ -522,15 +522,15 @@ impl Installer {
                 this.install.update(cx, |job, cx| {
                     use sentient_installer_core::progress::{PlanStep, Progress};
                     job.set_plan(vec![
-                        PlanStep::new("Installing the Platform Manager").weight(0.5),
-                        PlanStep::new("Turning on WSL 2").detail("Windows restarts once, and Setup continues after you sign in").weight(2.),
-                        PlanStep::new("Setting up Docker in WSL 2").detail("SENTIENT's own Ubuntu distribution with Docker Engine").weight(4.),
-                        PlanStep::new("Installing SENTIENT and its database").detail("The containers, the database and its schema").weight(6.),
+                        PlanStep::new(n!("Installing the Platform Manager")).weight(0.5),
+                        PlanStep::new(n!("Turning on WSL 2")).detail(n!("Windows restarts once, and Setup continues after you sign in")).weight(2.),
+                        PlanStep::new(n!("Setting up Docker in WSL 2")).detail(n!("SENTIENT's own Ubuntu distribution with Docker Engine")).weight(4.),
+                        PlanStep::new(n!("Installing SENTIENT and its database")).detail(n!("The containers, the database and its schema")).weight(6.),
                     ]);
                     job.start(
                         |sink| {
-                            sink(Progress::Step { name: "Installing the Platform Manager".into() });
-                            sink(Progress::Step { name: "Turning on WSL 2".into() });
+                            sink(Progress::Step { name: n!("Installing the Platform Manager").into() });
+                            sink(Progress::Step { name: n!("Turning on WSL 2").into() });
                             Err(plan::RESTART_REQUIRED.into())
                         },
                         cx,
@@ -660,8 +660,8 @@ impl Installer {
                             id: "adopt".into(),
                             state: None,
                             fixes: Vec::new(),
-                            label: "SENTIENT already installed".into(),
-                            detail: format!(
+                            label: t!("SENTIENT already installed").into(),
+                            detail: tf!(
                                 "SENTIENT {} runs on this computer as {}, from {}. Installing again would overwrite it: open the Platform Manager and use “Add existing instance” on its Status screen instead.",
                                 c.record.sentient_version, c.kind, c.location
                             )
@@ -704,14 +704,14 @@ impl Installer {
             }
             FixAction::RemovePostgres { data_dir, package, .. } => {
                 let what = match package {
-                    Some(p) => format!("The service is stopped and the package {p} is removed. "),
-                    None => "The service is stopped and cleaned up. ".into(),
+                    Some(p) => tf!("The service is stopped and the package {p} is removed. "),
+                    None => t!("The service is stopped and cleaned up. ").into(),
                 };
-                let text = format!("{what}Its data folder {data_dir} is moved to {data_dir}.old-<date>: nothing is deleted.");
+                let text = tf!("{what}Its data folder {data_dir} is moved to {data_dir}.old-<date>: nothing is deleted.");
                 let this = cx.entity().downgrade();
                 crate::modal::alert(window, cx, move |dialog, _, _| {
                     let (this, row, label, action) = (this.clone(), row.clone(), label.clone(), action.clone());
-                    dialog.title("Remove this PostgreSQL?").description(text.clone()).confirm().ok_text("Remove it").on_ok(move |_, _, cx| {
+                    dialog.title(t!("Remove this PostgreSQL?")).description(text.clone()).confirm().ok_text(t!("Remove it")).on_ok(move |_, _, cx| {
                         let (row, label, action) = (row.clone(), label.clone(), action.clone());
                         this.update(cx, |page, cx| page.run_check_fix(row, label, action, cx)).ok();
                         true
@@ -770,7 +770,7 @@ impl Installer {
         text.parse::<u16>()
             .ok()
             .filter(|p| *p > 0)
-            .ok_or_else(|| format!("{name} must be a number between 1 and 65535."))
+            .ok_or_else(|| nf!("{name} must be a number between 1 and 65535."))
     }
 
     /// The text fields of the current step as shown, in their visual order
@@ -803,12 +803,12 @@ impl Installer {
     fn validate(&self, cx: &App) -> Result<(), String> {
         let f = &self.fields;
         match self.step {
-            0 if !self.accepted => Err("Accept the licence agreement to continue.".into()),
+            0 if !self.accepted => Err(n!("Accept the licence agreement to continue.").into()),
             // SENTIENT itself comes only from a package (there is no download
             // of it yet): without one a native install would stop half-way.
             0 if !self.manager_only && self.bundle.is_none() && cfg!(windows) && !self.can_download() => Err(match &self.online {
-                None => "Still looking for the latest SENTIENT online…".to_string(),
-                Some(Err(e)) => format!("There is no SENTIENT package next to Setup and SENTIENT could not be found online ({e}). Connect to the internet, or unzip the SENTIENT package and run SENTIENT-Setup from that folder, or choose “Only the Platform Manager”."),
+                None => n!("Still looking for the latest SENTIENT online…").to_string(),
+                Some(Err(e)) => nf!("There is no SENTIENT package next to Setup and SENTIENT could not be found online ({e}). Connect to the internet, or unzip the SENTIENT package and run SENTIENT-Setup from that folder, or choose “Only the Platform Manager”."),
                 Some(Ok(_)) => String::new(),
             }),
             // Still native after the switch to Docker: no Docker either.
@@ -816,30 +816,30 @@ impl Installer {
                 Err(sentient_installer_core::glibc::and_no_docker(self.native_glibc().blocked().unwrap_or_default(), sentient_installer_core::glibc::Here::Computer))
             }
             1 => match &self.checks {
-                None => Err("The system check is still running.".into()),
+                None => Err(n!("The system check is still running.").into()),
                 Some(rows) if rows.iter().any(|r| r.status == Status::Fail) => {
-                    Err("Resolve the items marked “Blocker” first, then run the check again.".into())
+                    Err(n!("Resolve the items marked “Blocker” first, then run the check again.").into())
                 }
                 Some(_) => Ok(()),
             },
             2 if self.engine == Engine::Docker && self.windows => {
-                if self.value(&f.install_dir, cx).is_empty() { Err("The folder is required.".into()) } else { Ok(()) }
+                if self.value(&f.install_dir, cx).is_empty() { Err(n!("The folder is required.").into()) } else { Ok(()) }
             }
             2 if self.engine == Engine::Docker => self.locations(cx).map(|_| ()),
             2 if self.bundle.is_none() && !self.can_download() => Err(
-                "A native install needs SENTIENT's program files: connect to the internet (they are downloaded), or unzip the SENTIENT package and run SENTIENT-Setup from that folder, or choose Docker, which pulls the image.".into(),
+                n!("A native install needs SENTIENT's program files: connect to the internet (they are downloaded), or unzip the SENTIENT package and run SENTIENT-Setup from that folder, or choose Docker, which pulls the image.").into(),
             ),
             2 => {
                 if self.value(&f.install_dir, cx).is_empty()
                     || (self.windows && self.value(&f.data_dir, cx).is_empty())
                 {
-                    Err("The folders are required.".into())
+                    Err(n!("The folders are required.").into())
                 } else {
                     Ok(())
                 }
             }
             3 => match self.flavor {
-                None => Err("Choose a database.".into()),
+                None => Err(n!("Choose a database.").into()),
                 Some(flavor) => match placement::flavor_runs(self.host(), self.engine, flavor) {
                     Ok(_) => Ok(()),
                     Err(why) => Err(why_line(why)),
@@ -847,17 +847,17 @@ impl Installer {
             },
             4 => {
                 for (field, name) in [
-                    (&f.pg_db, "Database name"),
-                    (&f.pg_user, "Database user"),
-                    (&f.pg_password, "Database password"),
-                    (&f.pg_admin_password, "PostgreSQL admin password"),
+                    (&f.pg_db, t!("Database name")),
+                    (&f.pg_user, t!("Database user")),
+                    (&f.pg_password, t!("Database password")),
+                    (&f.pg_admin_password, t!("PostgreSQL admin password")),
                 ] {
                     if self.value(field, cx).is_empty() {
-                        return Err(format!("{name} is required."));
+                        return Err(nf!("{name} is required."));
                     }
                 }
                 if self.flavor == Some(Flavor::Clickhouse) && self.value(&f.ch_password, cx).is_empty() {
-                    return Err("ClickHouse password is required.".into());
+                    return Err(n!("ClickHouse password is required.").into());
                 }
                 let mut ports = self.database_ports(cx)?;
                 // A kept cluster may still be running on its port (an
@@ -878,11 +878,11 @@ impl Installer {
                 let email = self.value(&f.admin_email, cx);
                 let password = self.value(&f.admin_password, cx);
                 if !email.contains('@') {
-                    Err("Enter the administrator's e-mail address.".into())
+                    Err(n!("Enter the administrator's e-mail address.").into())
                 } else if password.len() < 8 {
-                    Err("The password must be at least 8 characters.".into())
+                    Err(n!("The password must be at least 8 characters.").into())
                 } else if password != self.value(&f.admin_confirm, cx) {
-                    Err("The passwords do not match.".into())
+                    Err(n!("The passwords do not match.").into())
                 } else {
                     Ok(())
                 }
@@ -897,7 +897,7 @@ impl Installer {
             }
             SHORTCUTS if !self.manager_only && self.open_at_signin && self.autologin => {
                 if self.value(&f.autologin_user, cx).is_empty() {
-                    Err("Enter the account that signs in automatically.".into())
+                    Err(n!("Enter the account that signs in automatically.").into())
                 } else {
                     Ok(())
                 }
@@ -1027,10 +1027,10 @@ impl Installer {
     /// The database ports, chosen under Database settings.
     fn database_ports(&self, cx: &App) -> Result<Vec<(u16, String)>, String> {
         let f = &self.fields;
-        let mut ports = vec![(self.port(&f.pg_port, "PostgreSQL port", cx)?, "PostgreSQL".into())];
+        let mut ports = vec![(self.port(&f.pg_port, t!("PostgreSQL port"), cx)?, "PostgreSQL".into())];
         if self.flavor == Some(Flavor::Clickhouse) {
-            ports.push((self.port(&f.ch_http_port, "ClickHouse HTTP port", cx)?, "ClickHouse HTTP".into()));
-            ports.push((self.port(&f.ch_native_port, "ClickHouse native port", cx)?, "ClickHouse native".into()));
+            ports.push((self.port(&f.ch_http_port, t!("ClickHouse HTTP port"), cx)?, t!("ClickHouse HTTP").into()));
+            ports.push((self.port(&f.ch_native_port, t!("ClickHouse native port"), cx)?, t!("ClickHouse native").into()));
         }
         Ok(ports)
     }
@@ -1039,11 +1039,11 @@ impl Installer {
     fn network_ports(&self, cx: &App) -> Result<Vec<(u16, String)>, String> {
         let f = &self.fields;
         Ok(vec![
-            (self.port(&f.http_port, "Web port", cx)?, "HTTP".into()),
-            (self.port(&f.mqtt_port, "MQTT port", cx)?, "MQTT".into()),
-            (self.port(&f.mqtts_port, "MQTT over TLS port", cx)?, "MQTTS".into()),
-            (self.port(&f.coap_port, "CoAP port", cx)?, "CoAP".into()),
-            (self.port(&f.coaps_port, "CoAP over DTLS port", cx)?, "CoAPS".into()),
+            (self.port(&f.http_port, t!("Web port"), cx)?, "HTTP".into()),
+            (self.port(&f.mqtt_port, t!("MQTT port"), cx)?, "MQTT".into()),
+            (self.port(&f.mqtts_port, t!("MQTT over TLS port"), cx)?, "MQTTS".into()),
+            (self.port(&f.coap_port, t!("CoAP port"), cx)?, "CoAP".into()),
+            (self.port(&f.coaps_port, t!("CoAP over DTLS port"), cx)?, "CoAPS".into()),
         ])
     }
 
@@ -1054,7 +1054,7 @@ impl Installer {
         if busy.is_empty() {
             Ok(())
         } else {
-            Err(format!("Already in use: {}. Choose another port, or stop what is listening on it.", busy.join(", ")))
+            Err(nf!("Already in use: {}. Choose another port, or stop what is listening on it.", busy.join(", ")))
         }
     }
 
@@ -1065,8 +1065,8 @@ impl Installer {
             4 => {
                 let mut v = vec![(&f.pg_port, "PostgreSQL")];
                 if self.flavor.is_some_and(|fl| fl.uses_clickhouse()) {
-                    v.push((&f.ch_http_port, "ClickHouse HTTP"));
-                    v.push((&f.ch_native_port, "ClickHouse native"));
+                    v.push((&f.ch_http_port, t!("ClickHouse HTTP")));
+                    v.push((&f.ch_native_port, t!("ClickHouse native")));
                 }
                 v
             }
@@ -1182,7 +1182,7 @@ impl Installer {
             if t.is_empty() {
                 Ok(None)
             } else if !t.starts_with('/') || t.contains(['\'', '"', ',']) {
-                Err(format!("{what}: give a full folder path such as /mnt/disk-a/sentient, without quotes or commas."))
+                Err(nf!("{what}: give a full folder path such as /mnt/disk-a/sentient, without quotes or commas."))
             } else {
                 Ok(Some(t))
             }
@@ -1191,10 +1191,10 @@ impl Installer {
             Ok(sentient_installer_core::distro::Locations {
                 pg: full(self.value(&f.loc_pg, cx), "PostgreSQL")?,
                 ch: full(self.value(&f.loc_ch, cx), "ClickHouse")?,
-                data: full(self.value(&f.loc_data, cx), "SENTIENT files")?,
+                data: full(self.value(&f.loc_data, cx), t!("SENTIENT files"))?,
             })
         } else {
-            Ok(match full(self.value(&f.loc_one, cx), "Data folder")? {
+            Ok(match full(self.value(&f.loc_one, cx), t!("Data folder"))? {
                 Some(dir) => sentient_installer_core::distro::Locations::under(&dir, true),
                 None => Default::default(),
             })
@@ -1203,7 +1203,7 @@ impl Installer {
 
     fn plan(&self, cx: &App) -> Result<plan::InstallPlan, String> {
         let f = &self.fields;
-        let flavor = self.flavor.ok_or("Choose a database.")?;
+        let flavor = self.flavor.ok_or(n!("Choose a database."))?;
         // Where each part runs, on the real OS: the engine the backend
         // installs with, or why this version refuses the choice.
         let host = placement::Host { windows: cfg!(windows), ..self.host() };
@@ -1213,17 +1213,17 @@ impl Installer {
             db_name: self.value(&f.pg_db, cx),
             db_user: self.value(&f.pg_user, cx),
             db_password: self.value(&f.pg_password, cx),
-            pg_port: self.port(&f.pg_port, "PostgreSQL port", cx)?,
+            pg_port: self.port(&f.pg_port, t!("PostgreSQL port"), cx)?,
             ch_db: self.value(&f.ch_db, cx),
             ch_user: self.value(&f.ch_user, cx),
             ch_password: self.value(&f.ch_password, cx),
-            ch_http_port: self.port(&f.ch_http_port, "ClickHouse HTTP port", cx)?,
-            ch_native_port: self.port(&f.ch_native_port, "ClickHouse native port", cx)?,
-            http_port: self.port(&f.http_port, "Web port", cx)?,
-            mqtt_port: self.port(&f.mqtt_port, "MQTT port", cx)?,
-            mqtts_port: self.port(&f.mqtts_port, "MQTT over TLS port", cx)?,
-            coap_port: self.port(&f.coap_port, "CoAP port", cx)?,
-            coaps_port: self.port(&f.coaps_port, "CoAP over DTLS port", cx)?,
+            ch_http_port: self.port(&f.ch_http_port, t!("ClickHouse HTTP port"), cx)?,
+            ch_native_port: self.port(&f.ch_native_port, t!("ClickHouse native port"), cx)?,
+            http_port: self.port(&f.http_port, t!("Web port"), cx)?,
+            mqtt_port: self.port(&f.mqtt_port, t!("MQTT port"), cx)?,
+            mqtts_port: self.port(&f.mqtts_port, t!("MQTT over TLS port"), cx)?,
+            coap_port: self.port(&f.coap_port, t!("CoAP port"), cx)?,
+            coaps_port: self.port(&f.coaps_port, t!("CoAP over DTLS port"), cx)?,
             load_demo: self.load_demo,
             // PostgreSQL and ClickHouse are published on 127.0.0.1 only:
             // nothing outside this computer reaches them (SENTIENT reaches
@@ -1298,7 +1298,7 @@ impl Installer {
         }
         self.chosen_version = Some(version.clone());
         self.online = None;
-        self.sentient_version = format!("{version} (downloaded)").into();
+        self.sentient_version = tf!("{version} (downloaded)").into();
         cx.notify();
         let native = self.engine == Engine::Native;
         let task = cx.spawn(async move |this, cx| {
@@ -1337,7 +1337,7 @@ impl Installer {
     }
 
     fn title(&self, step: usize) -> &'static str {
-        if self.manager_only && step == SHORTCUTS { "Shortcuts" } else { STEPS[step] }
+        if self.manager_only && step == SHORTCUTS { t!("Shortcuts") } else { crate::i18n::t(STEPS[step]) }
     }
 
     fn shown_steps(&self) -> Vec<usize> {
@@ -1442,15 +1442,15 @@ impl Installer {
     fn find_existing(&self, cx: &App) -> Option<String> {
         match self.engine {
             Engine::Native => native::existing_cluster(std::path::Path::new(&self.value(&self.fields.data_dir, cx)))
-                .map(|d| format!("PostgreSQL data from an earlier install is in {}.", d.display())),
+                .map(|d| tf!("PostgreSQL data from an earlier install is in {}.", d.display())),
             Engine::Docker => sentient_installer_core::distro::existing_volume(&DeployConfig::default())
-                .map(|v| format!("The Docker volume {v} holds the database of an earlier install.")),
+                .map(|v| tf!("The Docker volume {v} holds the database of an earlier install.")),
         }
     }
 
     /// The install stopped for the restart that turns WSL 2 on.
     fn restart_required(&self, cx: &App) -> bool {
-        matches!(self.install.read(cx).state(), JobState::Failed(m) if m.as_ref() == plan::RESTART_REQUIRED)
+        matches!(self.install.read(cx).state(), JobState::Failed(m) if m.as_ref() == plan::RESTART_REQUIRED || m.as_ref() == crate::i18n::t(plan::RESTART_REQUIRED))
     }
 
     fn go(&mut self, step: usize, cx: &mut Context<Self>) {
@@ -1467,10 +1467,10 @@ impl Installer {
         crate::modal::alert(window, cx, move |dialog, _, _| {
             let this = this.clone();
             dialog
-                .title("Remove the earlier install?")
-                .description("Its services, PostgreSQL, ClickHouse and every database in them are deleted from this computer. This can't be undone.")
+                .title(t!("Remove the earlier install?"))
+                .description(t!("Its services, PostgreSQL, ClickHouse and every database in them are deleted from this computer. This can't be undone."))
                 .confirm()
-                .ok_text("Remove everything")
+                .ok_text(t!("Remove everything"))
                 .on_ok(move |_, _, cx| {
                     this.update(cx, |page, cx| page.remove_leftovers(cx)).ok();
                     true
@@ -1482,14 +1482,14 @@ impl Installer {
         let installing = self.step == INSTALL && self.install.read(cx).is_running();
         crate::modal::alert(window, cx, move |dialog, _, _| {
             dialog
-                .title("Cancel setup?")
+                .title(t!("Cancel setup?"))
                 .description(if installing {
-                    "The install stops after the current task. Anything already installed stays on this computer; run setup again to finish or remove it."
+                    t!("The install stops after the current task. Anything already installed stays on this computer; run setup again to finish or remove it.")
                 } else {
-                    "Nothing has been installed."
+                    t!("Nothing has been installed.")
                 })
                 .confirm()
-                .ok_text("Cancel setup")
+                .ok_text(t!("Cancel setup"))
                 .on_ok(|_, window, _| {
                     window.remove_window();
                     true
@@ -1664,18 +1664,18 @@ impl Installer {
         let failed = matches!(self.install.read(cx).state(), JobState::Failed(_));
         let restart = self.restart_required(cx);
         let again = match self.install.read(cx).state() {
-            JobState::Failed(m) => crate::ui::retry_label(m, "Retry"),
-            _ => "Retry",
+            JobState::Failed(m) => crate::ui::retry_label(m, t!("Retry")),
+            _ => t!("Retry"),
         };
         // While the page can't be left, Next is off and says why.
         let blocked = if self.step < SUMMARY { self.validate(cx).err() } else { None };
         let next_label = match self.step {
-            SUMMARY => "Install",
-            INSTALL if restart => "Restart now",
+            SUMMARY => t!("Install"),
+            INSTALL if restart => t!("Restart now"),
             INSTALL if failed => again,
-            INSTALL => "Installing…",
-            FINISH => "Close",
-            _ => "Next",
+            INSTALL => t!("Installing…"),
+            FINISH => t!("Close"),
+            _ => t!("Next"),
         };
         h_flex()
             .flex_shrink_0()
@@ -1689,7 +1689,7 @@ impl Installer {
             .child(div().flex_shrink_0().text_size(px(12.)).text_color(theme.muted_foreground).whitespace_nowrap().child({
                 let shown = self.shown_steps();
                 let at = shown.iter().position(|s| *s == self.step).unwrap_or(0);
-                format!("Step {} of {}", at + 1, shown.len())
+                tf!("Step {} of {}", at + 1, shown.len())
             }))
             .map(|bar| match (self.problem.clone(), blocked.clone()) {
                 (Some(problem), _) => bar.child(div().ml_4().flex_1().min_w_0().text_sm().line_clamp(2).text_color(theme.danger).child(problem)),
@@ -1712,7 +1712,7 @@ impl Installer {
                         .outline()
                         
                         
-                        .label("Cancel")
+                        .label(t!("Cancel"))
                         .on_click(cx.listener(|this, _, window, cx| this.confirm_cancel(window, cx))),
                 ))
             })
@@ -1722,7 +1722,7 @@ impl Installer {
                         .outline()
                         
                         
-                        .label("Back")
+                        .label(t!("Back"))
                         .on_click(cx.listener(|this, _, _, cx| this.go(this.previous_shown(this.step), cx))),
                 ))
             })
@@ -1849,16 +1849,16 @@ fn wsl_row(engine: Engine, choice: Option<&sentient_installer_core::wsl::DockerC
     use sentient_installer_core::wsl::DockerChoice;
     let row = |status: Status, state: &str, detail: String| CheckRow {
         id: "wsl".into(),
-        label: "WSL 2".into(),
+        label: t!("WSL 2").into(),
         detail: detail.into(),
         status,
         state: Some(state.to_string().into()),
         fixes: Vec::new(),
     };
     match (engine, choice?) {
-        (_, DockerChoice::Unavailable { reason, .. }) => Some(row(Status::Unknown, "Not possible", format!("{} Docker and ClickHouse are not offered.", reason.trim_end()))),
-        (Engine::Docker, DockerChoice::Ready) => Some(row(Status::Pass, "Ready", "WSL 2 runs. Setup adds its own distribution with Docker Engine.".into())),
-        (Engine::Docker, DockerChoice::TurnOnWsl) => Some(row(Status::Setup, "Will be installed", "Not on yet. Setup turns it on; Windows restarts once.".into())),
+        (_, DockerChoice::Unavailable { reason, .. }) => Some(row(Status::Unknown, t!("Not possible"), tf!("{} Docker and ClickHouse are not offered.", reason.trim_end()))),
+        (Engine::Docker, DockerChoice::Ready) => Some(row(Status::Pass, t!("Ready"), t!("WSL 2 runs. Setup adds its own distribution with Docker Engine.").into())),
+        (Engine::Docker, DockerChoice::TurnOnWsl) => Some(row(Status::Setup, t!("Will be installed"), t!("Not on yet. Setup turns it on; Windows restarts once.").into())),
         (Engine::Native, _) => None,
     }
 }
@@ -1884,29 +1884,29 @@ fn debug_mock_checks(mode: &str) -> Vec<checks::Check> {
         state: state.map(String::from),
         fixes: Vec::new(),
     };
-    let (systemd, disk) = (row("systemd", "systemd", Status::Pass, None, "systemd 259 (259.5-1-arch)"), row("disk", "Disk space", Status::Pass, None, "412 GB free."));
+    let (systemd, disk) = (row("systemd", "systemd", Status::Pass, None, t!("systemd 259 (259.5-1-arch)")), row("disk", t!("Disk space"), Status::Pass, None, t!("412 GB free.")));
     let windows = || {
         vec![
-            row("windows", "Windows", Status::Pass, None, "Windows 11 Pro 24H2 (64-bit)."),
-            row("disk", "Disk space", Status::Pass, None, "412 GB free."),
-            row("ports", "Ports", Status::Pass, None, "8080, 1883, 5683 and 5432 are free."),
+            row("windows", t!("Windows"), Status::Pass, None, t!("Windows 11 Pro 24H2 (64-bit).")),
+            row("disk", t!("Disk space"), Status::Pass, None, t!("412 GB free.")),
+            row("ports", t!("Ports"), Status::Pass, None, t!("8080, 1883, 5683 and 5432 are free.")),
         ]
     };
     match mode {
         "windows-native" => {
             let mut v = windows();
-            v.push(row("postgres", "PostgreSQL 18", Status::Setup, None, "Setup installs it as a Windows service."));
+            v.push(row("postgres", t!("PostgreSQL 18"), Status::Setup, None, t!("Setup installs it as a Windows service.")));
             v
         }
         "windows-docker" => windows(),
         "linux-docker" => {
-            let mut docker = row("docker-daemon", "Docker daemon", Status::Setup, Some("Will be started"), "Docker is installed but not running. The installer will enable and start it.");
-            docker.fixes = vec![sentient_installer_core::diagnose::Fix::Action { label: "Start Docker".into(), action: sentient_installer_core::diagnose::FixAction::StartDocker }];
+            let mut docker = row("docker-daemon", t!("Docker daemon"), Status::Setup, Some(t!("Will be started")), t!("Docker is installed but not running. The installer will enable and start it."));
+            docker.fixes = vec![sentient_installer_core::diagnose::Fix::Action { label: t!("Start Docker").into(), action: sentient_installer_core::diagnose::FixAction::StartDocker }];
             let mut v = vec![systemd, disk, docker];
             checks::share_fixes(&mut v);
             v
         }
-        _ => vec![systemd, disk, row("postgres", "PostgreSQL", Status::Setup, None, "From the distribution's packages.")],
+        _ => vec![systemd, disk, row("postgres", "PostgreSQL", Status::Setup, None, t!("From the distribution's packages."))],
     }
 }
 

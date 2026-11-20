@@ -135,12 +135,12 @@ impl InstallationRecord {
             return Ok(cfg);
         }
         #[allow(unreachable_code)]
-        let missing = |what: &str| format!("The {what} is not in the secret store (%ProgramData%\\SENTIENT\\secrets); this cannot continue without it.");
+        let missing = |what: &str| tf!("The {what} is not in the secret store (%ProgramData%\\SENTIENT\\secrets); this cannot continue without it.");
         cfg.db_password = get(Secret::Database).ok_or_else(|| missing("database password"))?;
-        cfg.pg_superuser_password = get(Secret::PostgresAdmin).ok_or_else(|| missing("PostgreSQL admin password"))?;
+        cfg.pg_superuser_password = get(Secret::PostgresAdmin).ok_or_else(|| missing(n!("PostgreSQL admin password")))?;
         cfg.jwt_secret = get(Secret::Jwt).ok_or_else(|| missing("sign-in signing secret"))?;
         if cfg.flavor == Flavor::Clickhouse {
-            cfg.ch_password = get(Secret::Clickhouse).ok_or_else(|| missing("ClickHouse password"))?;
+            cfg.ch_password = get(Secret::Clickhouse).ok_or_else(|| missing(n!("ClickHouse password")))?;
         }
         Ok(cfg)
     }
@@ -199,8 +199,8 @@ impl InstallationRecord {
 }
 
 /// An adopted Docker stack whose PostgreSQL has no port on this machine.
-pub const PG_NOT_PUBLISHED: &str = "This installation's PostgreSQL is not published on this machine (its compose file has no ports for it), \
-so the Platform Manager cannot connect to it for this. Publish its port 5432 in the compose file, then add the instance again.";
+pub const PG_NOT_PUBLISHED: &str = n!("This installation's PostgreSQL is not published on this machine (its compose file has no ports for it), \
+so the Platform Manager cannot connect to it for this. Publish its port 5432 in the compose file, then add the instance again.");
 
 pub fn record_path() -> PathBuf {
     std::env::var_os("SPM_INSTALLATION_RECORD")
@@ -239,16 +239,16 @@ pub fn version_text(running: Option<&str>, recorded: &str, tag: &str) -> String 
     let known = running.map(String::from).or_else(|| sentient_installer_core::releases::is_numbered(recorded).then(|| recorded.to_string()));
     match known {
         Some(v) if v == tag => v,
-        Some(v) => format!("{v} (image tag {tag})"),
-        None => format!("version unknown (image tag {tag})"),
+        Some(v) => tf!("{v} (image tag {tag})"),
+        None => tf!("version unknown (image tag {tag})"),
     }
 }
 
 pub fn flavor_label(flavor: Flavor) -> &'static str {
     match flavor {
         Flavor::Stock => "PostgreSQL",
-        Flavor::Timescaledb => "PostgreSQL + TimescaleDB",
-        Flavor::Clickhouse => "PostgreSQL + ClickHouse",
+        Flavor::Timescaledb => t!("PostgreSQL + TimescaleDB"),
+        Flavor::Clickhouse => t!("PostgreSQL + ClickHouse"),
     }
 }
 
@@ -289,7 +289,7 @@ impl Platform {
             let services = list
                 .split(',')
                 .filter_map(|e| e.split_once('='))
-                .map(|(n, st)| Service { name: n.into(), running: st == "running", starting: st == "starting", detail: if st == "running" { "Running".into() } else { "Stopped".into() } })
+                .map(|(n, st)| Service { name: n.into(), running: st == "running", starting: st == "starting", detail: if st == "running" { t!("Running").into() } else { t!("Stopped").into() } })
                 .collect();
             return Snapshot { installed: true, serving: serving == "true", services };
         }
@@ -311,13 +311,13 @@ impl Platform {
                 if cfg!(windows) && cfg.flavor == Flavor::Clickhouse {
                     let up = distro::clickhouse_answers(cfg.ch_http_port);
                     services.push(Service {
-                        name: "ClickHouse (WSL2)".into(),
+                        name: t!("ClickHouse (WSL2)").into(),
                         running: up,
                         starting: false,
                         detail: if up {
-                            format!("Answering on 127.0.0.1:{}", cfg.ch_http_port)
+                            tf!("Answering on 127.0.0.1:{}", cfg.ch_http_port)
                         } else {
-                            "Not answering. It starts about half a minute after boot".into()
+                            t!("Not answering. It starts about half a minute after boot").into()
                         },
                     });
                 }
@@ -387,7 +387,7 @@ impl Platform {
     /// name the snapshot lists (anything else is refused).
     pub fn service_control(&self, sink: ProgressFn, name: &str, action: &str) -> Result<(), String> {
         if !self.snapshot().services.iter().any(|s| s.name == name) {
-            return Err(format!("{name} is not one of this installation's services."));
+            return Err(nf!("{name} is not one of this installation's services."));
         }
         match self {
             Platform::Native(_) => native::service_control(sink, name, action),

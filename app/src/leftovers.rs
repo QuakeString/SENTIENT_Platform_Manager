@@ -21,15 +21,15 @@ pub fn find(default_pg_dir: &std::path::Path) -> Vec<String> {
     let disk = clickhouse_wsl::work_dir();
     let size = disk.join("distro").exists().then(|| native::size_words(dir_bytes(&disk)));
     let port = distro::DeployConfig::default().ch_http_port;
-    let holds = if sentient_installer_core::checks::port_busy(port) { format!(", holds port {port}") } else { String::new() };
+    let holds = if sentient_installer_core::checks::port_busy(port) { nf!(", holds port {port}") } else { String::new() };
     match (clickhouse_wsl::is_installed(), size) {
-        (true, Some(size)) => found.push(format!("ClickHouse in WSL2 with its account ({}) and disk ({size}){holds}", clickhouse_wsl::ACCOUNT)),
-        (true, None) => found.push(format!("ClickHouse in WSL2 and its account ({}){holds}", clickhouse_wsl::ACCOUNT)),
-        (false, Some(size)) => found.push(format!("ClickHouse's disk in {} ({size})", disk.display())),
+        (true, Some(size)) => found.push(nf!("ClickHouse in WSL2 with its account ({}) and disk ({size}){holds}", clickhouse_wsl::ACCOUNT)),
+        (true, None) => found.push(nf!("ClickHouse in WSL2 and its account ({}){holds}", clickhouse_wsl::ACCOUNT)),
+        (false, Some(size)) => found.push(nf!("ClickHouse's disk in {} ({size})", disk.display())),
         (false, None) => {}
     }
     if distro::is_registered() {
-        found.push(format!("The WSL distribution “{}” of an earlier Docker install", distro::DISTRO));
+        found.push(nf!("The WSL distribution “{}” of an earlier Docker install", distro::DISTRO));
     }
     found
 }
@@ -40,10 +40,10 @@ pub fn find(_: &std::path::Path) -> Vec<String> {
     #[cfg(debug_assertions)]
     if std::env::var_os("SPM_DEBUG_LEFTOVERS").is_some() {
         return vec![
-            "SENTIENT service (SentientServer): installed, stopped".into(),
-            "PostgreSQL service (sentient-postgresql): running, holds port 5432".into(),
+            n!("SENTIENT service (SentientServer): installed, stopped").into(),
+            n!("PostgreSQL service (sentient-postgresql): running, holds port 5432").into(),
             "PostgreSQL data in C:\\PostgreSQL\\18 (1.2 GB)".into(),
-            "ClickHouse in WSL2 with its account (sentient-ch) and disk (310 MB), holds port 8123".into(),
+            n!("ClickHouse in WSL2 with its account (sentient-ch) and disk (310 MB), holds port 8123").into(),
         ];
     }
     Vec::new()
@@ -78,12 +78,12 @@ pub fn remove(default_pg_dir: std::path::PathBuf, sink: ProgressFn) -> Result<()
     }
     let defaults = distro::DeployConfig::default();
     clickhouse_wsl::stop_account_wsl(&sink, &[defaults.ch_http_port, defaults.ch_native_port]);
-    for task in [clickhouse_wsl::KEEPALIVE_TASK, "SENTIENT ClickHouse job"] {
+    for task in [clickhouse_wsl::KEEPALIVE_TASK, n!("SENTIENT ClickHouse job")] {
         let _ = std::process::Command::new("schtasks.exe").args(["/delete", "/tn", task, "/f"]).output();
     }
     let disk = clickhouse_wsl::work_dir();
     if disk.exists() {
-        sink(Progress::Step { name: format!("Deleting {}", disk.display()) });
+        sink(Progress::Step { name: nf!("Deleting {}", disk.display()) });
         let mut gone = false;
         for attempt in 0..10u64 {
             if std::fs::remove_dir_all(&disk).is_ok() || !disk.exists() {
@@ -93,20 +93,20 @@ pub fn remove(default_pg_dir: std::path::PathBuf, sink: ProgressFn) -> Result<()
             std::thread::sleep(std::time::Duration::from_millis(500 * (attempt + 1)));
         }
         if !gone {
-            return Err(format!("Could not delete {} (still in use). Restart Windows and press Remove again.", disk.display()));
+            return Err(nf!("Could not delete {} (still in use). Restart Windows and press Remove again.", disk.display()));
         }
     }
     if distro::is_registered() {
-        sink(Progress::Step { name: format!("Removing the WSL distribution “{}”", distro::DISTRO) });
+        sink(Progress::Step { name: nf!("Removing the WSL distribution “{}”", distro::DISTRO) });
         let _ = std::process::Command::new("wsl.exe").args(["--terminate", distro::DISTRO]).output();
         let _ = std::process::Command::new("wsl.exe").args(["--unregister", distro::DISTRO]).output();
     }
     crate::secrets::forget_all();
-    sink(Progress::Done { message: "The earlier install is removed.".into() });
+    sink(Progress::Done { message: n!("The earlier install is removed.").into() });
     Ok(())
 }
 
 #[cfg(not(windows))]
 pub fn remove(_: std::path::PathBuf, _: ProgressFn) -> Result<(), String> {
-    Err("Removing an earlier install from Setup is for Windows.".into())
+    Err(n!("Removing an earlier install from Setup is for Windows.").into())
 }

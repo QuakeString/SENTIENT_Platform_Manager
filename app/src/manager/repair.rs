@@ -70,7 +70,7 @@ impl RepairPage {
         let has_record = self.gateway_record.is_some();
         let button = crate::ui::button("repair-gw-remove")
             .danger()
-            .label("Remove the Gateway")
+            .label(t!("Remove the Gateway"))
             .disabled(busy)
             .on_click(cx.listener(move |this, _, _, cx| {
                 let page = cx.entity().downgrade();
@@ -208,21 +208,21 @@ impl RepairPage {
         let keep = self.keep_data;
         let (title, text, ok) = match action {
             Action::Repair => (
-                "Repair SENTIENT?",
-                "The services and their configuration are written again and SENTIENT is restarted. Data and settings are kept.",
-                "Repair",
+                t!("Repair SENTIENT?"),
+                t!("The services and their configuration are written again and SENTIENT is restarted. Data and settings are kept."),
+                t!("Repair"),
             ),
             Action::Uninstall if keep => (
-                "Uninstall SENTIENT?",
-                "SENTIENT and its services are removed. The database is kept and can be used by a new install. The Platform Manager stays.",
-                "Uninstall",
+                t!("Uninstall SENTIENT?"),
+                t!("SENTIENT and its services are removed. The database is kept and can be used by a new install. The Platform Manager stays."),
+                t!("Uninstall"),
             ),
             // Confirmed in their own dialogs.
             Action::TakeOver | Action::RemoveGateway => return,
             Action::Uninstall => (
-                "Uninstall SENTIENT and delete its data?",
-                "SENTIENT, its databases and everything kept are removed. This can't be undone. The Platform Manager stays.",
-                "Delete everything",
+                t!("Uninstall SENTIENT and delete its data?"),
+                t!("SENTIENT, its databases and everything kept are removed. This can't be undone. The Platform Manager stays."),
+                t!("Delete everything"),
             ),
         };
         crate::modal::alert(window, cx, move |dialog, _, _| {
@@ -254,8 +254,8 @@ impl Render for RepairPage {
         let theme = cx.theme().clone();
         let page = ui::page(
             &theme,
-            "Repair and uninstall",
-            "Write the services and their configuration again, or remove SENTIENT from this computer.",
+            t!("Repair and uninstall"),
+            t!("Write the services and their configuration again, or remove SENTIENT from this computer."),
         );
         if let Some(view) = self.job_view(cx) {
             return page.child(view);
@@ -279,12 +279,12 @@ impl Render for RepairPage {
             let store = crate::store::is_store();
             let (title, text, help) = if store {
                 (
-                    "Remove the Platform Manager's helper",
-                    "Removes what the Platform Manager added outside its app.",
+                    t!("Remove the Platform Manager's helper"),
+                    t!("Removes what the Platform Manager added outside its app."),
                     "Its administrator copy in ProgramData and its sign-in task go. To uninstall the app itself, right-click it in Start and choose Uninstall.",
                 )
             } else {
-                ("Remove the Platform Manager", "Removes this program from this computer.", "Its settings, saved servers and logs go too. SENTIENT, its database and backups are not touched.")
+                (t!("Remove the Platform Manager"), t!("Removes this program from this computer."), t!("Its settings, saved servers and logs go too. SENTIENT, its database and backups are not touched."))
             };
             return page.children(gw).children(gw_outcome).child(
                 ui::panel(&theme)
@@ -296,7 +296,7 @@ impl Render for RepairPage {
                             .child(div().text_sm().text_color(theme.muted_foreground).child(text))
                             .child(ui::info("remove-manager-help".into(), help.into())),
                     )
-                    .child(ui::button_row(vec![crate::ui::button("remove-manager").outline().label(if store { "Remove the helper" } else { "Remove the Platform Manager" }).on_click(|_, window, cx| crate::standalone::remove_manager(window, cx)).into_any_element()])),
+                    .child(ui::button_row(vec![crate::ui::button("remove-manager").outline().label(if store { t!("Remove the helper") } else { t!("Remove the Platform Manager") }).on_click(|_, window, cx| crate::standalone::remove_manager(window, cx)).into_any_element()])),
             );
         }
         let job = self.job.read(cx);
@@ -315,15 +315,15 @@ impl Render for RepairPage {
         page.when_some(external, |page, ext| {
             page.child(
                 ui::panel(&theme)
-                    .child(div().font_weight(FontWeight::MEDIUM).child("Take over the compose file"))
+                    .child(div().font_weight(FontWeight::MEDIUM).child(t!("Take over the compose file")))
                     .child(
                         h_flex()
                             .gap_1()
                             .items_center()
-                            .child(div().text_sm().text_color(theme.muted_foreground).child("SENTIENT runs from a compose file the Platform Manager did not write."))
+                            .child(div().text_sm().text_color(theme.muted_foreground).child(t!("SENTIENT runs from a compose file the Platform Manager did not write.")))
                             .child(ui::info(
                                 "take-over-help".into(),
-                                format!(
+                                tf!(
                                     "Its compose file ({}) is not changed by the Platform Manager. Changing settings or the database type needs the Platform Manager's own compose file: the same containers on the same data.",
                                     ext.files.join(", ")
                                 )
@@ -334,7 +334,7 @@ impl Render for RepairPage {
                         h_flex().child(
                             crate::ui::button("take-over")
                                 .outline()
-                                .label("Take over the compose file")
+                                .label(t!("Take over the compose file"))
                                 .disabled(done)
                                 .on_click(cx.listener(|this, _, _, cx| this.open_take_over(cx))),
                         ),
@@ -343,15 +343,15 @@ impl Render for RepairPage {
         })
         .child(
             ui::panel(&theme)
-                .child(div().font_weight(FontWeight::MEDIUM).child("Repair"))
+                .child(div().font_weight(FontWeight::MEDIUM).child(t!("Repair")))
                 .child(div().text_sm().text_color(theme.muted_foreground).child(
-                    "For a SENTIENT that does not start or a service that went missing: the services and their configuration are written again from this installation's record, and SENTIENT is started. Data and settings are kept.",
+                    t!("For a SENTIENT that does not start or a service that went missing: the services and their configuration are written again from this installation's record, and SENTIENT is started. Data and settings are kept."),
                 ))
                 .child(
                     h_flex().child(
                         crate::ui::button("repair")
                             .outline()
-                            .label("Repair")
+                            .label(t!("Repair"))
                             .disabled(done)
                             .on_click(cx.listener(|this, _, window, cx| this.confirm(Action::Repair, window, cx))),
                     ),
@@ -361,21 +361,21 @@ impl Render for RepairPage {
         .children(gw_outcome)
         .child(
             ui::panel(&theme)
-                .child(div().font_weight(FontWeight::MEDIUM).child("Uninstall"))
+                .child(div().font_weight(FontWeight::MEDIUM).child(t!("Uninstall")))
                 .child(
                     h_flex()
                         .gap_1()
                         .items_center()
-                        .child(div().text_sm().text_color(theme.muted_foreground).child(if crate::store::is_store() { "Choose what to remove: SENTIENT, its databases, the shortcuts." } else { "Choose what to remove: SENTIENT, its databases, the shortcuts, the Platform Manager." }))
-                        .child(ui::info("uninstall-help".into(), "Each part has its own switch, and each database a Keep its data switch, on by default. A database Setup did not install is never removed. Afterwards the Platform Manager checks that nothing is left and lists what is, with the command to remove it.".into())),
+                        .child(div().text_sm().text_color(theme.muted_foreground).child(if crate::store::is_store() { t!("Choose what to remove: SENTIENT, its databases, the shortcuts.") } else { t!("Choose what to remove: SENTIENT, its databases, the shortcuts, the Platform Manager.") }))
+                        .child(ui::info("uninstall-help".into(), t!("Each part has its own switch, and each database a Keep its data switch, on by default. A database Setup did not install is never removed. Afterwards the Platform Manager checks that nothing is left and lists what is, with the command to remove it.").into())),
                 )
-                .child(ui::button_row(vec![crate::ui::button("uninstall").danger().label("Uninstall").disabled(done).on_click(cx.listener(|this, _, _, cx| this.open_uninstall(cx))).into_any_element()])),
+                .child(ui::button_row(vec![crate::ui::button("uninstall").danger().label(t!("Uninstall")).disabled(done).on_click(cx.listener(|this, _, _, cx| this.open_uninstall(cx))).into_any_element()])),
         )
         .when(uninstalled, |page| {
             page.child(
                 ui::panel(&theme)
                     .children(outcome.map(|(tone, text)| crate::diagnosis::outcome(&theme, tone, text, self.job.read(cx))))
-                    .child(h_flex().child(crate::ui::button("close").primary().label("Close").on_click(|_, window, _| window.remove_window()))),
+                    .child(h_flex().child(crate::ui::button("close").primary().label(t!("Close")).on_click(|_, window, _| window.remove_window()))),
             )
         })
     }
@@ -391,13 +391,13 @@ impl RepairPage {
             return None;
         }
         let title = match action {
-            Action::Repair => "Repairing SENTIENT",
-            Action::Uninstall if self.keep_data => "Uninstalling SENTIENT (the database is kept)",
-            Action::Uninstall => "Uninstalling SENTIENT and deleting its data",
-            _ => "Taking over the compose file",
+            Action::Repair => t!("Repairing SENTIENT"),
+            Action::Uninstall if self.keep_data => t!("Uninstalling SENTIENT (the database is kept)"),
+            Action::Uninstall => t!("Uninstalling SENTIENT and deleting its data"),
+            _ => t!("Taking over the compose file"),
         };
         let ended_uninstall = action == Action::Uninstall && matches!(job.state(), JobState::Done(_));
-        let back = crate::manager::jobview::back_button("repair-run-back", "Repair and uninstall", {
+        let back = crate::manager::jobview::back_button("repair-run-back", t!("Repair and uninstall"), {
             let me = cx.entity().downgrade();
             move |_, cx| {
                 me.update(cx, |p, cx| {
@@ -411,7 +411,7 @@ impl RepairPage {
         });
         let mut acts = vec![back];
         if ended_uninstall {
-            acts.push(crate::ui::button("close").primary().label("Close").on_click(|_, window, _| window.remove_window()).into_any_element());
+            acts.push(crate::ui::button("close").primary().label(t!("Close")).on_click(|_, window, _| window.remove_window()).into_any_element());
         }
         Some(crate::manager::jobview::JobView::new("repair-run", title, &self.job).actions(acts).render(cx))
     }

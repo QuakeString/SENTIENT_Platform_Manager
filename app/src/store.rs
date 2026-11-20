@@ -216,29 +216,29 @@ pub fn hand_over_plan(running: Option<bool>, current: bool) -> HandOver {
 pub fn msix_version(version: &str) -> Result<String, String> {
     let v = version.trim().trim_start_matches('v');
     if v.contains('-') || v.contains('+') {
-        return Err(format!("{version} is a pre-release: only final releases (like 0.9.4) go to the Microsoft Store."));
+        return Err(tf!("{version} is a pre-release: only final releases (like 0.9.4) go to the Microsoft Store."));
     }
     let parts: Vec<&str> = v.split('.').collect();
     if !(3..=4).contains(&parts.len()) {
-        return Err(format!("{version} is not a version of three numbers (like 0.9.4)."));
+        return Err(tf!("{version} is not a version of three numbers (like 0.9.4)."));
     }
     let mut nums = Vec::new();
     for p in &parts {
         if p.is_empty() || !p.chars().all(|c| c.is_ascii_digit()) {
-            return Err(format!("{version} is not a version of numbers only (like 0.9.4)."));
+            return Err(tf!("{version} is not a version of numbers only (like 0.9.4)."));
         }
-        let n: u32 = p.parse().map_err(|_| format!("{version}: {p} is too large."))?;
+        let n: u32 = p.parse().map_err(|_| tf!("{version}: {p} is too large."))?;
         if n > 65535 {
-            return Err(format!("{version}: {p} is larger than 65535, the largest number a package version may have."));
+            return Err(tf!("{version}: {p} is larger than 65535, the largest number a package version may have."));
         }
         nums.push(n);
     }
     if nums.len() == 4 && nums[3] != 0 {
-        return Err(format!("{version}: the fourth number must be 0 (the Microsoft Store keeps it for itself)."));
+        return Err(tf!("{version}: the fourth number must be 0 (the Microsoft Store keeps it for itself)."));
     }
     nums.truncate(3);
     if nums[0] == 0 && nums[1] == 0 && nums[2] == 0 {
-        return Err("0.0.0 is not a package version.".into());
+        return Err(t!("0.0.0 is not a package version.").into());
     }
     Ok(format!("{}.{}.{}.0", nums[0], nums[1], nums[2]))
 }
@@ -277,20 +277,20 @@ pub fn fill_manifest(template: &str, values: &[(&str, &str)]) -> Result<String, 
     while let Some(start) = rest.find("{{") {
         out.push_str(&rest[..start]);
         let after = &rest[start + 2..];
-        let end = after.find("}}").ok_or("A {{ without its }} in the manifest template.")?;
+        let end = after.find("}}").ok_or(t!("A {{ without its }} in the manifest template."))?;
         let name = after[..end].trim();
         match values.iter().position(|(k, _)| *k == name) {
             Some(i) => {
                 out.push_str(&xml_escape(values[i].1));
                 used[i] = true;
             }
-            None => return Err(format!("The manifest template has {{{{{name}}}}}, which has no value.")),
+            None => return Err(tf!("The manifest template has {{{{{name}}}}}, which has no value.")),
         }
         rest = &after[end + 2..];
     }
     out.push_str(rest);
     if let Some(i) = used.iter().position(|u| !u) {
-        return Err(format!("No {{{{{}}}}} in the manifest template.", values[i].0));
+        return Err(tf!("No {{{{{}}}}} in the manifest template.", values[i].0));
     }
     Ok(out)
 }
@@ -299,7 +299,7 @@ pub fn fill_manifest(template: &str, values: &[(&str, &str)]) -> Result<String, 
 /// --identity-name <name> --publisher <CN=…> --publisher-display-name <name>`:
 /// the package's AppxManifest.xml (scripts/package-msix.ps1).
 pub fn manifest_job(args: &[String]) -> Result<String, String> {
-    let get = |flag: &str| args.windows(2).find(|w| w[0] == flag).map(|w| w[1].clone()).ok_or(format!("{flag} is missing"));
+    let get = |flag: &str| args.windows(2).find(|w| w[0] == flag).map(|w| w[1].clone()).ok_or(tf!("{flag} is missing"));
     let template = std::fs::read_to_string(get("--template")?).map_err(|e| format!("read the template: {e}"))?;
     let version = msix_version(&get("--version")?)?;
     let name = get("--identity-name")?;
@@ -436,14 +436,14 @@ pub fn hand_over(args: &[String]) {
         match stage_copy() {
             Ok(staged) => (staged, vec![STAGE_ARG.to_string()]),
             Err(e) => {
-                win::tell(&format!("The Platform Manager could not prepare its administrator copy: {e}"));
+                win::tell(&tf!("The Platform Manager could not prepare its administrator copy: {e}"));
                 return;
             }
         }
     } else if helper_exe().is_file() {
         (helper_exe(), Vec::new())
     } else {
-        win::tell("The Platform Manager's administrator copy is missing. Start the Platform Manager again.");
+        win::tell(t!("The Platform Manager's administrator copy is missing. Start the Platform Manager again."));
         return;
     };
     argv.extend(args.iter().cloned());
@@ -455,7 +455,7 @@ pub fn hand_over(args: &[String]) {
 /// Copy this program to a new folder under the staging folder.
 #[cfg(windows)]
 fn stage_copy() -> Result<PathBuf, String> {
-    let me = std::env::current_exe().map_err(|e| format!("locate this program: {e}"))?;
+    let me = std::env::current_exe().map_err(|e| tf!("locate this program: {e}"))?;
     // Earlier staged copies (each in its own folder; one still running is
     // left for the next time).
     if let Ok(entries) = std::fs::read_dir(staging_dir()) {
@@ -476,19 +476,19 @@ fn stage_copy() -> Result<PathBuf, String> {
 #[cfg(windows)]
 pub fn finish_stage(args: &[String]) -> i32 {
     if !crate::elevate::is_admin() {
-        win::tell("The Platform Manager's administrator copy needs administrator rights.");
+        win::tell(t!("The Platform Manager's administrator copy needs administrator rights."));
         return 2;
     }
     match crate::self_install::install_manager() {
         Ok(helper) => match crate::self_install::manager_command(&helper).args(args).spawn() {
             Ok(_) => 0,
             Err(e) => {
-                win::tell(&format!("The Platform Manager could not start ({}): {e}", helper.display()));
+                win::tell(&tf!("The Platform Manager could not start ({}): {e}", helper.display()));
                 1
             }
         },
         Err(e) => {
-            win::tell(&format!("The Platform Manager could not put its administrator copy in place: {e}"));
+            win::tell(&tf!("The Platform Manager could not put its administrator copy in place: {e}"));
             1
         }
     }
@@ -506,7 +506,7 @@ pub fn lock_helper_dir(dir: &Path) -> Result<(), String> {
     use std::os::windows::process::CommandExt;
     for d in [Some(dir), dir.parent()].into_iter().flatten() {
         if std::fs::symlink_metadata(d).is_ok_and(|m| m.file_type().is_symlink()) {
-            return Err(format!("{} is a link to another folder; remove it and start the Platform Manager again", d.display()));
+            return Err(tf!("{} is a link to another folder; remove it and start the Platform Manager again", d.display()));
         }
     }
     let icacls = |args: Vec<String>| -> Result<(), String> {
@@ -518,7 +518,7 @@ pub fn lock_helper_dir(dir: &Path) -> Result<(), String> {
         if out.status.success() {
             Ok(())
         } else {
-            Err(format!(
+            Err(tf!(
                 "restrict access to {}: {} {}",
                 dir.display(),
                 String::from_utf8_lossy(&out.stderr).trim(),
@@ -533,7 +533,7 @@ pub fn lock_helper_dir(dir: &Path) -> Result<(), String> {
             if !helper_dir_keeps(&e.file_name().to_string_lossy()) {
                 let p = e.path();
                 let gone = if p.is_dir() && !e.file_type().is_ok_and(|t| t.is_symlink()) { std::fs::remove_dir_all(&p) } else { std::fs::remove_file(&p).or_else(|_| std::fs::remove_dir(&p)) };
-                gone.map_err(|err| format!("remove {} from the helper folder: {err}", p.display()))?;
+                gone.map_err(|err| tf!("remove {} from the helper folder: {err}", p.display()))?;
             }
         }
     }
@@ -606,14 +606,14 @@ pub fn probe_job(args: &[String]) -> i32 {
     let label = args.get(1).cloned().unwrap_or_else(|| format!("{:?}", flavour()).to_lowercase());
     let mut r = Vec::<String>::new();
     let exe = std::env::current_exe().map(|e| e.display().to_string()).unwrap_or_default();
-    r.push(format!("label: {label}"));
-    r.push(format!("program: {exe}"));
-    r.push(format!("flavour: {:?}", flavour()));
-    r.push(format!("version: {} ({})", crate::updates::manager_version(), crate::updates::build_commit()));
-    r.push(format!("administrator: {}", crate::elevate::is_admin()));
-    r.push(format!("package full name: {}", package_full_name().unwrap_or_else(|| "none (no package identity)".into())));
-    r.push(format!("package family name: {}", package_family_name().unwrap_or_else(|| "none".into())));
-    r.push(format!("in a WindowsApps folder: {}", path_in_package(&exe)));
+    r.push(tf!("label: {label}"));
+    r.push(tf!("program: {exe}"));
+    r.push(tf!("flavour: {:?}", flavour()));
+    r.push(tf!("version: {} ({})", crate::updates::manager_version(), crate::updates::build_commit()));
+    r.push(tf!("administrator: {}", crate::elevate::is_admin()));
+    r.push(tf!("package full name: {}", package_full_name().unwrap_or_else(|| t!("none (no package identity)").into())));
+    r.push(tf!("package family name: {}", package_family_name().unwrap_or_else(|| "none".into())));
+    r.push(tf!("in a WindowsApps folder: {}", path_in_package(&exe)));
     let stamp = format!("{label} pid={} at {}", std::process::id(), chrono::Local::now().format("%Y-%m-%d %H:%M:%S"));
     probe_platform(&mut r, &stamp);
     let text = r.join("\n") + "\n";
@@ -639,25 +639,25 @@ fn probe_platform(r: &mut Vec<String>, stamp: &str) {
     use std::os::windows::io::AsRawHandle;
     // The file.
     let file = program_data().join("SENTIENT").join("msix-probe.txt");
-    r.push(format!("file: {}", file.display()));
-    r.push(format!("  before: {}", std::fs::read_to_string(&file).map(|t| t.trim().to_string()).unwrap_or_else(|e| format!("not readable ({e})"))));
+    r.push(tf!("file: {}", file.display()));
+    r.push(tf!("  before: {}", std::fs::read_to_string(&file).map(|t| t.trim().to_string()).unwrap_or_else(|e| tf!("not readable ({e})"))));
     let _ = std::fs::create_dir_all(file.parent().unwrap_or(Path::new(".")));
     match std::fs::write(&file, format!("{stamp}\n")) {
         Ok(()) => r.push("  written".into()),
         Err(e) => r.push(format!("  write failed: {e}")),
     }
-    r.push(format!("  read back: {}", std::fs::read_to_string(&file).map(|t| t.trim().to_string()).unwrap_or_else(|e| format!("not readable ({e})"))));
+    r.push(format!("  read back: {}", std::fs::read_to_string(&file).map(|t| t.trim().to_string()).unwrap_or_else(|e| tf!("not readable ({e})"))));
     if let Ok(f) = std::fs::File::open(&file) {
         let real = reg::final_path(f.as_raw_handle() as isize).unwrap_or_else(|| "unknown".into());
         let redirected = real.to_lowercase().contains("\\packages\\") || real.to_lowercase().contains("\\localcache\\");
-        r.push(format!("  really at: {real}{}", if redirected { "  (REDIRECTED into the package's private folder)" } else { "" }));
+        r.push(tf!("  really at: {real}{}", if redirected { t!("  (REDIRECTED into the package's private folder)") } else { "" }));
     }
     // The package's private folders, when there is a package family.
     if let (Some(pfn), Some(local)) = (package_family_name(), std::env::var_os("LOCALAPPDATA")) {
         let base = PathBuf::from(local).join("Packages").join(&pfn);
         for sub in ["LocalCache", "SystemAppData\\Helium"] {
             let p = base.join(sub);
-            r.push(format!("private {sub}: {} ({})", p.display(), if p.exists() { "exists" } else { "absent" }));
+            r.push(tf!("private {sub}: {} ({})", p.display(), if p.exists() { "exists" } else { "absent" }));
         }
         let hits = find_named(&base.join("LocalCache"), "msix-probe.txt", 8);
         r.push(format!("  msix-probe.txt copies under LocalCache: {}", if hits.is_empty() { "none".into() } else { hits.join("; ") }));
@@ -665,8 +665,8 @@ fn probe_platform(r: &mut Vec<String>, stamp: &str) {
     // The registry.
     for (hive, name) in [(reg::HKLM, "HKLM"), (reg::HKCU, "HKCU")] {
         let key = r"SOFTWARE\SENTIENT";
-        r.push(format!("registry: {name}\\{key} MsixProbe"));
-        r.push(format!("  before: {}", reg::get(hive, key, "MsixProbe").unwrap_or_else(|e| format!("not readable ({e})"))));
+        r.push(tf!("registry: {name}\\{key} MsixProbe"));
+        r.push(tf!("  before: {}", reg::get(hive, key, "MsixProbe").unwrap_or_else(|e| tf!("not readable ({e})"))));
         match reg::set(hive, key, "MsixProbe", stamp) {
             Ok(real) => {
                 r.push("  written".into());
@@ -674,7 +674,7 @@ fn probe_platform(r: &mut Vec<String>, stamp: &str) {
             }
             Err(e) => r.push(format!("  write failed: {e}")),
         }
-        r.push(format!("  read back: {}", reg::get(hive, key, "MsixProbe").unwrap_or_else(|e| format!("not readable ({e})"))));
+        r.push(format!("  read back: {}", reg::get(hive, key, "MsixProbe").unwrap_or_else(|e| tf!("not readable ({e})"))));
     }
 }
 
@@ -685,11 +685,11 @@ fn probe_platform(r: &mut Vec<String>, stamp: &str) {
 #[cfg_attr(not(windows), allow(dead_code))]
 fn registry_line(real: &str, packaged: bool) -> String {
     if real.to_uppercase().starts_with(r"\REGISTRY\A\") {
-        format!("  key name: {real}  (VIRTUALISED: a private hive)")
+        tf!("  key name: {real}  (VIRTUALISED: a private hive)")
     } else if packaged {
-        format!("  key name as this process sees it: {real}. For a packaged process this may be the package's private hive: check the key from a command prompt outside the package")
+        tf!("  key name as this process sees it: {real}. For a packaged process this may be the package's private hive: check the key from a command prompt outside the package")
     } else {
-        format!("  key at: {real}")
+        tf!("  key at: {real}")
     }
 }
 

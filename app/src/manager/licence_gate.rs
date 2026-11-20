@@ -82,10 +82,10 @@ pub fn pill(theme: &gpui_kit::component::Theme, read: &LicenceRead, build: &str)
 /// licence"): every entry but the running one has one, whatever is known.
 pub fn menu_note(read: &LicenceRead, build: &str) -> &'static str {
     match licence_version::coverage(read, build) {
-        Coverage::Covered => " · Covered by your licence",
-        Coverage::NeedsNew => " · Needs a new licence",
-        Coverage::NoLicence => " · No licence installed",
-        Coverage::NotChecked => " · Licence not checked",
+        Coverage::Covered => t!(" · Covered by your licence"),
+        Coverage::NeedsNew => t!(" · Needs a new licence"),
+        Coverage::NoLicence => t!(" · No licence installed"),
+        Coverage::NotChecked => t!(" · Licence not checked"),
     }
 }
 
@@ -93,10 +93,10 @@ pub fn menu_note(read: &LicenceRead, build: &str) -> &'static str {
 /// installed licence covers ("Licence: covers SENTIENT 4.4").
 pub fn row_note(read: &LicenceRead) -> String {
     match read {
-        LicenceRead::NotRead | LicenceRead::Failed(_) => "Licence: not checked".into(),
-        LicenceRead::Read(Licence::NotInstalled) => "Licence: none installed".into(),
-        LicenceRead::Read(Licence::Allowed(v)) if v.is_empty() => "Licence: covers no SENTIENT version".into(),
-        LicenceRead::Read(Licence::Allowed(v)) => format!("Licence: covers SENTIENT {}", v.join(", ")),
+        LicenceRead::NotRead | LicenceRead::Failed(_) => t!("Licence: not checked").into(),
+        LicenceRead::Read(Licence::NotInstalled) => t!("Licence: none installed").into(),
+        LicenceRead::Read(Licence::Allowed(v)) if v.is_empty() => t!("Licence: covers no SENTIENT version").into(),
+        LicenceRead::Read(Licence::Allowed(v)) => tf!("Licence: covers SENTIENT {}", v.join(", ")),
     }
 }
 
@@ -125,19 +125,19 @@ pub fn guard(ask: Rc<Ask>, read: LicenceRead, window: &mut Window, cx: &mut App)
         Gate::NotCovered { allowed } => {
             let red = licence_version::not_covered_text(&allowed, &ask.version, &ask.build);
             let hint = if allowed.is_empty() {
-                "SENTIENT refuses a licence with an empty list of allowed versions.".to_string()
+                t!("SENTIENT refuses a licence with an empty list of allowed versions.").to_string()
             } else {
-                "Request the licence first under Licence, or update to a version your licence covers.".to_string()
+                t!("Request the licence first under Licence, or update to a version your licence covers.").to_string()
             };
-            typed(ask.clone(), format!("Update to {} without a licence for it?", ask.version), None, red, hint, false, window, cx);
+            typed(ask.clone(), tf!("Update to {} without a licence for it?", ask.version), None, red, hint, false, window, cx);
         }
         Gate::Unchecked => {
             let why = match &read {
-                LicenceRead::Failed(e) if !e.is_empty() && e != CANCELLED => format!("The Platform Manager could not read which versions this instance's licence covers: {e}"),
-                _ => "The sign-in was cancelled, so the Platform Manager could not read which versions this instance's licence covers.".to_string(),
+                LicenceRead::Failed(e) if !e.is_empty() && e != CANCELLED => tf!("The Platform Manager could not read which versions this instance's licence covers: {e}"),
+                _ => t!("The sign-in was cancelled, so the Platform Manager could not read which versions this instance's licence covers.").to_string(),
             };
-            let red = format!("If the licence does not cover {}, SENTIENT stops working after the update until you have a licence for it.", ask.version);
-            typed(ask, "Your licence could not be checked".into(), Some(why), red, String::new(), true, window, cx);
+            let red = tf!("If the licence does not cover {}, SENTIENT stops working after the update until you have a licence for it.", ask.version);
+            typed(ask, t!("Your licence could not be checked").into(), Some(why), red, String::new(), true, window, cx);
         }
     }
 }
@@ -146,17 +146,17 @@ pub fn guard(ask: Rc<Ask>, read: LicenceRead, window: &mut Window, cx: &mut App)
 /// what the licence says about it, and Update.
 pub fn confirm_update(place: &str, version: &str, installed: &str, read: &LicenceRead, build: &str, go: Rc<dyn Fn(&mut App)>, window: &mut Window, cx: &mut App) {
     let licence = match licence_version::coverage(read, build) {
-        Coverage::Covered => "Your licence covers this version. ",
-        Coverage::NoLicence => "No licence is installed. ",
+        Coverage::Covered => t!("Your licence covers this version. "),
+        Coverage::NoLicence => t!("No licence is installed. "),
         _ => "",
     };
-    let text = format!(
+    let text = tf!(
         "{licence}SENTIENT on {place} stops for a few minutes while it updates to {version}, and goes back to {installed} by itself if the update fails."
     );
-    let title = format!("Update SENTIENT to {version}?");
+    let title = tf!("Update SENTIENT to {version}?");
     crate::modal::alert(window, cx, move |dialog, _, _| {
         let go = go.clone();
-        dialog.title(title.clone()).description(text.clone()).confirm().ok_text("Update").on_ok(move |_, _, cx| {
+        dialog.title(title.clone()).description(text.clone()).confirm().ok_text(t!("Update")).on_ok(move |_, _, cx| {
             go(cx);
             true
         })
@@ -204,7 +204,7 @@ fn after_read(ask: Rc<Ask>, got: Result<Licence, String>, window: &mut Window, c
 }
 
 fn open_sign_in(ask: Rc<Ask>, window: &mut Window, cx: &mut App) {
-    let title = format!("Sign in to SENTIENT on {}", ask.place);
+    let title = tf!("Sign in to SENTIENT on {}", ask.place);
     let cancel_ask = ask.clone();
     let view = cx.new(|cx| SignInBody::new(ask, window, cx));
     crate::modal::open(
@@ -268,7 +268,7 @@ impl SignInBody {
         let email = self.email.read(cx).value().trim().to_string();
         let password = self.password.read(cx).value().to_string();
         if email.is_empty() || password.is_empty() {
-            self.error = Some("Enter the email and the password.".into());
+            self.error = Some(t!("Enter the email and the password.").into());
             cx.notify();
             return;
         }
@@ -318,28 +318,28 @@ impl Render for SignInBody {
                 h_flex()
                     .gap_1()
                     .items_start()
-                    .child(div().flex_1().min_w_0().text_sm().text_color(theme.muted_foreground).child("To check which versions this instance's licence covers, the Platform Manager signs in once as the system administrator."))
+                    .child(div().flex_1().min_w_0().text_sm().text_color(theme.muted_foreground).child(t!("To check which versions this instance's licence covers, the Platform Manager signs in once as the system administrator.")))
                     .child(ui::info(
                         "lic-gate-signin-info".into(),
-                        format!(
+                        tf!(
                             "Used once, never stored. The email and password go to SENTIENT on {} only to read the licence. They are not saved on this computer or on the server.",
                             self.ask.place
                         )
                         .into(),
                     )),
             )
-            .child(field("System administrator email", ui::probed_input(Input::new(&self.email).disabled(busy)).into_any_element()))
-            .child(field("Password", ui::probed_input(Input::new(&self.password).mask_toggle().disabled(busy)).into_any_element()))
+            .child(field(t!("System administrator email"), ui::probed_input(Input::new(&self.email).disabled(busy)).into_any_element()))
+            .child(field(t!("Password"), ui::probed_input(Input::new(&self.password).mask_toggle().disabled(busy)).into_any_element()))
             .when_some(self.error.clone(), |c, e| c.child(ui::outcome(&theme, Tone::Bad, e)))
             .child(
                 h_flex()
                     .gap(ui::button_gap())
                     .justify_end()
-                    .child(ui::probed(ui::button("lic-gate-cancel").outline().label("Cancel").disabled(busy).on_click(cx.listener(|p, _, window, cx| {
+                    .child(ui::probed(ui::button("lic-gate-cancel").outline().label(t!("Cancel")).disabled(busy).on_click(cx.listener(|p, _, window, cx| {
                         crate::modal::close(cx);
                         after_read(p.ask.clone(), Err(CANCELLED.into()), window, cx);
                     }))))
-                    .child(ui::probed(ui::button("lic-gate-sign-in").primary().label(if busy { "Signing in" } else { "Sign in" }).disabled(busy).on_click(cx.listener(|p, _, window, cx| p.go(window, cx))))),
+                    .child(ui::probed(ui::button("lic-gate-sign-in").primary().label(if busy { t!("Signing in") } else { t!("Sign in") }).disabled(busy).on_click(cx.listener(|p, _, window, cx| p.go(window, cx))))),
             )
     }
 }
@@ -394,13 +394,13 @@ impl Render for TypedBody {
         let version = self.ask.version.clone();
         let cancel_focused = self.cancel_focus.is_focused(window);
         let anyway: AnyElement = if ok {
-            ui::solid_button("lic-gate-anyway", "Update anyway".into(), theme.danger, gpui_kit::white(), cx.listener(|p, _, window, cx| {
+            ui::solid_button("lic-gate-anyway", t!("Update anyway").into(), theme.danger, gpui_kit::white(), cx.listener(|p, _, window, cx| {
                 crate::modal::close(cx);
                 (p.ask.anyway)(window, cx);
             }))
             .into_any_element()
         } else {
-            ui::button("lic-gate-anyway").danger().label("Update anyway").disabled(true).into_any_element()
+            ui::button("lic-gate-anyway").danger().label(t!("Update anyway")).disabled(true).into_any_element()
         };
         let cancel = div()
             .id("lic-gate-typed-cancel-focus")
@@ -413,7 +413,7 @@ impl Render for TypedBody {
                     crate::modal::close(cx);
                 }
             }))
-            .child(ui::button("lic-gate-typed-cancel").outline().label("Cancel").on_click(|_, _, cx| crate::modal::close(cx)))
+            .child(ui::button("lic-gate-typed-cancel").outline().label(t!("Cancel")).on_click(|_, _, cx| crate::modal::close(cx)))
             // The focus ring, drawn around the button without moving it.
             .when(cancel_focused, |d| {
                 d.child(div().absolute().top(px(-3.)).left(px(-3.)).right(px(-3.)).bottom(px(-3.)).rounded(px(crate::theme::BUTTON_RADIUS + 3.)).border_2().border_color(theme.ring))
@@ -427,7 +427,7 @@ impl Render for TypedBody {
             .child(
                 v_flex()
                     .gap(px(6.))
-                    .child(h_flex().flex_wrap().gap_1().text_sm().child("Type").child(div().font_weight(FontWeight::SEMIBOLD).child(version)).child("to confirm"))
+                    .child(h_flex().flex_wrap().gap_1().text_sm().child(t!("Type")).child(div().font_weight(FontWeight::SEMIBOLD).child(version)).child(t!("to confirm")))
                     .child(ui::probed_input(Input::new(&self.input))),
             )
             .child(
@@ -436,7 +436,7 @@ impl Render for TypedBody {
                     .justify_end()
                     .child(cancel)
                     .when(self.again, |r| {
-                        r.child(ui::probed(ui::button("lic-gate-again").outline().label("Sign in again").on_click(cx.listener(|p, _, window, cx| {
+                        r.child(ui::probed(ui::button("lic-gate-again").outline().label(t!("Sign in again")).on_click(cx.listener(|p, _, window, cx| {
                             crate::modal::close(cx);
                             sign_in(p.ask.clone(), window, cx);
                         }))))

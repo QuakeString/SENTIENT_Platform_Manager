@@ -203,9 +203,9 @@ impl StartupPanel {
                     crate::self_install::set_autostart(on, delay)?;
                     sink(sentient_installer_core::progress::Progress::Done {
                         message: match (on, delay) {
-                            (false, _) => "SENTIENT no longer starts with Windows: use Start on the Status page.".to_string(),
-                            (true, 0) => "SENTIENT starts together with Windows.".to_string(),
-                            (true, d) => format!("SENTIENT starts {d} seconds after Windows."),
+                            (false, _) => n!("SENTIENT no longer starts with Windows: use Start on the Status page.").to_string(),
+                            (true, 0) => n!("SENTIENT starts together with Windows.").to_string(),
+                            (true, d) => nf!("SENTIENT starts {d} seconds after Windows."),
                         },
                     });
                     Ok(())
@@ -296,21 +296,21 @@ impl Render for StartupPanel {
             JobState::Failed(m) => Some((Tone::Bad, m.to_string())),
             _ => None,
         };
-        const SIGNIN: [&str; 3] = ["Off", "Full screen (kiosk)", "Browser window"];
+        const SIGNIN: [&str; 3] = [n!("Off"), n!("Full screen (kiosk)"), n!("Browser window")];
         let (signin_changed, autologin_changed) = self.pending(cx);
         // Setting rows like every other tab: label left, the field, what is
         // set now.
         let mut rows = vec![ui::SettingRow {
-            label: "Open SENTIENT at sign-in".into(),
-            help: Some("Open SENTIENT in the browser when someone signs in to this computer, for example a control-room screen after a power cut. It opens at once and shows SENTIENT as soon as it answers.".into()),
+            label: t!("Open SENTIENT at sign-in").into(),
+            help: Some(t!("Open SENTIENT in the browser when someone signs in to this computer, for example a control-room screen after a power cut. It opens at once and shows SENTIENT as soon as it answers.").into()),
             desc: None,
             restart: false,
             changed: signin_changed,
             control: match self.signin {
-                None => ui::row_text("Checking…").into_any_element(),
+                None => ui::row_text(t!("Checking…")).into_any_element(),
                 Some(_) => {
                     let this = cx.entity().downgrade();
-                    ui::chips(&theme, "signin", &["Off", "Kiosk", "Window"], Some(self.signin_choice), std::rc::Rc::new(move |i, _, cx| {
+                    ui::chips(&theme, "signin", &[t!("Off"), t!("Kiosk"), t!("Window")], Some(self.signin_choice), std::rc::Rc::new(move |i, _, cx| {
                         this.update(cx, |p, cx| {
                             if !p.signin_job.read(cx).is_running() {
                                 p.signin_choice = i;
@@ -323,12 +323,12 @@ impl Render for StartupPanel {
                 }
             },
             wide: false,
-            current: self.signin.map(|i| SIGNIN[i].to_string()),
+            current: self.signin.map(|i| crate::i18n::t(SIGNIN[i]).to_string()),
             first: false,
         }];
         if let Some(found) = self.autologin.clone() {
             rows.push(ui::SettingRow {
-                label: "Sign in automatically after a restart".into(),
+                label: t!("Sign in automatically after a restart").into(),
                 help: None,
                 desc: None,
                 restart: false,
@@ -341,12 +341,12 @@ impl Render for StartupPanel {
                 }))
                 .into_any_element(),
                 wide: false,
-                current: Some(found.clone().map(|u| format!("As {u}")).unwrap_or_else(|| "Off".into())),
+                current: Some(found.clone().map(|u| tf!("As {u}")).unwrap_or_else(|| t!("Off").into())),
                 first: false,
             });
             if self.autologin_on {
                 rows.push(ui::SettingRow {
-                    label: "Operator account".into(),
+                    label: t!("Operator account").into(),
                     help: None,
                     desc: None,
                     restart: false,
@@ -358,7 +358,7 @@ impl Render for StartupPanel {
                 });
                 if cfg!(windows) {
                     rows.push(ui::SettingRow {
-                        label: if found.is_some() { "Password (only to change it)".into() } else { "Account password".into() },
+                        label: if found.is_some() { t!("Password (only to change it)").into() } else { t!("Account password").into() },
                         help: None,
                         desc: None,
                         restart: false,
@@ -378,16 +378,16 @@ impl Render for StartupPanel {
                     &theme,
                     Tone::Warn,
                     if cfg!(windows) {
-                        "Anyone at this screen gets this account without typing a password. Use an operator account with only the rights the operator needs. Windows keeps the password in its secret store, readable only by administrators."
+                        t!("Anyone at this screen gets this account without typing a password. Use an operator account with only the rights the operator needs. Windows keeps the password in its secret store, readable only by administrators.")
                     } else {
-                        "Anyone at this screen gets this account without typing a password. Use an operator account with only the rights the operator needs."
+                        t!("Anyone at this screen gets this account without typing a password. Use an operator account with only the rights the operator needs.")
                     },
                 )
                 .into_any_element(),
             );
         }
         extra.extend(soutcome.map(|(tone, text)| ui::outcome(&theme, tone, text).into_any_element()));
-        let mut out = v_flex().child(ui::group(&theme, "Operator screen", rows, extra, cx));
+        let mut out = v_flex().child(ui::group(&theme, t!("Operator screen"), rows, extra, cx));
         if let Some((was_on, was_delay)) = self.start {
             let job = self.start_job.read(cx);
             let busy = job.is_running();
@@ -398,7 +398,7 @@ impl Render for StartupPanel {
             };
             let typed = self.start_delay.read(cx).value().trim().to_string();
             let mut rows = vec![ui::SettingRow {
-                label: "Start SENTIENT with Windows".into(),
+                label: t!("Start SENTIENT with Windows").into(),
                 help: None,
                 desc: None,
                 restart: false,
@@ -411,23 +411,23 @@ impl Render for StartupPanel {
                 }))
                 .into_any_element(),
                 wide: false,
-                current: Some(if was_on { "On".into() } else { "Off".into() }),
+                current: Some(if was_on { t!("On").into() } else { t!("Off").into() }),
                 first: false,
             }];
             if self.start_on {
                 rows.push(ui::SettingRow {
-                    label: "Start delay".into(),
-                    help: Some(ui::START_DELAY_HELP.into()),
+                    label: t!("Start delay").into(),
+                    help: Some(crate::i18n::t(ui::START_DELAY_HELP).into()),
                     desc: None,
                     restart: false,
                     changed: typed != was_delay.to_string(),
                     control: ui::field_input(&theme, &self.start_delay, Some(ui::Slot::Unit("seconds".into())), self.delay_problem(cx), false, window, cx).into_any_element(),
                     wide: false,
-                    current: Some(format!("{was_delay} seconds")),
+                    current: Some(tf!("{was_delay} seconds")),
                     first: false,
                 });
             }
-            out = out.child(ui::group(&theme, "Start with Windows", rows, outcome.map(|(tone, text)| ui::outcome(&theme, tone, text).into_any_element()).into_iter().collect(), cx));
+            out = out.child(ui::group(&theme, t!("Start with Windows"), rows, outcome.map(|(tone, text)| ui::outcome(&theme, tone, text).into_any_element()).into_iter().collect(), cx));
         }
         out
     }

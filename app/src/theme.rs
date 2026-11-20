@@ -19,8 +19,8 @@ pub fn init(mode: ThemeMode, cx: &mut App) {
         .load_themes_from_str(THEMES)
         .expect("sentient-theme.json is valid");
     let themes = ThemeRegistry::global(cx).themes();
-    let light = themes.get(LIGHT).cloned().expect("light theme registered");
-    let dark = themes.get(DARK).cloned().expect("dark theme registered");
+    let light = themes.get(LIGHT).cloned().expect(t!("light theme registered"));
+    let dark = themes.get(DARK).cloned().expect(t!("dark theme registered"));
     Theme::update(cx, |theme| {
         theme.light_theme = light;
         theme.dark_theme = dark;
@@ -66,7 +66,7 @@ fn desktop_font_family() -> Option<String> {
     // KDE: kdeglobals [General] font=Noto Sans,10,-1,5,400,…
     if desktop.contains("KDE") {
         for tool in ["kreadconfig6", "kreadconfig5"] {
-            if let Some(v) = out(tool, &["--file", "kdeglobals", "--group", "General", "--key", "font"]) {
+            if let Some(v) = out(tool, &["--file", "kdeglobals", "--group", t!("General"), "--key", "font"]) {
                 return v.split(',').next().map(str::to_string);
             }
         }
@@ -173,9 +173,9 @@ impl Choice {
 
     pub fn label(self) -> &'static str {
         match self {
-            Choice::Light => "Light",
-            Choice::Dark => "Dark",
-            Choice::System => "Follow system",
+            Choice::Light => t!("Light"),
+            Choice::Dark => t!("Dark"),
+            Choice::System => t!("Follow system"),
         }
     }
 

@@ -71,13 +71,13 @@ pub fn start_for(value: &str, fallback: Option<PathBuf>) -> Option<PathBuf> {
 
 /// Run a chooser tool: Ok(None) is a cancel.
 fn run(mut cmd: Command, kind: Tool) -> Result<Option<PathBuf>> {
-    let o = cmd.output().map_err(|e| anyhow::anyhow!("The file chooser could not start: {e}"))?;
+    let o = cmd.output().map_err(|e| anyhow::anyhow!(nf!("The file chooser could not start: {e}")))?;
     match kind {
         Tool::KdeService if o.status.success() => Ok(kde_answer(&String::from_utf8_lossy(&o.stdout))),
         // kdialog and zenity: 0 chosen, 1 cancelled.
         _ if o.status.success() => Ok(first_line(&o.stdout)),
         _ if o.status.code() == Some(1) && kind != Tool::KdeService => Ok(None),
-        _ => Err(anyhow::anyhow!("The file chooser failed: {}", String::from_utf8_lossy(&o.stderr).trim())),
+        _ => Err(anyhow::anyhow!(nf!("The file chooser failed: {}", String::from_utf8_lossy(&o.stderr).trim()))),
     }
 }
 

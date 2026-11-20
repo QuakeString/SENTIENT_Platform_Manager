@@ -9,6 +9,25 @@
 // captures a GUI program: "gave no answer", his rc12-22 Windows server).
 #![cfg_attr(all(not(debug_assertions), feature = "gui"), windows_subsystem = "windows")]
 
+#[macro_use]
+extern crate spm_i18n_macros;
+
+/// A text for the catalogue where t! cannot be called (a const, a static):
+/// the English as is; where it is shown, `i18n::t(..)` gives the translation.
+macro_rules! n {
+    ($s:literal) => {
+        $s
+    };
+}
+
+/// `format!` for job data (step names, job messages): English, listed in the
+/// catalogue as tf! is, translated where shown (`i18n::dynamic`).
+macro_rules! nf {
+    ($($a:tt)*) => {
+        format!($($a)*)
+    };
+}
+
 mod adopt;
 // Always built: the menu entries list its actions (crate::self_install).
 mod background;
@@ -37,6 +56,7 @@ mod diagnosis;
 mod earlier;
 mod elevate;
 mod gateway_record;
+mod i18n;
 mod headless;
 mod installation;
 mod jobplan;
@@ -319,7 +339,7 @@ fn gui_main(args: Vec<String>) {
                 background::TakeOver::Forwarded => return,
                 background::TakeOver::Done => false,
                 background::TakeOver::NoAnswer => {
-                    maintenance_ops::log_line("The running Platform Manager did not hand over; starting anyway");
+                    maintenance_ops::log_line(t!("The running Platform Manager did not hand over; starting anyway"));
                     false
                 }
             },
@@ -341,6 +361,13 @@ fn gui_main(args: Vec<String>) {
     gpui_kit::application().with_assets(assets::AppAssets).run(move |cx| {
         timing::mark("app-run");
         gpui_kit::init(cx);
+        // The saved language, else the computer's (crate::i18n).
+        {
+            // Screens in a given language: SPM_LANGUAGE=hi_IN (debug builds).
+            let forced = cfg!(debug_assertions).then(|| std::env::var("SPM_LANGUAGE").ok()).flatten();
+            let saved = forced.unwrap_or_else(|| manager::shell::Appearance::get().language);
+            i18n::set_language(i18n::startup_code(Some(saved.as_str()).filter(|c| !c.is_empty())));
+        }
         // SPM's reduce-motion reading (KDE, GNOME, SPM_REDUCE_MOTION) for
         // the toolkit too: its menus, tooltips and every GPUI animation
         // then draw in place, as ours do.
@@ -398,7 +425,7 @@ fn gui_main(args: Vec<String>) {
             })
             .map(|_| ()),
         };
-        opened.expect("open the main window");
+        opened.expect(t!("open the main window"));
         cx.on_window_closed(|cx, _| {
             if cx.windows().is_empty() {
                 cx.quit();

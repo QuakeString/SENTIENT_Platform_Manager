@@ -12,3 +12,5 @@ dist/
 # packaging/flatpak/build.sh input and flatpak-builder state
 /packaging/flatpak/input/
 .flatpak-builder/
+/tools/i18n/target
+/app/i18n/work

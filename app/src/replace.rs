@@ -63,9 +63,9 @@ pub fn summary(file: &Path, passphrase: Option<&str>) -> Result<Summary, Unreada
 pub(crate) fn from_manifest(file: &Path, file_bytes: u64, encrypted: bool, m: &Manifest) -> Summary {
     let database_type = m.source.database_type.clone().unwrap_or_else(|| {
         if m.clickhouse.is_some() {
-            "PostgreSQL + ClickHouse".into()
+            n!("PostgreSQL + ClickHouse").into()
         } else if m.source.timescaledb_version.is_some() {
-            "PostgreSQL + TimescaleDB".into()
+            n!("PostgreSQL + TimescaleDB").into()
         } else {
             "PostgreSQL".into()
         }
@@ -76,7 +76,7 @@ pub(crate) fn from_manifest(file: &Path, file_bytes: u64, encrypted: bool, m: &M
     match m.telemetry {
         TelemetrySelection::None => {}
         TelemetrySelection::All => holds.push("telemetry history (all)".into()),
-        TelemetrySelection::Range { days } => holds.push(format!("telemetry history (last {days} days)")),
+        TelemetrySelection::Range { days } => holds.push(nf!("telemetry history (last {days} days)")),
     }
     if !m.file_stores.is_empty() {
         holds.push("report files and version control".into());
@@ -118,9 +118,9 @@ pub enum Fix {
 pub fn check(record: &InstallationRecord, s: &Summary) -> Check {
     let here = flavor_label(record.flavor());
     let type_line = if s.database_type == here {
-        format!("{} into {here}: the same type.", s.database_type)
+        nf!("{} into {here}: the same type.", s.database_type)
     } else {
-        format!("{} into {here}. This installation keeps its type; the history is converted.", s.database_type)
+        nf!("{} into {here}. This installation keeps its type; the history is converted.", s.database_type)
     };
     let live_schema = crate::migration::Setup::current(record).ok().and_then(|setup| crate::restore_switch::schema_version_now(&setup.pg()).ok());
     let mut refusal = None;
@@ -129,28 +129,28 @@ pub fn check(record: &InstallationRecord, s: &Summary) -> Check {
         (v, Some(theirs), Some(ours)) if theirs > ours => {
             let made = v.clone().unwrap_or_else(|| "a newer SENTIENT".into());
             refusal = Some((
-                format!("This backup was made on SENTIENT {made}. This installation is {installed} and cannot read newer data."),
+                nf!("This backup was made on SENTIENT {made}. This installation is {installed} and cannot read newer data."),
                 Fix::UpdateSentient,
             ));
-            format!("{made} into {installed}: newer than this SENTIENT.")
+            nf!("{made} into {installed}: newer than this SENTIENT.")
         }
-        (Some(v), Some(theirs), Some(ours)) if theirs < ours => format!("{v} into {installed}. The data is brought up to {installed} while it is restored."),
-        (Some(v), _, _) if v == installed => format!("{v} into {installed}: the same version."),
-        (Some(v), _, _) => format!("{v} into {installed}. The data is brought up to {installed} while it is restored when it is older."),
-        (None, _, _) => format!("Not recorded in this backup (made before versions were kept). A backup from a newer SENTIENT is found after it is restored beside the live data, which stays untouched."),
+        (Some(v), Some(theirs), Some(ours)) if theirs < ours => nf!("{v} into {installed}. The data is brought up to {installed} while it is restored."),
+        (Some(v), _, _) if v == installed => nf!("{v} into {installed}: the same version."),
+        (Some(v), _, _) => nf!("{v} into {installed}. The data is brought up to {installed} while it is restored when it is older."),
+        (None, _, _) => format!("{}", n!("Not recorded in this backup (made before versions were kept). A backup from a newer SENTIENT is found after it is restored beside the live data, which stays untouched.")),
     };
     let status = crate::dbstatus::read(record);
     let free = status.pg.as_ref().and_then(|p| p.free_bytes);
     let live_bytes = status.pg.as_ref().map(|p| p.db_bytes + status.ch.as_ref().map(|c| c.disk_bytes).unwrap_or(0));
     let need = s.restored_bytes;
     let disk_line = match free {
-        Some(f) => format!("Needs about {}, {} free.", crate::dbstatus::bytes_label(need), crate::dbstatus::bytes_label(f)),
-        None => format!("Needs about {}.", crate::dbstatus::bytes_label(need)),
+        Some(f) => nf!("Needs about {}, {} free.", crate::dbstatus::bytes_label(need), crate::dbstatus::bytes_label(f)),
+        None => nf!("Needs about {}.", crate::dbstatus::bytes_label(need)),
     };
     if refusal.is_none() {
         if let Some(f) = free.filter(|f| *f < need) {
             refusal = Some((
-                format!("Not enough free disk: the restore needs about {}, {} is free.", crate::dbstatus::bytes_label(need), crate::dbstatus::bytes_label(f)),
+                nf!("Not enough free disk: the restore needs about {}, {} is free.", crate::dbstatus::bytes_label(need), crate::dbstatus::bytes_label(f)),
                 Fix::FreeDisk,
             ));
         }
@@ -158,10 +158,10 @@ pub fn check(record: &InstallationRecord, s: &Summary) -> Check {
     Check { type_line, version_line, disk_line, live_bytes, refusal }
 }
 
-pub const STEP_CHECK: &str = "Checking the backup file and its passphrase";
-pub const STEP_RESTORE: &str = "Restoring the backup beside the live data (and converting it)";
-pub const STEP_SWITCH: &str = "Switching SENTIENT to the restored data and checking it answers";
-pub const STEP_DELETE: &str = "Deleting the previous data";
+pub const STEP_CHECK: &str = n!("Checking the backup file and its passphrase");
+pub const STEP_RESTORE: &str = n!("Restoring the backup beside the live data (and converting it)");
+pub const STEP_SWITCH: &str = n!("Switching SENTIENT to the restored data and checking it answers");
+pub const STEP_DELETE: &str = n!("Deleting the previous data");
 
 #[cfg(test)]
 pub fn planned_steps(delete_old: bool) -> Vec<String> {
@@ -208,14 +208,14 @@ pub fn run(record: InstallationRecord, file: PathBuf, passphrase: Option<String>
             freed += item.bytes.unwrap_or(0);
         }
         sink(Progress::Done {
-            message: format!(
+            message: nf!(
                 "SENTIENT is running on the data from {name}. The previous data was deleted ({} freed).",
                 crate::dbstatus::bytes_label(freed.max(0) as u64)
             ),
         });
     } else {
         sink(Progress::Done {
-            message: format!("SENTIENT is running on the data from {name}. The previous data is kept under \"Kept after earlier changes\" until you remove it."),
+            message: nf!("SENTIENT is running on the data from {name}. The previous data is kept under \"Kept after earlier changes\" until you remove it."),
         });
     }
     Ok(())

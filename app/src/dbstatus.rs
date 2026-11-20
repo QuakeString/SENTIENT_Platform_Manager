@@ -109,7 +109,7 @@ pub struct DbStatus {
 }
 
 /// What a card says about the database while SENTIENT is stopped.
-pub const STOPPED: &str = "SENTIENT is stopped. The database is read when it runs.";
+pub const STOPPED: &str = n!("SENTIENT is stopped. The database is read when it runs.");
 
 /// The size query: one row of JSON. Partitioned tables (telemetry history on
 /// stock PostgreSQL) count their partitions.
@@ -254,58 +254,58 @@ pub fn table_label(name: &str) -> Option<&'static str> {
 /// A table's plain name and what is in it: `("Audit log", "who did what")`.
 pub fn plain_table(name: &str) -> Option<(&'static str, &'static str)> {
     Some(match name {
-        "ts_kv" => ("Telemetry history", "values over time"),
-        "ts_kv_latest" => ("Latest values", "newest of each key"),
-        "attribute_kv" => ("Attributes", "device settings"),
-        "audit_log" => ("Audit log", "who did what"),
-        "event" => ("Events", "debug, lifecycle"),
-        "alarm" => ("Alarms", ""),
-        "resource" => ("Resources", "images, files, scripts"),
-        "widget_type" => ("Widgets", "the widget library"),
-        "dashboard" => ("Dashboards", ""),
-        "notification" => ("Notifications", ""),
-        "report" | "report_file" => ("Reports", ""),
-        "rule_node" | "rule_node_state" => ("Rule chains", ""),
-        "device" => ("Devices", ""),
-        "analytics_result" => ("Analytics results", ""),
-        "analytics_pipeline" => ("Analytics pipelines", ""),
-        "analytics_spectrum" => ("Analytics spectra", ""),
-        "translation_usage" | "translation_target" | "translation_source" | "translator_instance" => ("Translations", ""),
-        "task_job" => ("Background tasks", ""),
-        "widgets_bundle" | "widgets_bundle_widget" => ("Widget bundles", ""),
-        "tb_user" => ("Users", ""),
-        "user_credentials" => ("User sign-in data", ""),
-        "report_template" => ("Report templates", ""),
-        "report_job" | "report_delivery" => ("Report runs", ""),
-        "asset" => ("Assets", ""),
-        "asset_profile" => ("Asset profiles", ""),
-        "device_profile" => ("Device profiles", ""),
-        "device_credentials" => ("Device credentials", ""),
-        "calculated_field" => ("Calculated fields", ""),
-        "notification_rule" | "notification_template" | "notification_target" | "notification_request" => ("Notification setup", ""),
-        "key_dictionary" => ("Key names", ""),
-        "api_usage_state" => ("Usage counters", ""),
-        "group_permission" | "role" => ("Roles and permissions", ""),
-        "ai_conversation" | "ai_conversation_message" => ("AI conversations", ""),
-        "ai_model" => ("AI models", ""),
-        "entity_group" | "entity_group_membership" => ("Groups", ""),
-        "scheduler_event" => ("Scheduled events", ""),
-        "entity_alarm" => ("Alarm links", ""),
-        "relation" => ("Relations", ""),
-        "ota_package" => ("Firmware and software", ""),
-        "customer" => ("Customers", ""),
-        "rule_chain" => ("Rule chains", ""),
-        "entity_view" => ("Entity views", ""),
-        "entity_version" => ("Versions", ""),
-        "tenant_profile" => ("Tenant profiles", ""),
-        "tenant" => ("Tenants", ""),
-        "recipe" | "recipe_data" => ("Recipes", ""),
-        "queue_stats" => ("Queue statistics", ""),
-        "admin_settings" => ("System settings", ""),
-        "edge" | "edge_event" => ("Edge", ""),
-        "rpc" => ("Device commands", ""),
-        "integration" => ("Integrations", ""),
-        "license" | "license_time_anchor" => ("Licence", ""),
+        "ts_kv" => (t!("Telemetry history"), t!("values over time")),
+        "ts_kv_latest" => (t!("Latest values"), t!("newest of each key")),
+        "attribute_kv" => (t!("Attributes"), "device settings"),
+        "audit_log" => (t!("Audit log"), t!("who did what")),
+        "event" => (t!("Events"), "debug, lifecycle"),
+        "alarm" => (t!("Alarms"), ""),
+        "resource" => (t!("Resources"), t!("images, files, scripts")),
+        "widget_type" => (t!("Widgets"), t!("the widget library")),
+        "dashboard" => (t!("Dashboards"), ""),
+        "notification" => (t!("Notifications"), ""),
+        "report" | "report_file" => (t!("Reports"), ""),
+        "rule_node" | "rule_node_state" => (t!("Rule chains"), ""),
+        "device" => (t!("Devices"), ""),
+        "analytics_result" => (t!("Analytics results"), ""),
+        "analytics_pipeline" => (t!("Analytics pipelines"), ""),
+        "analytics_spectrum" => (t!("Analytics spectra"), ""),
+        "translation_usage" | "translation_target" | "translation_source" | "translator_instance" => (t!("Translations"), ""),
+        "task_job" => (t!("Background tasks"), ""),
+        "widgets_bundle" | "widgets_bundle_widget" => (t!("Widget bundles"), ""),
+        "tb_user" => (t!("Users"), ""),
+        "user_credentials" => (t!("User sign-in data"), ""),
+        "report_template" => (t!("Report templates"), ""),
+        "report_job" | "report_delivery" => (t!("Report runs"), ""),
+        "asset" => (t!("Assets"), ""),
+        "asset_profile" => (t!("Asset profiles"), ""),
+        "device_profile" => (t!("Device profiles"), ""),
+        "device_credentials" => (t!("Device credentials"), ""),
+        "calculated_field" => (t!("Calculated fields"), ""),
+        "notification_rule" | "notification_template" | "notification_target" | "notification_request" => (t!("Notification setup"), ""),
+        "key_dictionary" => (t!("Key names"), ""),
+        "api_usage_state" => (t!("Usage counters"), ""),
+        "group_permission" | "role" => (t!("Roles and permissions"), ""),
+        "ai_conversation" | "ai_conversation_message" => (t!("AI conversations"), ""),
+        "ai_model" => (t!("AI models"), ""),
+        "entity_group" | "entity_group_membership" => (t!("Groups"), ""),
+        "scheduler_event" => (t!("Scheduled events"), ""),
+        "entity_alarm" => (t!("Alarm links"), ""),
+        "relation" => (t!("Relations"), ""),
+        "ota_package" => (t!("Firmware and software"), ""),
+        "customer" => (t!("Customers"), ""),
+        "rule_chain" => (t!("Rule chains"), ""),
+        "entity_view" => (t!("Entity views"), ""),
+        "entity_version" => (t!("Versions"), ""),
+        "tenant_profile" => (t!("Tenant profiles"), ""),
+        "tenant" => (t!("Tenants"), ""),
+        "recipe" | "recipe_data" => (t!("Recipes"), ""),
+        "queue_stats" => (t!("Queue statistics"), ""),
+        "admin_settings" => (t!("System settings"), ""),
+        "edge" | "edge_event" => (t!("Edge"), ""),
+        "rpc" => (t!("Device commands"), ""),
+        "integration" => (t!("Integrations"), ""),
+        "license" | "license_time_anchor" => (t!("Licence"), ""),
         _ => return None,
     })
 }
@@ -319,7 +319,7 @@ pub fn parse_df_total(text: &str) -> Option<u64> {
 pub fn month_label(partition: &str) -> String {
     let p = partition.trim().trim_matches('\'');
     match (p.get(..4).and_then(|y| y.parse::<i32>().ok()), p.get(4..6).and_then(|m| m.parse::<u32>().ok())) {
-        (Some(y), Some(m)) => chrono::NaiveDate::from_ymd_opt(y, m, 1).map(|d| d.format("%b %Y").to_string()).unwrap_or_else(|| p.to_string()),
+        (Some(y), Some(m)) => chrono::NaiveDate::from_ymd_opt(y, m, 1).map(|d| crate::i18n::date(&d.and_hms_opt(0, 0, 0).unwrap_or_default().and_utc(), "%b %Y")).unwrap_or_else(|| p.to_string()),
         _ => p.to_string(),
     }
 }
@@ -346,9 +346,9 @@ pub fn bytes_label(b: u64) -> String {
 pub fn count_label(n: u64) -> String {
     match n {
         0..=9_999 => n.to_string(),
-        10_000..=999_999 => format!("{:.0} thousand", n as f64 / 1e3),
-        1_000_000..=999_999_999 => format!("{:.1} million", n as f64 / 1e6),
-        _ => format!("{:.1} billion", n as f64 / 1e9),
+        10_000..=999_999 => tf!("{:.0} thousand", n as f64 / 1e3),
+        1_000_000..=999_999_999 => tf!("{:.1} million", n as f64 / 1e6),
+        _ => tf!("{:.1} billion", n as f64 / 1e9),
     }
 }
 
@@ -416,7 +416,7 @@ fn passwords(record: &InstallationRecord) -> Result<(String, String), String> {
             #[cfg(not(target_os = "linux"))]
             {
                 use crate::secrets::{Secret, get};
-                let db = get(Secret::Database).ok_or("The database password is not in the secret store.")?;
+                let db = get(Secret::Database).ok_or(n!("The database password is not in the secret store."))?;
                 Ok((db, get(Secret::Clickhouse).unwrap_or_default()))
             }
         }
@@ -482,7 +482,7 @@ fn plain_name(s: &str) -> Result<&str, String> {
     if !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.') {
         Ok(s)
     } else {
-        Err(format!("Not a ClickHouse name: {s}"))
+        Err(nf!("Not a ClickHouse name: {s}"))
     }
 }
 
@@ -556,7 +556,7 @@ pub fn read(record: &InstallationRecord) -> DbStatus {
         let _ = tx.send(status.unwrap_or_else(|| stopped(hybrid)));
     });
     rx.recv_timeout(LIMIT).unwrap_or_else(|_| DbStatus {
-        pg_error: Some(format!("No answer within {} seconds.", LIMIT.as_secs())),
+        pg_error: Some(tf!("No answer within {} seconds.", LIMIT.as_secs())),
         ..Default::default()
     })
 }
@@ -600,8 +600,8 @@ fn read_now(record: &InstallationRecord) -> DbStatus {
         rt.block_on(async {
             let db = tokio::time::timeout(Duration::from_secs(8), DbInspector::connect(&conn))
                 .await
-                .map_err(|_| "PostgreSQL did not answer.".to_string())?
-                .map_err(|e| format!("Could not sign in to PostgreSQL: {e}"))?;
+                .map_err(|_| n!("PostgreSQL did not answer.").to_string())?
+                .map_err(|e| nf!("Could not sign in to PostgreSQL: {e}"))?;
             let main = db.text(PG_SQL).await.map_err(|e| e.to_string())?.unwrap_or_default();
             let hyper = if main.contains("\"timescaledb\" : null") || main.contains("\"timescaledb\":null") {
                 None
@@ -816,11 +816,11 @@ pub fn lasts_label(free: u64, per_day: i64) -> Option<String> {
     }
     let days = free as i64 / per_day;
     Some(match days {
-        0 => "less than a day".into(),
+        0 => t!("less than a day").into(),
         1 => "about 1 day".into(),
-        2..=60 => format!("about {days} days"),
-        61..=729 => format!("about {} months", days / 30),
-        _ => format!("about {} years", days / 365),
+        2..=60 => tf!("about {days} days"),
+        61..=729 => tf!("about {} months", days / 30),
+        _ => tf!("about {} years", days / 365),
     })
 }
 
@@ -879,9 +879,9 @@ pub fn ago_label(rfc3339: &str, now: chrono::DateTime<chrono::Local>) -> String 
     let mins = (now - t.with_timezone(&chrono::Local)).num_minutes().max(0);
     match mins {
         0..=1 => "just now".into(),
-        2..=89 => format!("{mins} minutes ago"),
-        90..=2879 => format!("{} hours ago", (mins + 30) / 60),
-        _ => format!("{} days ago", (mins + 720) / 1440),
+        2..=89 => tf!("{mins} minutes ago"),
+        90..=2879 => tf!("{} hours ago", (mins + 30) / 60),
+        _ => tf!("{} days ago", (mins + 720) / 1440),
     }
 }
 

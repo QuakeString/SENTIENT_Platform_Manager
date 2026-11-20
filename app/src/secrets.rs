@@ -71,7 +71,7 @@ mod store {
             .map(|o| o.status.success())
             .unwrap_or(false);
         if !ok {
-            return Err(format!("restrict access to {}", dir.display()));
+            return Err(nf!("restrict access to {}", dir.display()));
         }
         Ok(dir)
     }
@@ -103,7 +103,7 @@ mod store {
             )
         };
         if ok == 0 {
-            return Err(format!("encrypt: {}", std::io::Error::last_os_error()));
+            return Err(nf!("encrypt: {}", std::io::Error::last_os_error()));
         }
         Ok(unsafe { take(out) })
     }
@@ -139,10 +139,10 @@ const ALL: [Secret; 6] = [
 
 #[cfg(windows)]
 pub fn save(secret: Secret, value: &str) -> Result<(), String> {
-    let dir = store::ensure_dir().map_err(|e| format!("save the {}: {e}", secret.account()))?;
-    let sealed = store::protect(value.as_bytes()).map_err(|e| format!("save the {}: {e}", secret.account()))?;
+    let dir = store::ensure_dir().map_err(|e| nf!("save the {}: {e}", secret.account()))?;
+    let sealed = store::protect(value.as_bytes()).map_err(|e| nf!("save the {}: {e}", secret.account()))?;
     std::fs::write(dir.join(format!("{}.bin", secret.account())), sealed)
-        .map_err(|e| format!("save the {}: {e}", secret.account()))
+        .map_err(|e| nf!("save the {}: {e}", secret.account()))
 }
 
 #[cfg(windows)]
@@ -174,9 +174,9 @@ pub fn forget(_: Secret) {}
 /// password, crate::remote), sealed the same way.
 #[cfg(windows)]
 pub fn save_named(name: &str, value: &str) -> Result<(), String> {
-    let dir = store::ensure_dir().map_err(|e| format!("save {name}: {e}"))?;
-    let sealed = store::protect(value.as_bytes()).map_err(|e| format!("save {name}: {e}"))?;
-    std::fs::write(dir.join(format!("{name}.bin")), sealed).map_err(|e| format!("save {name}: {e}"))
+    let dir = store::ensure_dir().map_err(|e| nf!("save {name}: {e}"))?;
+    let sealed = store::protect(value.as_bytes()).map_err(|e| nf!("save {name}: {e}"))?;
+    std::fs::write(dir.join(format!("{name}.bin")), sealed).map_err(|e| nf!("save {name}: {e}"))
 }
 
 #[cfg(windows)]

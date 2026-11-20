@@ -90,7 +90,7 @@ pub fn open(local: bool, load: LoadPlan, check: CheckPassword, run: RunTakeOver,
 
 fn open_now(local: bool, load: LoadPlan, check: CheckPassword, run: RunTakeOver, sudo: Option<crate::remote::Instance>, cx: &mut App) {
     let Some(handle) = cx.active_window().or_else(|| cx.windows().into_iter().next()) else {
-        crate::ui::show_error("The compose file could not be taken over", "The Platform Manager's window was not found.", cx);
+        crate::ui::show_error(t!("The compose file could not be taken over"), t!("The Platform Manager's window was not found."), cx);
         return;
     };
     let opened = handle.update(cx, |_, window, cx| {
@@ -103,16 +103,16 @@ fn open_now(local: bool, load: LoadPlan, check: CheckPassword, run: RunTakeOver,
             checking: false,
             _task: None,
         };
-        let creds = [cred("PostgreSQL password", window, cx), cred("ClickHouse password", window, cx)];
+        let creds = [cred(t!("PostgreSQL password"), window, cx), cred(t!("ClickHouse password"), window, cx)];
         let view = cx.new(|cx| {
             let mut d = TakeOverDialog { load, run, plan: Plan::Loading, compose: None, input, rebuild_ok: false, local, sudo, check, creds, body_scroll: ScrollHandle::new(), _task: None };
             d.reload(cx);
             d
         });
-        crate::modal::open(crate::modal::Modal { title: "Take over the compose file".into(), body: view.into(), width: 620., icon: None, on_close: None }, cx);
+        crate::modal::open(crate::modal::Modal { title: t!("Take over the compose file").into(), body: view.into(), width: 620., icon: None, on_close: None }, cx);
     });
     if let Err(e) = opened {
-        crate::ui::show_error("The compose file could not be taken over", format!("The dialog could not open: {e}"), cx);
+        crate::ui::show_error(t!("The compose file could not be taken over"), tf!("The dialog could not open: {e}"), cx);
     }
 }
 
@@ -177,8 +177,8 @@ impl TakeOverDialog {
         };
         let rx = crate::chooser::open(
             cx,
-            crate::chooser::Ask { title: "Choose the compose file", start: start.as_deref(), directory: false },
-            PathPromptOptions { files: true, directories: false, multiple: false, prompt: Some("Use this file".into()) },
+            crate::chooser::Ask { title: t!("Choose the compose file"), start: start.as_deref(), directory: false },
+            PathPromptOptions { files: true, directories: false, multiple: false, prompt: Some(t!("Use this file").into()) },
         );
         cx.spawn(async move |this, cx| {
             let Ok(Ok(Some(paths))) = rx.await else { return };
@@ -214,7 +214,7 @@ fn file_row(theme: &gpui_kit::component::Theme, path: &str, found: bool) -> Div 
         .items_center()
         .min_w_0()
         .min_h(px(26.))
-        .child(ui::pill(theme, if found { Tone::Good } else { Tone::Warn }, if found { "Found" } else { "Missing (file was removed)" }).flex_shrink_0())
+        .child(ui::pill(theme, if found { Tone::Good } else { Tone::Warn }, if found { t!("Found") } else { t!("Missing (file was removed)") }).flex_shrink_0())
         .child(
             div()
                 .id(SharedString::from(format!("to-file-{path}")))
@@ -246,7 +246,7 @@ impl Render for TakeOverDialog {
         let plan = match &self.plan {
             Plan::Loading => {
                 return body
-                    .child(div().text_sm().text_color(theme.muted_foreground).child("Reading the containers and their compose file…"))
+                    .child(div().text_sm().text_color(theme.muted_foreground).child(t!("Reading the containers and their compose file…")))
                     .child(ui::skeleton_line(&theme, "to-1", 360.))
                     .child(ui::skeleton_line(&theme, "to-2", 300.))
                     .child(ui::skeleton_line(&theme, "to-3", 420.))
@@ -258,20 +258,20 @@ impl Render for TakeOverDialog {
                 let copy = e.clone();
                 let sudo = self.sudo.clone().filter(|_| crate::manager::remote_pages::needs_sudo_password(e));
                 let this = cx.entity().downgrade();
-                return body.child(ui::notice(&theme, Tone::Bad, format!("What taking it over would do could not be read.\n{e}"))).child(
+                return body.child(ui::notice(&theme, Tone::Bad, tf!("What taking it over would do could not be read.\n{e}"))).child(
                     h_flex()
                         .gap(crate::ui::button_gap())
                         .justify_end()
-                        .child(crate::ui::probed(crate::ui::button("to-copy").outline().label("Copy").on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(copy.clone())))))
+                        .child(crate::ui::probed(crate::ui::button("to-copy").outline().label(t!("Copy")).on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(copy.clone())))))
                         .when_some(sudo, |r, inst| {
-                            r.child(crate::ui::probed(crate::ui::button("to-sudo").outline().label("Enter the sudo password").on_click(move |_, _, cx| {
+                            r.child(crate::ui::probed(crate::ui::button("to-sudo").outline().label(t!("Enter the sudo password")).on_click(move |_, _, cx| {
                                 let this = this.clone();
                                 crate::manager::remote_pages::ask_sudo_password(inst.clone(), std::rc::Rc::new(move |cx: &mut App| {
                                     this.update(cx, |d, cx| d.reload(cx)).ok();
                                 }), cx);
                             })))
                         })
-                        .child(crate::ui::probed(crate::ui::button("to-retry").primary().label("Retry").on_click(cx.listener(|d, _, _, cx| d.reload(cx))))),
+                        .child(crate::ui::probed(crate::ui::button("to-retry").primary().label(t!("Retry")).on_click(cx.listener(|d, _, _, cx| d.reload(cx))))),
                 );
             }
             Plan::Got(p) => p.clone(),
@@ -287,39 +287,39 @@ impl Render for TakeOverDialog {
             h_flex()
                 .gap_1()
                 .items_center()
-                .child(div().flex_1().min_w_0().text_sm().child("SENTIENT stops for about a minute and starts again from the Platform Manager's own compose file, on the same data."))
+                .child(div().flex_1().min_w_0().text_sm().child(t!("SENTIENT stops for about a minute and starts again from the Platform Manager's own compose file, on the same data.")))
                 .child(ui::info(
                     "to-how".into(),
-                    format!(
+                    tf!(
                         "{}The old containers are stopped and kept as <name>-before-takeover until the new ones answer, then removed. If the new ones do not answer within 3 minutes, they are removed and the old ones get their names back and start again, exactly as they were.",
-                        if plan.project.is_empty() { String::new() } else { format!("Compose project: {}.\n\n", plan.project) }
+                        if plan.project.is_empty() { String::new() } else { tf!("Compose project: {}.\n\n", plan.project) }
                     )
                     .into(),
                 )),
         );
 
         // Why it cannot be taken over, first (Take over stays off).
-        b = b.children(plan.problems.iter().map(|p| ui::outcome(&theme, Tone::Bad, format!("{p} Nothing will be changed."))));
+        b = b.children(plan.problems.iter().map(|p| ui::outcome(&theme, Tone::Bad, tf!("{p} Nothing will be changed."))));
         // Compose file: from the labels, or picked on the server.
         b = b.child(section(
             &theme,
-            "Compose file",
-            Some(("to-compose-help", "The file the containers were started from, as their labels name it. If it moved, name it here: the plan is read again with it.")),
+            t!("Compose file"),
+            Some(("to-compose-help", t!("The file the containers were started from, as their labels name it. If it moved, name it here: the plan is read again with it."))),
         ));
         b = b.children(plan.files.iter().map(|(f, found)| file_row(&theme, f, *found)));
         // Another compose file: typed on a server, chosen on this computer.
         let place = if self.local { "this computer" } else { "this server" };
         b = b
-            .child(div().text_size(px(12.5)).text_color(theme.muted_foreground).mt_2().child(format!("Another compose file on {place}")))
+            .child(div().text_size(px(12.5)).text_color(theme.muted_foreground).mt_2().child(tf!("Another compose file on {place}")))
             .child(
                 h_flex()
                     .gap(crate::ui::button_gap())
                     .items_center()
                     .child(div().flex_1().min_w_0().child(Input::new(&self.input)))
-                    .when(self.local, |r| r.child(crate::ui::probed(crate::ui::button("to-choose").outline().label("Choose").on_click(cx.listener(|d, _, _, cx| d.choose(cx))))))
-                    .child(crate::ui::probed(crate::ui::button("to-use-file").outline().label("Use this file").on_click(cx.listener(|d, _, _, cx| d.use_file(cx)))))
+                    .when(self.local, |r| r.child(crate::ui::probed(crate::ui::button("to-choose").outline().label(t!("Choose")).on_click(cx.listener(|d, _, _, cx| d.choose(cx))))))
+                    .child(crate::ui::probed(crate::ui::button("to-use-file").outline().label(t!("Use this file")).on_click(cx.listener(|d, _, _, cx| d.use_file(cx)))))
                     .when(self.compose.is_some(), |r| {
-                        r.child(crate::ui::probed(crate::ui::button("to-labels").ghost().label("Back to the labels' file").on_click(cx.listener(|d, _, _, cx| {
+                        r.child(crate::ui::probed(crate::ui::button("to-labels").ghost().label(t!("Back to the labels' file")).on_click(cx.listener(|d, _, _, cx| {
                             d.compose = None;
                             d.reload(cx);
                         }))))
@@ -327,12 +327,12 @@ impl Render for TakeOverDialog {
             );
         if needs_rebuild {
             b = b
-                .child(div().text_sm().text_color(theme.warning_foreground).child(format!(
+                .child(div().text_sm().text_color(theme.warning_foreground).child(tf!(
                     "The compose file is not on {place}. The new one is written from the running containers' own settings (image, ports, volumes, environment)."
                 )))
                 .child(
                     Checkbox::new("to-rebuild")
-                        .label("Write the new compose file from the running containers")
+                        .label(t!("Write the new compose file from the running containers"))
                         .checked(self.rebuild_ok)
                         .disabled(blocked)
                         .on_change(cx.listener(|d, v: &bool, _, cx| {
@@ -345,19 +345,19 @@ impl Render for TakeOverDialog {
         // Environment files carried along.
         b = b.child(section(
             &theme,
-            "Environment files",
-            Some(("to-env-help", "The .env beside the compose file and every env_file it names. Their values are already in the containers' settings and are carried over; a copy of each is kept beside the new file.")),
+            t!("Environment files"),
+            Some(("to-env-help", t!("The .env beside the compose file and every env_file it names. Their values are already in the containers' settings and are carried over; a copy of each is kept beside the new file."))),
         ));
         b = if plan.env_files.is_empty() {
-            b.child(div().text_sm().text_color(theme.muted_foreground).child("None"))
+            b.child(div().text_sm().text_color(theme.muted_foreground).child(t!("None")))
         } else {
             b.children(plan.env_files.iter().map(|(f, found)| file_row(&theme, f, *found)))
         };
 
         // A credential not found, or refused: a field, its reason, Check.
         let asks = [
-            (plan.needs_password, "Database password", if plan.db_user.is_empty() { "SENTIENT's user".to_string() } else { plan.db_user.clone() }, "PostgreSQL", plan.password_why.clone()),
-            (plan.needs_ch_password, "ClickHouse password", if plan.ch_user.is_empty() { "SENTIENT's user".to_string() } else { plan.ch_user.clone() }, "ClickHouse", plan.ch_password_why.clone()),
+            (plan.needs_password, t!("Database password"), if plan.db_user.is_empty() { t!("SENTIENT's user").to_string() } else { plan.db_user.clone() }, "PostgreSQL", plan.password_why.clone()),
+            (plan.needs_ch_password, t!("ClickHouse password"), if plan.ch_user.is_empty() { t!("SENTIENT's user").to_string() } else { plan.ch_user.clone() }, "ClickHouse", plan.ch_password_why.clone()),
         ];
         for (i, (asked, heading, user, engine, why)) in asks.into_iter().enumerate() {
             if !asked {
@@ -366,7 +366,7 @@ impl Render for TakeOverDialog {
             let c = &self.creds[i];
             b = b
                 .child(section(&theme, heading, None))
-                .child(div().text_sm().child(format!("The {engine} password for the user {user}.")))
+                .child(div().text_sm().child(tf!("The {engine} password for the user {user}.")))
                 .when(!why.is_empty(), |b| b.child(div().text_size(px(12.5)).text_color(theme.muted_foreground).child(why.clone())))
                 .child(
                     h_flex()
@@ -376,31 +376,31 @@ impl Render for TakeOverDialog {
                         .child(
                             crate::ui::button(SharedString::from(format!("to-pw-check-{i}")))
                                 .outline()
-                                .label(if c.checking { "Checking" } else { "Check" })
+                                .label(if c.checking { t!("Checking") } else { t!("Check") })
                                 .disabled(c.checking)
                                 .on_click(cx.listener(move |d, _, _, cx| d.check_password(i, cx))),
                         ),
                 )
                 .children(match &c.checked {
-                    Some(Ok(())) => Some(ui::outcome(&theme, Tone::Good, format!("{engine} accepts it."))),
+                    Some(Ok(())) => Some(ui::outcome(&theme, Tone::Good, tf!("{engine} accepts it."))),
                     Some(Err(e)) => Some(ui::outcome(&theme, Tone::Bad, e.clone())),
                     None => None,
                 });
         }
 
         // What is kept and what changes.
-        b = b.child(section(&theme, "What happens", None));
+        b = b.child(section(&theme, t!("What happens"), None));
         b = b
-            .child(ui::fact(&theme, "Containers", plan.containers.join(", ")))
-            .child(ui::fact(&theme, "Old containers", "Kept, stopped, until the new ones answer"))
-            .child(ui::fact(&theme, "Data volumes", format!("{} (used as they are)", plan.volumes.join(", "))))
-            .child(ui::fact(&theme, "Ports", plan.ports.join(", ")))
-            .when(!plan.password_from.is_empty() && plan.password_from != "given", |b| b.child(ui::fact(&theme, "Database password", format!("from {}", plan.password_from))))
-            .when(!plan.ch_password_from.is_empty() && plan.ch_password_from != "given", |b| b.child(ui::fact(&theme, "ClickHouse password", format!("from {}", plan.ch_password_from))))
-            .when(!plan.extra_env.is_empty(), |b| b.child(ui::fact(&theme, "Extra settings", plan.extra_env.join(", "))))
-            .when_some(plan.loopback_port, |b, p| b.child(ui::fact(&theme, "PostgreSQL", format!("port {p} on 127.0.0.1 only (it was not published)"))))
-            .child(ui::fact(&theme, "New compose file", plan.new_file.clone()))
-            .child(ui::fact(&theme, "Image", plan.image.clone()));
+            .child(ui::fact(&theme, t!("Containers"), plan.containers.join(", ")))
+            .child(ui::fact(&theme, t!("Old containers"), t!("Kept, stopped, until the new ones answer")))
+            .child(ui::fact(&theme, t!("Data volumes"), tf!("{} (used as they are)", plan.volumes.join(", "))))
+            .child(ui::fact(&theme, t!("Ports"), plan.ports.join(", ")))
+            .when(!plan.password_from.is_empty() && plan.password_from != "given", |b| b.child(ui::fact(&theme, t!("Database password"), tf!("from {}", plan.password_from))))
+            .when(!plan.ch_password_from.is_empty() && plan.ch_password_from != "given", |b| b.child(ui::fact(&theme, t!("ClickHouse password"), tf!("from {}", plan.ch_password_from))))
+            .when(!plan.extra_env.is_empty(), |b| b.child(ui::fact(&theme, t!("Extra settings"), plan.extra_env.join(", "))))
+            .when_some(plan.loopback_port, |b, p| b.child(ui::fact(&theme, "PostgreSQL", tf!("port {p} on 127.0.0.1 only (it was not published)"))))
+            .child(ui::fact(&theme, t!("New compose file"), plan.new_file.clone()))
+            .child(ui::fact(&theme, t!("Image"), plan.image.clone()));
 
         // The plan scrolls in a short window; the buttons stay.
         let max_h = (window.viewport_size().height - px(220.)).max(px(160.));
@@ -423,8 +423,8 @@ impl Render for TakeOverDialog {
                 .gap(crate::ui::button_gap())
                 .justify_end()
                 .mt_1()
-                .child(crate::ui::probed(crate::ui::button("to-cancel").outline().label("Cancel").on_click(|_, _, cx| crate::modal::close(cx))))
-                .child(crate::ui::probed(crate::ui::button("to-go").primary().label("Take over").disabled(!can_go).on_click(cx.listener(|d, _, _, cx| {
+                .child(crate::ui::probed(crate::ui::button("to-cancel").outline().label(t!("Cancel")).on_click(|_, _, cx| crate::modal::close(cx))))
+                .child(crate::ui::probed(crate::ui::button("to-go").primary().label(t!("Take over")).disabled(!can_go).on_click(cx.listener(|d, _, _, cx| {
                     let compose = d.compose.clone();
                     let (db, ch) = match &d.plan {
                         Plan::Got(p) => (p.needs_password, p.needs_ch_password),

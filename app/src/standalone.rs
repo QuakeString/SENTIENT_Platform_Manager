@@ -23,7 +23,7 @@ pub fn install_sentient(window: &mut Window, cx: &mut App) {
         .and_then(|me| std::process::Command::new(me).args(["--install", "--add-sentient"]).spawn().map_err(|e| e.to_string()));
     match started {
         Ok(_) => cx.quit(),
-        Err(e) => window.push_notification(format!("Could not open SENTIENT Setup: {e}"), cx),
+        Err(e) => window.push_notification(tf!("Could not open SENTIENT Setup: {e}"), cx),
     }
 }
 
@@ -36,7 +36,7 @@ pub fn resume_install(window: &mut Window, cx: &mut App) {
         .and_then(|me| std::process::Command::new(me).arg("--resume").spawn().map_err(|e| e.to_string()));
     match started {
         Ok(_) => cx.quit(),
-        Err(e) => window.push_notification(format!("Could not open SENTIENT Setup: {e}"), cx),
+        Err(e) => window.push_notification(tf!("Could not open SENTIENT Setup: {e}"), cx),
     }
 }
 
@@ -46,8 +46,8 @@ pub fn install_sentient_from_package(window: &mut Window, cx: &mut App) {
     let start = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(std::path::PathBuf::from);
     let rx = crate::chooser::open(
         cx,
-        crate::chooser::Ask { title: "Choose the SENTIENT package folder", start: start.as_deref(), directory: true },
-        PathPromptOptions { files: false, directories: true, multiple: false, prompt: Some("Choose the SENTIENT package folder".into()) },
+        crate::chooser::Ask { title: t!("Choose the SENTIENT package folder"), start: start.as_deref(), directory: true },
+        PathPromptOptions { files: false, directories: true, multiple: false, prompt: Some(t!("Choose the SENTIENT package folder").into()) },
     );
     cx.spawn(async move |cx| {
         let Ok(Ok(Some(paths))) = rx.await else { return };
@@ -55,9 +55,9 @@ pub fn install_sentient_from_package(window: &mut Window, cx: &mut App) {
         let message = match setup_in(&dir) {
             Some(setup) => match std::process::Command::new(&setup).args(["--install", "--add-sentient"]).current_dir(&dir).spawn() {
                 Ok(_) => return,
-                Err(e) => format!("Could not start {}: {e}", setup.display()),
+                Err(e) => tf!("Could not start {}: {e}", setup.display()),
             },
-            None => format!(
+            None => tf!(
                 "{} is not a SENTIENT package: choose the unpacked folder that holds SENTIENT-Setup and payload.",
                 dir.display()
             ),
@@ -71,15 +71,15 @@ pub fn install_sentient_from_package(window: &mut Window, cx: &mut App) {
 pub fn remove_manager(window: &mut Window, cx: &mut App) {
     crate::modal::alert(window, cx, |dialog, _, _| {
         let (title, text) = if crate::store::is_store() {
-            ("Remove the Platform Manager's helper?", "Its administrator copy and its sign-in task are removed, and it closes. The app stays in Start until you uninstall it there.")
+            (t!("Remove the Platform Manager's helper?"), t!("Its administrator copy and its sign-in task are removed, and it closes. The app stays in Start until you uninstall it there."))
         } else {
-            ("Remove the Platform Manager?", "Its shortcuts and the program are removed from this computer. SENTIENT is not installed, so nothing else changes.")
+            (t!("Remove the Platform Manager?"), t!("Its shortcuts and the program are removed from this computer. SENTIENT is not installed, so nothing else changes."))
         };
         dialog
             .title(title)
             .description(text)
             .confirm()
-            .ok_text("Remove")
+            .ok_text(t!("Remove"))
             .on_ok(|_, _, cx| {
                 cx.spawn(async move |cx| {
                     let sink = sentient_installer_core::progress::noop();

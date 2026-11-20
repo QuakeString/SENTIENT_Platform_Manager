@@ -111,7 +111,7 @@ impl Notes {
     }
 }
 
-const KNOWN: [&str; 6] = ["Added", "Changed", "Fixed", "Removed", "Security", "Deprecated"];
+const KNOWN: [&str; 6] = [n!("Added"), n!("Changed"), n!("Fixed"), n!("Removed"), n!("Security"), n!("Deprecated")];
 
 /// What updating over `notes` (newest first, every version that would be
 /// skipped) does to the database: the first version that says it changes
@@ -124,12 +124,12 @@ pub fn database_line(notes: &[Notes]) -> String {
         })
     });
     if let Some(n) = changes {
-        return format!("Database: changed by {} ({}).", n.version, n.database.clone().unwrap_or_default().trim_end_matches('.'));
+        return tf!("Database: changed by {} ({}).", n.version, n.database.clone().unwrap_or_default().trim_end_matches('.'));
     }
     if !notes.is_empty() && notes.iter().all(|n| n.database.is_some()) {
-        return if notes.len() == 1 { "Database: no changes in this version.".into() } else { "Database: no changes in these versions.".into() };
+        return if notes.len() == 1 { t!("Database: no changes in this version.").into() } else { t!("Database: no changes in these versions.").into() };
     }
-    "The notes do not say whether the database changes.".into()
+    t!("The notes do not say whether the database changes.").into()
 }
 
 /// The releases between `installed` (left out) and `target` (included),

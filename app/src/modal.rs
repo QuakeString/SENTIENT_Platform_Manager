@@ -235,7 +235,7 @@ pub fn layer(window: &mut Window, cx: &mut App, page_left: f32, page_top: f32) -
                             .ghost()
                             
                             .icon(gpui_kit::component::Icon::new(if full.on { gpui_kit::assets::IconName::Minimize } else { gpui_kit::assets::IconName::Maximize }))
-                            .tooltip(if full.on { "Leave full screen" } else { "Full screen" })
+                            .tooltip(if full.on { t!("Leave full screen") } else { t!("Full screen") })
                             .on_click(|_, _, cx| toggle_full_screen(cx)),
                     )
                 })
@@ -347,7 +347,7 @@ impl Alert {
 }
 
 pub fn alert(window: &mut Window, cx: &mut App, build: impl FnOnce(Alert, &mut Window, &mut App) -> Alert) {
-    let a = build(Alert { title: "".into(), text: "".into(), ok: "OK".into(), on_ok: None, cancel: "Cancel".into(), secondary: None, no_ok: false, list: Vec::new() }, window, cx);
+    let a = build(Alert { title: "".into(), text: "".into(), ok: "OK".into(), on_ok: None, cancel: t!("Cancel").into(), secondary: None, no_ok: false, list: Vec::new() }, window, cx);
     let title = a.title.clone();
     let view = cx.new(|_| AlertBody { a });
     open(Modal { title, body: view.into(), width: 480., icon: None, on_close: None }, cx);
@@ -368,8 +368,9 @@ impl Render for AlertBody {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
         // Taking something away reads red; anything else is the primary action.
-        let lower = self.a.ok.to_lowercase();
-        let destructive = ["delete", "remove", "uninstall", "stop", "replace", "sign everyone out", "sign out"].iter().any(|w| lower.starts_with(w));
+        // The label is translated, so it is matched against the English texts
+        // that start with these words (crate::i18n::label_starts).
+        let destructive = ["Delete", "Remove", "Uninstall", "Stop", "Replace", "Sign everyone out", "Sign out"].iter().any(|w| crate::i18n::label_starts(&self.a.ok, w));
         let on_ok = self.a.on_ok.clone();
         let click = move |e: &ClickEvent, window: &mut Window, cx: &mut App| {
             let close_it = on_ok.as_ref().is_none_or(|f| f(e, window, cx));

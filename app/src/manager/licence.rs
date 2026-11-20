@@ -94,7 +94,7 @@ impl LicencePage {
     pub fn new(target: Target, name: String, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let email = cx.new(|cx| InputState::new(window, cx).placeholder("admin@example.com"));
         let password = cx.new(|cx| InputState::new(window, cx).masked(true));
-        let key = cx.new(|cx| InputState::new(window, cx).placeholder("Enter your licence key"));
+        let key = cx.new(|cx| InputState::new(window, cx).placeholder(t!("Enter your licence key")));
         // The last administrator signed in here, as a start.
         if let Some(s) = crate::licence::email_for(&target.key()) {
             email.update(cx, |i, cx| i.set_value(s, window, cx));
@@ -289,7 +289,7 @@ impl LicencePage {
         let email = self.email.read(cx).value().trim().to_string();
         let password = self.password.read(cx).value().to_string();
         if email.is_empty() || password.is_empty() {
-            self.sign_in_error = Some("Enter the email and the password.".into());
+            self.sign_in_error = Some(t!("Enter the email and the password.").into());
             cx.notify();
             return;
         }
@@ -339,15 +339,15 @@ impl LicencePage {
         self.job.update(cx, |job, cx| {
             match &target {
                 Target::Remote(i) => {
-                    job.set_label(format!("Starting SENTIENT on {}", i.name));
+                    job.set_label(tf!("Starting SENTIENT on {}", i.name));
                     job.set_instance(i.id.clone(), i.name.clone(), i.color.clone());
                 }
-                Target::Local(_) => job.set_label("Starting SENTIENT"),
+                Target::Local(_) => job.set_label(t!("Starting SENTIENT")),
             }
             job.start(
                 move |sink| match target {
                     Target::Local(Some(r)) => r.platform().control(sink, "start"),
-                    Target::Local(None) => Err("SENTIENT isn't installed on this computer.".into()),
+                    Target::Local(None) => Err(t!("SENTIENT isn't installed on this computer.").into()),
                     Target::Remote(inst) => {
                         let args = ["control", "start"];
                         crate::remote::start_job(&inst, &args).and_then(|id| crate::remote::follow(&inst, &id, &sink))
@@ -363,7 +363,7 @@ impl LicencePage {
     fn update_agent(&mut self, cx: &mut Context<Self>) {
         let Target::Remote(inst) = self.target.clone() else { return };
         self.job.update(cx, |job, cx| {
-            job.set_label(format!("Updating the server agent on {}", inst.name));
+            job.set_label(tf!("Updating the server agent on {}", inst.name));
             job.set_instance(inst.id.clone(), inst.name.clone(), inst.color.clone());
             job.start(move |sink| crate::remote::deploy(&inst, &sink), cx)
         });
@@ -402,7 +402,7 @@ impl LicencePage {
             let got = cx.background_executor().spawn(async move { target.refresh(&t) }).await;
             this.update(cx, |p, cx| {
                 if let Err(e) = got {
-                    p.note = Some((Tone::Bad, format!("The licence could not be refreshed: {e}")));
+                    p.note = Some((Tone::Bad, tf!("The licence could not be refreshed: {e}")));
                 }
                 p.load(s.token.clone(), cx);
             })
@@ -416,7 +416,7 @@ impl LicencePage {
     fn activate_key(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let key = self.key.read(cx).value().trim().to_string();
         if key.is_empty() {
-            self.note = Some((Tone::Bad, "Enter the licence key first.".into()));
+            self.note = Some((Tone::Bad, t!("Enter the licence key first.").into()));
             cx.notify();
             return;
         }
@@ -457,8 +457,8 @@ impl LicencePage {
         let start = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(std::path::PathBuf::from);
         let rx = crate::chooser::open(
             cx,
-            crate::chooser::Ask { title: "Choose a licence key file", start: start.as_deref(), directory: false },
-            PathPromptOptions { files: true, directories: false, multiple: false, prompt: Some("Import this key file".into()) },
+            crate::chooser::Ask { title: t!("Choose a licence key file"), start: start.as_deref(), directory: false },
+            PathPromptOptions { files: true, directories: false, multiple: false, prompt: Some(t!("Import this key file").into()) },
         );
         let task = cx.spawn_in(window, async move |this, cx| {
             let Ok(Ok(Some(paths))) = rx.await else { return };
@@ -466,7 +466,7 @@ impl LicencePage {
             let name = file.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "licence.key".into());
             let read = std::fs::metadata(&file).map_err(|e| e.to_string()).and_then(|m| {
                 if m.len() > 1024 * 1024 {
-                    Err("The file is larger than 1 MB: not a licence key file.".to_string())
+                    Err(t!("The file is larger than 1 MB: not a licence key file.").to_string())
                 } else {
                     std::fs::read(&file).map_err(|e| e.to_string())
                 }
@@ -474,7 +474,7 @@ impl LicencePage {
             this.update_in(cx, |p, window, cx| match read {
                 Ok(bytes) => p.open_action(Act::Import(name, bytes), window, cx),
                 Err(e) => {
-                    p.note = Some((Tone::Bad, format!("{name} could not be read: {e}")));
+                    p.note = Some((Tone::Bad, tf!("{name} could not be read: {e}")));
                     cx.notify();
                 }
             })
@@ -518,10 +518,10 @@ enum Act {
 impl Act {
     fn title(&self) -> &'static str {
         match self {
-            Act::Activate(_) => "Activate licence",
-            Act::Import(..) => "Import licence key file",
-            Act::Deactivate => "Deactivate licence",
-            Act::ForceDelete => "Force-delete local licence",
+            Act::Activate(_) => t!("Activate licence"),
+            Act::Import(..) => t!("Import licence key file"),
+            Act::Deactivate => t!("Deactivate licence"),
+            Act::ForceDelete => t!("Force-delete local licence"),
         }
     }
 }
@@ -543,7 +543,7 @@ impl ActionDialog {
     fn go(&mut self, cx: &mut Context<Self>) {
         let password = self.password.read(cx).value().to_string();
         if password.is_empty() {
-            self.error = Some("Enter the system administrator password.".into());
+            self.error = Some(t!("Enter the system administrator password.").into());
             cx.notify();
             return;
         }
@@ -561,10 +561,10 @@ impl ActionDialog {
                     let (token, _) = target.sign_in(&email, &password)?;
                     crate::licence::set_session(&key, &email, &token);
                     match act {
-                        Act::Activate(k) => target.activate(&token, &k).map(|_| format!("The licence is active on {name}.")),
-                        Act::Import(file, bytes) => target.import(&token, &file, &bytes).map(|_| format!("The licence from {file} is active on {name}.")),
-                        Act::Deactivate => target.remove(&token, false).map(|_| format!("The licence is deactivated on {name}. The key can now be activated on another computer.")),
-                        Act::ForceDelete => target.remove(&token, true).map(|_| format!("The licence is deleted from {name}. Its binding on the licence server is not released.")),
+                        Act::Activate(k) => target.activate(&token, &k).map(|_| tf!("The licence is active on {name}.")),
+                        Act::Import(file, bytes) => target.import(&token, &file, &bytes).map(|_| tf!("The licence from {file} is active on {name}.")),
+                        Act::Deactivate => target.remove(&token, false).map(|_| tf!("The licence is deactivated on {name}. The key can now be activated on another computer.")),
+                        Act::ForceDelete => target.remove(&token, true).map(|_| tf!("The licence is deleted from {name}. Its binding on the licence server is not released.")),
                     }
                 })
                 .await;
@@ -590,24 +590,24 @@ impl Render for ActionDialog {
         let theme = cx.theme().clone();
         let name = &self.name;
         let (danger, ok): (bool, &str) = match &self.act {
-            Act::Activate(_) | Act::Import(..) => (false, "Activate"),
-            Act::Deactivate => (true, "Deactivate"),
-            Act::ForceDelete => (true, "Delete locally"),
+            Act::Activate(_) | Act::Import(..) => (false, t!("Activate")),
+            Act::Deactivate => (true, t!("Deactivate")),
+            Act::ForceDelete => (true, t!("Delete locally")),
         };
         let mut body = v_flex().gap_3();
         body = match &self.act {
-            Act::Activate(_) => body.child(div().text_sm().child(format!("SENTIENT checks this key with the licence server and binds it to {}'s hardware.", name_or_this(name)))),
-            Act::Import(file, _) => body.child(div().text_sm().child(format!("SENTIENT activates the licence in {file} and binds it to {}'s hardware.", name_or_this(name)))),
-            Act::Deactivate => body.child(div().text_sm().child(format!("This releases the binding on the licence server and removes the licence from {name}. The same key can then be activated on another computer."))),
+            Act::Activate(_) => body.child(div().text_sm().child(tf!("SENTIENT checks this key with the licence server and binds it to {}'s hardware.", name_or_this(name)))),
+            Act::Import(file, _) => body.child(div().text_sm().child(tf!("SENTIENT activates the licence in {file} and binds it to {}'s hardware.", name_or_this(name)))),
+            Act::Deactivate => body.child(div().text_sm().child(tf!("This releases the binding on the licence server and removes the licence from {name}. The same key can then be activated on another computer."))),
             Act::ForceDelete => body
-                .child(banner(&theme, Tone::Bad, None, format!("Deletes the licence from {name} without contacting the licence server. The binding there is not released and the slot stays taken until an administrator force-unbinds it on the licence server."), None).px(px(12.)).py(px(10.)))
-                .child(div().text_size(px(13.)).text_color(theme.muted_foreground).child("Use this only when Deactivate keeps failing, for example when the licence server cannot be reached.")),
+                .child(banner(&theme, Tone::Bad, None, tf!("Deletes the licence from {name} without contacting the licence server. The binding there is not released and the slot stays taken until an administrator force-unbinds it on the licence server."), None).px(px(12.)).py(px(10.)))
+                .child(div().text_size(px(13.)).text_color(theme.muted_foreground).child(t!("Use this only when Deactivate keeps failing, for example when the licence server cannot be reached."))),
         };
         body = body
             .child(
                 v_flex()
                     .gap(px(6.))
-                    .child(div().text_size(px(13.)).text_color(theme.muted_foreground).child("System administrator password"))
+                    .child(div().text_size(px(13.)).text_color(theme.muted_foreground).child(t!("System administrator password")))
                     .child(Input::new(&self.password).mask_toggle().disabled(self.busy)),
             )
             .when_some(self.error.clone(), |c, e| c.child(ui::outcome(&theme, Tone::Bad, e)));
@@ -625,7 +625,7 @@ impl Render for ActionDialog {
                 .gap(crate::ui::button_gap())
                 .justify_end()
                 .pt_1()
-                .child(crate::ui::probed(ui::button("licence-act-cancel").outline().label("Cancel").disabled(self.busy).on_click(|_, _, cx| crate::modal::close(cx))))
+                .child(crate::ui::probed(ui::button("licence-act-cancel").outline().label(t!("Cancel")).disabled(self.busy).on_click(|_, _, cx| crate::modal::close(cx))))
                 .child(crate::ui::probed(ok_button)),
         )
     }
@@ -649,7 +649,7 @@ struct LimitsDialog {
 impl LimitsDialog {
     fn open(reading: Reading, cx: &mut App) {
         let view = cx.new(|_| LimitsDialog { reading });
-        crate::modal::open(crate::modal::Modal { title: "All limits".into(), body: view.into(), width: 560., icon: None, on_close: None }, cx);
+        crate::modal::open(crate::modal::Modal { title: t!("All limits").into(), body: view.into(), width: 560., icon: None, on_close: None }, cx);
     }
 }
 
@@ -664,7 +664,7 @@ impl Render for LimitsDialog {
             let Some(v) = limits.get(*key) else { continue };
             let mut value = crate::licence::limit_text(key, v);
             if let Some(n) = used.and_then(|u| usage.get(u)).and_then(serde_json::Value::as_i64) {
-                value = format!("{} of {value}", crate::licence::grouped(n));
+                value = tf!("{} of {value}", crate::licence::grouped(n));
             }
             list = list.child(
                 h_flex()
@@ -678,9 +678,9 @@ impl Render for LimitsDialog {
             first = false;
         }
         if first {
-            list = list.child(div().text_sm().text_color(theme.muted_foreground).child("SENTIENT reported no limits."));
+            list = list.child(div().text_sm().text_color(theme.muted_foreground).child(t!("SENTIENT reported no limits.")));
         }
-        v_flex().gap_3().child(list).child(h_flex().justify_end().child(ui::button("all-limits-close").primary().label("Close").on_click(|_, _, cx| crate::modal::close(cx))))
+        v_flex().gap_3().child(list).child(h_flex().justify_end().child(ui::button("all-limits-close").primary().label(t!("Close")).on_click(|_, _, cx| crate::modal::close(cx))))
     }
 }
 
@@ -755,7 +755,7 @@ impl LicencePage {
                         .child(icon("user").size(px(16.)).text_color(theme.muted_foreground))
                         .child(div().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap().child(s.email.clone())),
                 )
-                .child(crate::ui::probed(ui::button("licence-sign-out").outline().label("Sign out").on_click(cx.listener(|p, _, _, cx| p.sign_out(cx)))))
+                .child(crate::ui::probed(ui::button("licence-sign-out").outline().label(t!("Sign out")).on_click(cx.listener(|p, _, _, cx| p.sign_out(cx)))))
             })
             .child(crate::ui::probed(refresh))
             .into_any_element()
@@ -771,14 +771,14 @@ impl LicencePage {
                     .gap(px(10.))
                     .items_center()
                     .child(icon("shield").size(px(22.)).text_color(theme.primary))
-                    .child(div().text_size(px(16.)).font_weight(FontWeight::MEDIUM).child("Sign in to manage the licence")),
+                    .child(div().text_size(px(16.)).font_weight(FontWeight::MEDIUM).child(t!("Sign in to manage the licence"))),
             )
-            .child(div().text_sm().text_color(theme.muted_foreground).child(format!("Use the SENTIENT system administrator of {}.", self.name)))
-            .child(field("Email", Input::new(&self.email).disabled(self.signing_in).into_any_element()))
-            .child(field("Password", Input::new(&self.password).mask_toggle().disabled(self.signing_in).into_any_element()))
+            .child(div().text_sm().text_color(theme.muted_foreground).child(tf!("Use the SENTIENT system administrator of {}.", self.name)))
+            .child(field(t!("Email"), Input::new(&self.email).disabled(self.signing_in).into_any_element()))
+            .child(field(t!("Password"), Input::new(&self.password).mask_toggle().disabled(self.signing_in).into_any_element()))
             .child(
                 gpui_kit::component::checkbox::Checkbox::new("licence-remember")
-                    .label("Remember me")
+                    .label(t!("Remember me"))
                     .checked(self.remember)
                     .disabled(self.signing_in)
                     .on_change(cx.listener(|p, v: &bool, _, cx| {
@@ -794,7 +794,7 @@ impl LicencePage {
                     .items_center()
                     .child(
                         div().relative().flex_shrink_0().child(
-                            ui::button("licence-sign-in").primary().label(if self.signing_in { "Signing in" } else { "Sign in" }).disabled(self.signing_in).on_click(cx.listener(|p, _, window, cx| p.sign_in(window, cx))),
+                            ui::button("licence-sign-in").primary().label(if self.signing_in { t!("Signing in") } else { t!("Sign in") }).disabled(self.signing_in).on_click(cx.listener(|p, _, window, cx| p.sign_in(window, cx))),
                         ),
                     )
                     .child(div().flex_1())
@@ -804,8 +804,8 @@ impl LicencePage {
                             .gap_1()
                             .text_size(px(13.))
                             .text_color(theme.muted_foreground)
-                            .child("Forgot it?")
-                            .child(div().cursor_pointer().hover(|d| d.text_color(theme.primary)).child("Reset it in Platform settings."))
+                            .child(t!("Forgot it?"))
+                            .child(div().cursor_pointer().hover(|d| d.text_color(theme.primary)).child(t!("Reset it in Platform settings.")))
                             .on_click(cx.listener(|_, _, _, cx| cx.emit(GoSettings))),
                     ),
             )
@@ -866,35 +866,35 @@ impl LicencePage {
         let st = &r.status;
         let local = matches!(self.target, Target::Local(_));
         let days = match (st.days_remaining, crate::licence::day_label(st.expiration_date.as_deref())) {
-            (_, None) => "No end date".to_string(),
-            (Some(d), Some(day)) if d > 0 => format!("{d} day{}, until {day}", if d == 1 { "" } else { "s" }),
-            (_, Some(day)) => format!("Ended on {day}"),
+            (_, None) => t!("No end date").to_string(),
+            (Some(d), Some(day)) if d > 0 => tf!("{d} day{}, until {day}", if d == 1 { "" } else { "s" }),
+            (_, Some(day)) => tf!("Ended on {day}"),
         };
         let row = |label: &'static str, value: AnyElement, first: bool| kv_row(theme, first).child(div().w(px(150.)).flex_shrink_0().text_color(theme.muted_foreground).child(label)).child(h_flex().flex_1().min_w_0().gap_2().items_center().flex_wrap().child(value));
-        let hw = if local { "This computer's hardware" } else { "This server's hardware" };
+        let hw = if local { t!("This computer's hardware") } else { t!("This server's hardware") };
         let bound = match &st.binding_block_reason {
-            None => h_flex().gap_2().items_center().child(hw).child(ui::pill(theme, Tone::Good, "Matches").text_size(px(12.)).py(px(0.))).into_any_element(),
-            Some(why) => v_flex().gap_1().child(h_flex().gap_2().items_center().child(hw).child(ui::pill(theme, Tone::Bad, "Does not match").text_size(px(12.)).py(px(0.)))).child(div().text_size(px(13.)).text_color(theme.danger).child(why.clone())).into_any_element(),
+            None => h_flex().gap_2().items_center().child(hw).child(ui::pill(theme, Tone::Good, t!("Matches")).text_size(px(12.)).py(px(0.))).into_any_element(),
+            Some(why) => v_flex().gap_1().child(h_flex().gap_2().items_center().child(hw).child(ui::pill(theme, Tone::Bad, t!("Does not match")).text_size(px(12.)).py(px(0.)))).child(div().text_size(px(13.)).text_color(theme.danger).child(why.clone())).into_any_element(),
         };
         let allowed = st.license_allowed_versions.clone().unwrap_or_default();
-        let build = st.binary_version.clone().unwrap_or_else(|| "Not known".into());
-        let covered = if allowed.is_empty() { String::new() } else { format!("· covered by v{}", allowed.join(", v")) };
+        let build = st.binary_version.clone().unwrap_or_else(|| t!("Not known").into());
+        let covered = if allowed.is_empty() { String::new() } else { tf!("· covered by v{}", allowed.join(", v")) };
         let build_el = h_flex().gap(px(6.)).items_baseline().child(build).when(!covered.is_empty(), |r| r.child(div().text_size(px(12.5)).text_color(theme.muted_foreground).child(covered))).into_any_element();
         let check = match st.binary_integrity.as_ref().map(|i| i.kind.as_str()) {
-            Some("known") => "Licence server knows this build".to_string(),
-            Some("unknown") => "Licence server does not know this build".to_string(),
-            Some("server-unreachable") => "Licence server not reachable".to_string(),
-            _ => "Not checked yet".to_string(),
+            Some("known") => t!("Licence server knows this build").to_string(),
+            Some("unknown") => t!("Licence server does not know this build").to_string(),
+            Some("server-unreachable") => t!("Licence server not reachable").to_string(),
+            _ => t!("Not checked yet").to_string(),
         };
         ui::panel(theme)
             .w(px(w))
             .gap_0()
             .py(px(6.))
             .px(px(18.))
-            .child(row("Days left", div().child(days).into_any_element(), true))
-            .child(row("Bound to", bound, false))
-            .child(row("This build", build_el, false))
-            .child(row("Last check", div().child(check).into_any_element(), false))
+            .child(row(t!("Days left"), div().child(days).into_any_element(), true))
+            .child(row(t!("Bound to"), bound, false))
+            .child(row(t!("This build"), build_el, false))
+            .child(row(t!("Last check"), div().child(check).into_any_element(), false))
     }
 
     fn limits(&self, theme: &gpui_kit::component::Theme, r: &Reading, w: f32, cx: &mut Context<Self>) -> Div {
@@ -911,8 +911,8 @@ impl LicencePage {
                 h_flex()
                     .min_h(px(28.))
                     .items_center()
-                    .child(div().flex_1().text_sm().font_weight(FontWeight::MEDIUM).child("Limits"))
-                    .child(ui::button("licence-all-limits").ghost().text_color(theme.primary).label("Show all limits").on_click({
+                    .child(div().flex_1().text_sm().font_weight(FontWeight::MEDIUM).child(t!("Limits")))
+                    .child(ui::button("licence-all-limits").ghost().text_color(theme.primary).label(t!("Show all limits")).on_click({
                         let r = r.clone();
                         cx.listener(move |_, _, _, cx| LimitsDialog::open(r.clone(), cx))
                     })),
@@ -923,7 +923,7 @@ impl LicencePage {
             let used = usage.get(*ukey).and_then(serde_json::Value::as_i64).unwrap_or(0);
             let over = max > 0 && used > max;
             let frac = if max > 0 { (used as f32 / max as f32).clamp(0., 1.) } else { 0. };
-            let value = format!("{} / {}", crate::licence::grouped(used), if max == 0 { "Unlimited".to_string() } else if max < 0 { "Not allowed".into() } else { crate::licence::grouped(max) });
+            let value = format!("{} / {}", crate::licence::grouped(used), if max == 0 { t!("Unlimited").to_string() } else if max < 0 { t!("Not allowed").into() } else { crate::licence::grouped(max) });
             let bar_c = if over { theme.danger } else { theme.primary };
             col = col.child(
                 kv_row(theme, i == 0)
@@ -966,13 +966,13 @@ impl LicencePage {
                     .border_1()
                     .border_color(theme.border)
                     .shadow_lg()
-                    .child(item("licence-m-refresh", "refresh", "Refresh", false).on_click(cx.listener(|p, _, window, cx| {
+                    .child(item("licence-m-refresh", "refresh", t!("Refresh"), false).on_click(cx.listener(|p, _, window, cx| {
                         p.menu = false;
                         let me = cx.entity().downgrade();
                         crate::modal::alert(window, cx, move |a, _, _| {
-                            a.title("Refresh the licence")
-                                .description("SENTIENT asks the licence server about this licence now, and the page shows its answer.")
-                                .ok_text("Refresh")
+                            a.title(t!("Refresh the licence"))
+                                .description(t!("SENTIENT asks the licence server about this licence now, and the page shows its answer."))
+                                .ok_text(t!("Refresh"))
                                 .on_ok(move |_, _, cx| {
                                     me.update(cx, |p, cx| p.refresh_licence(cx)).ok();
                                     true
@@ -980,8 +980,8 @@ impl LicencePage {
                         });
                         cx.notify();
                     })))
-                    .child(item("licence-m-deactivate", "unlink", "Deactivate", false).on_click(cx.listener(|p, _, window, cx| p.open_action(Act::Deactivate, window, cx))))
-                    .child(item("licence-m-force", "trash", "Force-delete local licence", true).on_click(cx.listener(|p, _, window, cx| p.open_action(Act::ForceDelete, window, cx))))
+                    .child(item("licence-m-deactivate", "unlink", t!("Deactivate"), false).on_click(cx.listener(|p, _, window, cx| p.open_action(Act::Deactivate, window, cx))))
+                    .child(item("licence-m-force", "trash", t!("Force-delete local licence"), true).on_click(cx.listener(|p, _, window, cx| p.open_action(Act::ForceDelete, window, cx))))
                     .on_mouse_down_out(move |_, _, cx| {
                         close
                             .update(cx, |p, cx| {
@@ -1005,15 +1005,15 @@ impl LicencePage {
             .relative()
             .w(px(w))
             .gap(px(8.))
-            .child(self.toggle(theme, "licence-details", "info", "Details", open == Some(Panel::Details), open == Some(Panel::Details)).on_click(cx.listener(|p, _, _, cx| {
+            .child(self.toggle(theme, "licence-details", "info", t!("Details"), open == Some(Panel::Details), open == Some(Panel::Details)).on_click(cx.listener(|p, _, _, cx| {
                 p.open = if p.open == Some(Panel::Details) { None } else { Some(Panel::Details) };
                 cx.notify();
             })))
-            .child(self.toggle(theme, "licence-limits", "chart", "Limits", open == Some(Panel::Limits), open == Some(Panel::Limits)).on_click(cx.listener(|p, _, _, cx| {
+            .child(self.toggle(theme, "licence-limits", "chart", t!("Limits"), open == Some(Panel::Limits), open == Some(Panel::Limits)).on_click(cx.listener(|p, _, _, cx| {
                 p.open = if p.open == Some(Panel::Limits) { None } else { Some(Panel::Limits) };
                 cx.notify();
             })))
-            .child(self.toggle(theme, "licence-manage", "key", "Manage", menu, false).on_click(cx.listener(|p, _, _, cx| {
+            .child(self.toggle(theme, "licence-manage", "key", t!("Manage"), menu, false).on_click(cx.listener(|p, _, _, cx| {
                 p.menu = !p.menu;
                 cx.notify();
             })))
@@ -1031,21 +1031,21 @@ impl LicencePage {
 
     fn no_licence(&self, theme: &gpui_kit::component::Theme, avail: f32, cx: &mut Context<Self>) -> Div {
         let w = avail.min(600.);
-        let title = if self.name == "this computer" { "No licence on this computer".to_string() } else { format!("No licence on {}", self.name) };
+        let title = if self.name == "this computer" { t!("No licence on this computer").to_string() } else { tf!("No licence on {}", self.name) };
         v_flex().flex_1().items_center().justify_center().pb(px(40.)).child(
             ui::panel(theme)
                 .w(px(w))
-                .child(h_flex().gap_2().items_center().child(div().flex_1().min_w_0().text_size(px(16.)).font_weight(FontWeight::MEDIUM).child(title)).child(ui::pill(theme, Tone::Neutral, "Not licensed").text_size(px(12.)).py(px(0.))))
+                .child(h_flex().gap_2().items_center().child(div().flex_1().min_w_0().text_size(px(16.)).font_weight(FontWeight::MEDIUM).child(title)).child(ui::pill(theme, Tone::Neutral, t!("Not licensed")).text_size(px(12.)).py(px(0.))))
                 .child(
-                    h_flex().gap(px(10.)).items_center().child(div().flex_1().min_w_0().child(Input::new(&self.key))).child(ui::probed(ui::button("licence-activate").primary().label("Activate").on_click(cx.listener(|p, _, window, cx| p.activate_key(window, cx))))),
+                    h_flex().gap(px(10.)).items_center().child(div().flex_1().min_w_0().child(Input::new(&self.key))).child(ui::probed(ui::button("licence-activate").primary().label(t!("Activate")).on_click(cx.listener(|p, _, window, cx| p.activate_key(window, cx))))),
                 )
                 .child(
                     h_flex()
                         .flex_wrap()
                         .gap(crate::ui::button_gap())
                         .items_center()
-                        .child(div().text_sm().text_color(theme.muted_foreground).child("Or import a licence key from a file:"))
-                        .child(ui::probed(ui::button("licence-import").outline().icon(icon("file")).label("Import key file").on_click(cx.listener(|p, _, window, cx| p.choose_key_file(window, cx))))),
+                        .child(div().text_sm().text_color(theme.muted_foreground).child(t!("Or import a licence key from a file:")))
+                        .child(ui::probed(ui::button("licence-import").outline().icon(icon("file")).label(t!("Import key file")).on_click(cx.listener(|p, _, window, cx| p.choose_key_file(window, cx))))),
                 )
                 .child(
                     h_flex()
@@ -1055,9 +1055,9 @@ impl LicencePage {
                         .pt(px(12.))
                         .border_t_1()
                         .border_color(theme.border)
-                        .child(div().text_sm().text_color(theme.muted_foreground).child("No key yet?"))
-                        .child(ui::probed(ui::button("licence-demo").outline().icon(icon("mail")).label("Request a demo licence").on_click(|_, _, cx| ui::open_url(crate::licence::DEMO_URL, cx))))
-                        .child(ui::probed(ui::button("licence-buy").outline().icon(icon("cart")).label("Buy a licence").on_click(|_, _, cx| ui::open_url(crate::licence::BUY_URL, cx)))),
+                        .child(div().text_sm().text_color(theme.muted_foreground).child(t!("No key yet?")))
+                        .child(ui::probed(ui::button("licence-demo").outline().icon(icon("mail")).label(t!("Request a demo licence")).on_click(|_, _, cx| ui::open_url(crate::licence::DEMO_URL, cx))))
+                        .child(ui::probed(ui::button("licence-buy").outline().icon(icon("cart")).label(t!("Buy a licence")).on_click(|_, _, cx| ui::open_url(crate::licence::BUY_URL, cx)))),
                 ),
         )
     }
@@ -1069,22 +1069,22 @@ impl LicencePage {
             return None;
         }
         let what = st.over_limit_entities.first().cloned().or_else(|| r.usage.as_ref().and_then(|u| u.over_limit.first().cloned()))?;
-        let noun = crate::licence::entity_noun(&what);
+        let (noun, nouns) = crate::licence::entity_noun(&what);
         let days = st.days_over_limit.unwrap_or(0);
-        let lead = format!("Over the {noun} limit for {days} day{}.", if days == 1 { "" } else { "s" });
+        let lead = if days == 1 { tf!("Over the {noun} limit for 1 day.") } else { tf!("Over the {noun} limit for {days} days.") };
         let lkey = crate::licence::ALL_LIMITS.iter().find(|(_, _, u)| *u == Some(what.as_str())).map(|(_, k, _)| *k).unwrap_or("");
         let max = r.status.limits.as_ref().and_then(|l| l.get(lkey)).and_then(serde_json::Value::as_i64);
         let used = r.usage.as_ref().and_then(|u| u.usage.get(&what)).and_then(serde_json::Value::as_i64);
         let mut text = match (used, max) {
-            (Some(u), Some(m)) => format!("{} {noun}s on a {}-{noun} licence. ", crate::licence::grouped(u), crate::licence::grouped(m)),
+            (Some(u), Some(m)) => tf!("{} {nouns} on a licence for {} {nouns}. ", crate::licence::grouped(u), crate::licence::grouped(m)),
             _ => String::new(),
         };
         text += &match st.days_until_blocked {
-            Some(0) => format!("SENTIENT blocks new {noun}s now, until {noun}s are removed or the licence is raised."),
-            Some(d) => format!("SENTIENT is blocked in {d} day{} unless {noun}s are removed or the licence is raised.", if d == 1 { "" } else { "s" }),
-            None => format!("Remove {noun}s or raise the licence."),
+            Some(0) => tf!("SENTIENT blocks new {nouns} now, until {nouns} are removed or the licence is raised."),
+            Some(d) => if d == 1 { tf!("SENTIENT is blocked in 1 day unless {nouns} are removed or the licence is raised.") } else { tf!("SENTIENT is blocked in {d} days unless {nouns} are removed or the licence is raised.") },
+            None => tf!("Remove {nouns} or raise the licence."),
         };
-        let buy = ui::button("licence-over-buy").outline().icon(icon("cart")).label("Buy a licence").on_click(|_, _, cx| ui::open_url(crate::licence::BUY_URL, cx)).into_any_element();
+        let buy = ui::button("licence-over-buy").outline().icon(icon("cart")).label(t!("Buy a licence")).on_click(|_, _, cx| ui::open_url(crate::licence::BUY_URL, cx)).into_any_element();
         Some(banner(theme, Tone::Bad, Some(&lead), text, Some(buy)))
     }
 }
@@ -1123,7 +1123,7 @@ impl Render for LicencePage {
         let w = (avail - 40.).min(licence_card::W);
         let busy = self.job.read(cx).is_running();
 
-        let mut page = ui::page_with(&theme, "Licence", "", action).relative().child(probe);
+        let mut page = ui::page_with(&theme, t!("Licence"), "", action).relative().child(probe);
         if let Some((tone, msg)) = self.note.clone() {
             page = page.child(h_flex().gap_2().items_start().child(div().flex_1().min_w_0().child(ui::outcome(&theme, tone, msg))).child(ui::button("licence-note-x").ghost().icon(gpui_kit::component::IconName::Close).on_click(cx.listener(|p, _, _, cx| {
                 p.note = None;
@@ -1135,31 +1135,31 @@ impl Render for LicencePage {
             View::Loading => page.child(self.skeleton(&theme, true, w)),
             View::NotInstalled => match self.target {
                 Target::Local(_) => page.child(ui::not_installed(&theme)),
-                Target::Remote(_) => page.child(ui::notice(&theme, Tone::Neutral, format!("SENTIENT isn't installed on {}.\nInstall it from the Update page first; the licence is kept by SENTIENT itself.", self.name))),
+                Target::Remote(_) => page.child(ui::notice(&theme, Tone::Neutral, tf!("SENTIENT isn't installed on {}.\nInstall it from the Update page first; the licence is kept by SENTIENT itself.", self.name))),
             },
             View::Stopped => page.child(banner(
                 &theme,
                 Tone::Warn,
-                Some("SENTIENT is stopped."),
-                "The licence is kept by SENTIENT itself, so it has to run to show or change it.".into(),
-                Some(ui::button("licence-start").outline().icon(Icon::empty().path("icons/power.svg")).label(if busy { "Starting" } else { "Start SENTIENT" }).disabled(busy).on_click(cx.listener(|p, _, _, cx| p.start_sentient(cx))).into_any_element()),
+                Some(t!("SENTIENT is stopped.")),
+                t!("The licence is kept by SENTIENT itself, so it has to run to show or change it.").into(),
+                Some(ui::button("licence-start").outline().icon(Icon::empty().path("icons/power.svg")).label(if busy { t!("Starting") } else { t!("Start SENTIENT") }).disabled(busy).on_click(cx.listener(|p, _, _, cx| p.start_sentient(cx))).into_any_element()),
             )),
             View::AgentOld => page.child(ui::notice_with(
                 &theme,
                 Tone::Warn,
-                "The agent on this server is out of date.\nUpdate it to manage the licence from here. Nothing else on the server changes.",
-                Some(ui::button("licence-agent-update").primary().label("Update agent").disabled(busy).on_click(cx.listener(|p, _, _, cx| p.update_agent(cx))).into_any_element()),
+                t!("The agent on this server is out of date.\nUpdate it to manage the licence from here. Nothing else on the server changes."),
+                Some(ui::button("licence-agent-update").primary().label(t!("Update agent")).disabled(busy).on_click(cx.listener(|p, _, _, cx| p.update_agent(cx))).into_any_element()),
             )),
             View::Failed(e) => page.child(ui::notice_with(
                 &theme,
                 Tone::Bad,
-                format!("The licence could not be read.\n{e}"),
-                Some(ui::button("licence-retry").outline().label("Retry").on_click(cx.listener(|p, _, _, cx| p.reload(cx))).into_any_element()),
+                tf!("The licence could not be read.\n{e}"),
+                Some(ui::button("licence-retry").outline().label(t!("Retry")).on_click(cx.listener(|p, _, _, cx| p.reload(cx))).into_any_element()),
             )),
             View::SignIn => page.child(centred(self.sign_in_card(&theme, cx))),
             View::Ready(r) => {
                 let page = match &r.status.binding_block_reason {
-                    Some(why) => page.child(banner(&theme, Tone::Bad, Some("SENTIENT refuses new items."), why.clone(), None)),
+                    Some(why) => page.child(banner(&theme, Tone::Bad, Some(t!("SENTIENT refuses new items.")), why.clone(), None)),
                     None => page,
                 };
                 let page = page.children(self.over_limit(&theme, &r));

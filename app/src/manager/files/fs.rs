@@ -249,16 +249,16 @@ impl Fs for LocalFs {
 
     fn shortcuts(&mut self) -> Vec<Shortcut> {
         let home = self.home();
-        let mut out = vec![("Home".to_string(), "house", home.clone())];
+        let mut out = vec![(t!("Home").to_string(), "house", home.clone())];
         let dl = Path::new(&home).join("Downloads");
         if dl.is_dir() {
-            out.push(("Downloads".into(), "download", dl.to_string_lossy().to_string()));
+            out.push((t!("Downloads").into(), "download", dl.to_string_lossy().to_string()));
         }
         for d in sysinfo::Disks::new_with_refreshed_list().list() {
             let m = d.mount_point().to_string_lossy().to_string();
             if d.is_removable() || m.starts_with("/media/") || m.starts_with("/run/media/") {
                 if !out.iter().any(|(_, _, p)| *p == m) {
-                    out.push(("USB disk".into(), "hard-drive", m));
+                    out.push((t!("USB disk").into(), "hard-drive", m));
                 }
             }
         }
@@ -268,9 +268,9 @@ impl Fs for LocalFs {
 
 fn local_err(path: &str, e: &std::io::Error) -> String {
     match e.kind() {
-        std::io::ErrorKind::NotFound => format!("{path} is not there."),
-        std::io::ErrorKind::PermissionDenied => format!("Permission denied: {path}."),
-        std::io::ErrorKind::AlreadyExists => format!("{path} is already there."),
+        std::io::ErrorKind::NotFound => tf!("{path} is not there."),
+        std::io::ErrorKind::PermissionDenied => tf!("Permission denied: {path}."),
+        std::io::ErrorKind::AlreadyExists => tf!("{path} is already there."),
         _ => format!("{path}: {e}"),
     }
 }
@@ -427,15 +427,15 @@ impl Fs for RemoteFs {
     fn shortcuts(&mut self) -> Vec<Shortcut> {
         let mut out = Vec::new();
         if let Some(s) = &self.p.sentient {
-            out.push(("SENTIENT folder".to_string(), "server", s.clone()));
+            out.push((t!("SENTIENT folder").to_string(), "server", s.clone()));
         }
         if let Some(b) = &self.p.backups {
-            out.push(("Backups".into(), "archive", b.clone()));
+            out.push((t!("Backups").into(), "archive", b.clone()));
         }
         if let Some(l) = &self.p.logs {
-            out.push(("Logs".into(), "scroll-text", l.clone()));
+            out.push((t!("Logs").into(), "scroll-text", l.clone()));
         }
-        out.push(("Home".into(), "house", self.p.home.clone()));
+        out.push((t!("Home").into(), "house", self.p.home.clone()));
         out
     }
 
@@ -477,7 +477,7 @@ impl Fs for CannedFs {
         if let Some(secs) = std::env::var("SPM_DEBUG_REMOTE_SLOW").ok().and_then(|s| s.parse::<u64>().ok()) {
             std::thread::sleep(std::time::Duration::from_secs(secs));
         }
-        self.get(path).cloned().and_then(|v| serde_json::from_value(v).ok()).ok_or_else(|| format!("{path} is not there."))
+        self.get(path).cloned().and_then(|v| serde_json::from_value(v).ok()).ok_or_else(|| nf!("{path} is not there."))
     }
     fn meta(&mut self, path: &str) -> Result<Option<(bool, u64, Option<i64>)>, String> {
         let up = PathBuf::from(path);

@@ -56,21 +56,21 @@ pub(crate) fn take_go_status() -> bool {
 /// Installing SENTIENT on a Windows server from here is not built yet (the
 /// owner's decision for 0.9.3); the gateway installs there (its own
 /// installer, run by the server's agent).
-pub(crate) const WINDOWS_REMOTE_INSTALL: &str = "Remote install of SENTIENT is not supported on Windows servers yet.";
+pub(crate) const WINDOWS_REMOTE_INSTALL: &str = n!("Remote install of SENTIENT is not supported on Windows servers yet.");
 
 /// Why Install SENTIENT cannot start on this server (its tooltip), or None.
 fn install_blocked(inst: &Instance, busy: bool) -> Option<&'static str> {
     sentient_install_blocked(remote::is_windows(inst), busy)
 }
 
-const BUSY: &str = "Another job is running on this server.";
+const BUSY: &str = n!("Another job is running on this server.");
 
 /// [`install_blocked`] for a server's system: SENTIENT is refused on Windows.
 fn sentient_install_blocked(windows: bool, busy: bool) -> Option<&'static str> {
     if windows {
-        Some(WINDOWS_REMOTE_INSTALL)
+        Some(crate::i18n::t(WINDOWS_REMOTE_INSTALL))
     } else if busy {
-        Some(BUSY)
+        Some(crate::i18n::t(BUSY))
     } else {
         None
     }
@@ -79,7 +79,7 @@ fn sentient_install_blocked(windows: bool, busy: bool) -> Option<&'static str> {
 /// Why the empty server's "Install the gateway" cannot start, or None: only
 /// another job (Linux and Windows servers alike).
 fn gateway_offer_blocked(_windows: bool, busy: bool) -> Option<&'static str> {
-    busy.then_some(BUSY)
+    busy.then(|| crate::i18n::t(BUSY))
 }
 
 /// Why the Gateway page's Install cannot run (its tooltip), or None:
@@ -91,7 +91,7 @@ fn gateway_install_blocker(windows: bool, runs: &Result<(String, String), String
             if o.image_missing && !windows {
                 Some(sentient_installer_core::dockerhub::not_published(&o.version))
             } else if windows && o.installer.is_none() {
-                Some(format!("Gateway {} has no Windows installer.", o.version))
+                Some(tf!("Gateway {} has no Windows installer.", o.version))
             } else {
                 None
             }
@@ -106,13 +106,13 @@ fn gateway_install_steps(windows: bool, version: &str) -> Vec<sentient_installer
     use sentient_installer_core::progress::PlanStep;
     if windows {
         vec![
-            PlanStep::new(format!("Downloading Sentient Gateway {version}")).when(&["Downloading Sentient Gateway"]).weight(3.),
-            PlanStep::new(format!("Installing Sentient Gateway {version}")).weight(2.),
+            PlanStep::new(nf!("Downloading Sentient Gateway {version}")).when(&[n!("Downloading Sentient Gateway")]).weight(3.),
+            PlanStep::new(nf!("Installing Sentient Gateway {version}")).weight(2.),
         ]
     } else {
         vec![
-            PlanStep::new(format!("Pulling {}:{version}", sentient_installer_core::gateway::IMAGE)).weight(3.),
-            PlanStep::new(format!("Starting Sentient Gateway {version}")),
+            PlanStep::new(nf!("Pulling {}:{version}", sentient_installer_core::gateway::IMAGE)).weight(3.),
+            PlanStep::new(nf!("Starting Sentient Gateway {version}")),
         ]
     }
 }
@@ -173,7 +173,7 @@ fn ask_sudo_password_now(inst: Instance, then: std::rc::Rc<dyn Fn(&mut App)>, cx
                         .child(div().text_sm().child(format!("sudo on {} asks for {}'s password.", self.inst.name, self.inst.user)))
                         .child(crate::ui::info(
                             "sudo-help".into(),
-                            "It is kept in this computer's secret store, never in a log.\n\nIf the account has no sudo, the agent is set up in its home folder instead, and jobs that need root say so.".into(),
+                            t!("It is kept in this computer's secret store, never in a log.\n\nIf the account has no sudo, the agent is set up in its home folder instead, and jobs that need root say so.").into(),
                         )),
                 )
                 .child(Input::new(&self.input).mask_toggle())
@@ -183,7 +183,7 @@ fn ask_sudo_password_now(inst: Instance, then: std::rc::Rc<dyn Fn(&mut App)>, cx
                         .justify_end()
                         // An account without sudo: the agent goes in its home
                         // folder (crate::remote::choose_user_install).
-                        .child(crate::ui::probed(crate::ui::button("sudo-none").label("This account has no sudo").on_click(cx.listener(|p, _, _, cx| {
+                        .child(crate::ui::probed(crate::ui::button("sudo-none").label(t!("This account has no sudo")).on_click(cx.listener(|p, _, _, cx| {
                             let inst = p.inst.clone();
                             let then = p.then.clone();
                             crate::modal::close(cx);
@@ -191,14 +191,14 @@ fn ask_sudo_password_now(inst: Instance, then: std::rc::Rc<dyn Fn(&mut App)>, cx
                                 let r = cx.background_executor().spawn(async move { remote::choose_user_install(&inst) }).await;
                                 let _ = cx.update(|cx| match r {
                                     Ok(()) => then(cx),
-                                    Err(e) => ui::show_error("The agent could not be set up for this account", e, cx),
+                                    Err(e) => ui::show_error(t!("The agent could not be set up for this account"), e, cx),
                                 });
                             })
                             .detach();
                         }))))
                         .child(div().flex_1())
-                        .child(crate::ui::probed(crate::ui::button("sudo-cancel").outline().label("Cancel").on_click(|_, _, cx| crate::modal::close(cx))))
-                        .child(crate::ui::probed(crate::ui::button("sudo-save").primary().label("Save and retry").on_click(cx.listener(|p, _, _, cx| {
+                        .child(crate::ui::probed(crate::ui::button("sudo-cancel").outline().label(t!("Cancel")).on_click(|_, _, cx| crate::modal::close(cx))))
+                        .child(crate::ui::probed(crate::ui::button("sudo-save").primary().label(t!("Save and retry")).on_click(cx.listener(|p, _, _, cx| {
                             let pw = p.input.read(cx).value().to_string();
                             if pw.is_empty() {
                                 return;
@@ -214,7 +214,7 @@ fn ask_sudo_password_now(inst: Instance, then: std::rc::Rc<dyn Fn(&mut App)>, cx
     let _ = handle.update(cx, |_, window, cx| {
         let input = cx.new(|cx| InputState::new(window, cx).masked(true).placeholder("sudo password"));
         let view = cx.new(|_| SudoPrompt { inst, input, then });
-        crate::modal::open(crate::modal::Modal { title: "Administrator password needed".into(), body: view.into(), width: 480., icon: None, on_close: None }, cx);
+        crate::modal::open(crate::modal::Modal { title: t!("Administrator password needed").into(), body: view.into(), width: 480., icon: None, on_close: None }, cx);
     });
 }
 
@@ -257,7 +257,7 @@ fn ask_pg_admin_password_now(inst: Instance, ask: crate::adopt::NeedsPgAdmin, th
                         let name = p.inst.name.clone();
                         crate::modal::close(cx);
                         cx.defer(move |cx| {
-                            ui::show_info(format!("Added on {name}"), msg, cx);
+                            ui::show_info(tf!("Added on {name}"), msg, cx);
                             then(cx);
                         });
                     }
@@ -284,12 +284,12 @@ fn ask_pg_admin_password_now(inst: Instance, ask: crate::adopt::NeedsPgAdmin, th
                     h_flex()
                         .gap_1()
                         .items_start()
-                        .child(div().flex_1().min_w_0().text_sm().child(format!("SENTIENT on {on} can be added with its PostgreSQL admin (postgres) password.")))
+                        .child(div().flex_1().min_w_0().text_sm().child(tf!("SENTIENT on {on} can be added with its PostgreSQL admin (postgres) password.")))
                         .child(crate::ui::info(
                             "pg-admin-help".into(),
-                            format!(
+                            tf!(
                                 "{}The Platform Manager needs it for updates, backups and repairs. It goes to the server once, on standard input, and is kept only in that server's secret store: not on this computer, never in a log.\n\nNobody knows it? Set a new one gives postgres a new password through SENTIENT's own database role. Anything else that signs in to PostgreSQL as postgres then needs the new one.",
-                                if self.ask.location.is_empty() { String::new() } else { format!("Found in {}.\n\n", self.ask.location) }
+                                if self.ask.location.is_empty() { String::new() } else { tf!("Found in {}.\n\n", self.ask.location) }
                             )
                             .into(),
                         )),
@@ -300,10 +300,10 @@ fn ask_pg_admin_password_now(inst: Instance, ask: crate::adopt::NeedsPgAdmin, th
                     h_flex()
                         .gap(crate::ui::button_gap())
                         .justify_end()
-                        .child(crate::ui::probed(crate::ui::button("pg-admin-new").outline().label("Set a new one").disabled(self.busy).on_click(cx.listener(|p, _, _, cx| p.add(None, cx)))))
+                        .child(crate::ui::probed(crate::ui::button("pg-admin-new").outline().label(t!("Set a new one")).disabled(self.busy).on_click(cx.listener(|p, _, _, cx| p.add(None, cx)))))
                         .child(div().flex_1())
-                        .child(crate::ui::probed(crate::ui::button("pg-admin-cancel").outline().label("Cancel").disabled(self.busy).on_click(|_, _, cx| crate::modal::close(cx))))
-                        .child(crate::ui::probed(crate::ui::button("pg-admin-add").primary().label(if self.busy { "Adding" } else { "Add" }).disabled(self.busy).on_click(cx.listener(|p, _, _, cx| {
+                        .child(crate::ui::probed(crate::ui::button("pg-admin-cancel").outline().label(t!("Cancel")).disabled(self.busy).on_click(|_, _, cx| crate::modal::close(cx))))
+                        .child(crate::ui::probed(crate::ui::button("pg-admin-add").primary().label(if self.busy { t!("Adding") } else { t!("Add") }).disabled(self.busy).on_click(cx.listener(|p, _, _, cx| {
                             let pw = p.input.read(cx).value().to_string();
                             p.add(Some(pw), cx);
                         })))),
@@ -312,7 +312,7 @@ fn ask_pg_admin_password_now(inst: Instance, ask: crate::adopt::NeedsPgAdmin, th
     }
     let Some(handle) = cx.active_window().or_else(|| cx.windows().into_iter().next()) else { return };
     let _ = handle.update(cx, |_, window, cx| {
-        let input = cx.new(|cx| InputState::new(window, cx).masked(true).placeholder("PostgreSQL admin password"));
+        let input = cx.new(|cx| InputState::new(window, cx).masked(true).placeholder(t!("PostgreSQL admin password")));
         let view = cx.new(|cx| {
             // Enter adds, as the button does.
             let _enter = cx.subscribe(&input, |p: &mut PgAdminPrompt, input, e: &InputEvent, cx| {
@@ -323,7 +323,7 @@ fn ask_pg_admin_password_now(inst: Instance, ask: crate::adopt::NeedsPgAdmin, th
             });
             PgAdminPrompt { inst, ask, input, then, busy: false, error: None, _enter }
         });
-        crate::modal::open(crate::modal::Modal { title: "PostgreSQL admin password needed".into(), body: view.into(), width: 520., icon: None, on_close: None }, cx);
+        crate::modal::open(crate::modal::Modal { title: t!("PostgreSQL admin password needed").into(), body: view.into(), width: 520., icon: None, on_close: None }, cx);
     });
 }
 
@@ -344,7 +344,7 @@ pub(crate) fn foreign_compose_notice(theme: &gpui_kit::component::Theme, headlin
     ui::notice_with(
         theme,
         Tone::Warn,
-        format!("{headline}\nSENTIENT runs from a compose file the Platform Manager did not write.\nLet the Platform Manager take it over first; the data stays."),
+        tf!("{headline}\nSENTIENT runs from a compose file the Platform Manager did not write.\nLet the Platform Manager take it over first; the data stays."),
         Some(take_over),
     )
 }
@@ -352,11 +352,11 @@ pub(crate) fn foreign_compose_notice(theme: &gpui_kit::component::Theme, headlin
 pub(crate) fn preflight_notice(theme: &gpui_kit::component::Theme, why: &str, take_over: Option<AnyElement>) -> Div {
     // With the button beside it, the way there needs no words.
     let why = if take_over.is_some() && (why.contains("did not write") || why.contains("own compose file")) {
-        "SENTIENT runs from a compose file the Platform Manager did not write.\nLet the Platform Manager take it over first; the data stays."
+        t!("SENTIENT runs from a compose file the Platform Manager did not write.\nLet the Platform Manager take it over first; the data stays.")
     } else {
         why
     };
-    ui::notice_with(theme, Tone::Warn, format!("The database type cannot be changed now.\n{why}"), take_over)
+    ui::notice_with(theme, Tone::Warn, tf!("The database type cannot be changed now.\n{why}"), take_over)
 }
 
 /// An answer that is the server's state, not a failure to read it: it
@@ -541,7 +541,7 @@ impl RemotePages {
                 }),
             )
         });
-        let vars_search = cx.new(|cx| InputState::new(_window, cx).placeholder("Search settings and variables"));
+        let vars_search = cx.new(|cx| InputState::new(_window, cx).placeholder(t!("Search settings and variables")));
         let vars_sub = cx.subscribe(&vars_search, |_, _, _: &InputEvent, cx| cx.notify());
         let gw_form = crate::manager::gateway::InstallForm::new("", 1883, _window, cx);
         let gw_form_subs: Vec<Subscription> = gw_form.inputs().into_iter().map(|i| cx.subscribe(i, |_, _, _: &InputEvent, cx| cx.notify())).collect();
@@ -590,7 +590,7 @@ impl RemotePages {
                                 let target = f.clone();
                                 let me = cx.entity().downgrade();
                                 cx.defer(move |cx| {
-                                    me.update(cx, |p, cx| p.run_job("Moving the database", vec!["migrate".into(), target], cx)).ok();
+                                    me.update(cx, |p, cx| p.run_job(t!("Moving the database"), vec!["migrate".into(), target], cx)).ok();
                                 });
                             }
                         }
@@ -889,7 +889,7 @@ impl RemotePages {
             // Development aid: show a refresh state (screens).
             self.agent_refresh = match std::env::var("SPM_DEBUG_AGENT_REFRESH").as_deref() {
                 Ok("updating") => AgentRefresh::Running,
-                Ok("failed") => AgentRefresh::Failed("The server did not answer (address, port or firewall).".into()),
+                Ok("failed") => AgentRefresh::Failed(t!("The server did not answer (address, port or firewall).").into()),
                 _ => AgentRefresh::Idle,
             };
             return;
@@ -941,7 +941,7 @@ impl RemotePages {
         let me = cx.entity().downgrade();
         self.agent_refresh = AgentRefresh::Running;
         self.job.update(cx, |job, cx| {
-            job.set_label(format!("Updating the server agent on {}", inst.name));
+            job.set_label(tf!("Updating the server agent on {}", inst.name));
             job.set_instance(inst.id.clone(), inst.name.clone(), inst.color.clone());
             job.set_retry(std::rc::Rc::new(move |cx: &mut App| {
                 me.update(cx, |p, cx| p.update_agent(cx)).ok();
@@ -950,7 +950,7 @@ impl RemotePages {
             job.start(
                 move |sink| {
                     remote::deploy(&inst, &sink)?;
-                    sink(sentient_installer_core::progress::Progress::Done { message: format!("The server agent on {} is up to date.", inst.name) });
+                    sink(sentient_installer_core::progress::Progress::Done { message: nf!("The server agent on {} is up to date.", inst.name) });
                     Ok(())
                 },
                 cx,
@@ -1123,7 +1123,7 @@ impl RemotePages {
         let fail = std::env::var_os("SPM_DEBUG_REFRESH_FAIL").filter(|f| std::path::Path::new(f).exists()).is_some();
         #[cfg(not(debug_assertions))]
         let fail = false;
-        let work = move || if fail { Err("ssh: connect to host: Connection timed out".to_string()) } else { work() };
+        let work = move || if fail { Err(t!("ssh: connect to host: Connection timed out").to_string()) } else { work() };
         self.fetch_raw(cx, work, move |p, r| {
             if p.inst.id != id || p.applied.get(&key).is_some_and(|g| *g > gen) {
                 return;
@@ -1184,7 +1184,7 @@ impl RemotePages {
             this.update(cx, |p, cx| {
                 if let Some(put) = p2.borrow_mut().take() {
                     p.in_flight = p.in_flight.saturating_sub(1);
-                    put(p, Read::Failed(format!("The server did not answer within {} seconds.", READ_TIMEOUT.as_secs())));
+                    put(p, Read::Failed(tf!("The server did not answer within {} seconds.", READ_TIMEOUT.as_secs())));
                     cx.notify();
                 }
             })
@@ -1256,7 +1256,7 @@ impl RemotePages {
                     .text_sm()
                     .text_color(theme.success_foreground)
                     .child(gpui_kit::component::Icon::new(gpui_kit::component::IconName::Check).size_4())
-                    .child("Saved")
+                    .child(t!("Saved"))
                     // It fades in (150 ms).
                     .with_animation(SharedString::from(format!("{section}-saved")), Animation::new(std::time::Duration::from_millis(150)).with_easing(crate::ui::ease_out), |el, t| el.opacity(t))
                     .into_any_element(),
@@ -1268,8 +1268,8 @@ impl RemotePages {
                         .gap(crate::ui::button_gap())
                         .items_center()
                         .min_w_0()
-                        .child(div().min_w_0().text_sm().text_color(theme.danger).overflow_hidden().whitespace_nowrap().text_ellipsis().child(format!("Not saved: {e}")))
-                        .child(crate::ui::button(SharedString::from(format!("{section}-retry"))).outline().label("Retry").on_click(cx.listener(move |this, _, _, cx| this.run_quiet(section, args.clone(), cx))))
+                        .child(div().min_w_0().text_sm().text_color(theme.danger).overflow_hidden().whitespace_nowrap().text_ellipsis().child(tf!("Not saved: {e}")))
+                        .child(crate::ui::button(SharedString::from(format!("{section}-retry"))).outline().label(t!("Retry")).on_click(cx.listener(move |this, _, _, cx| this.run_quiet(section, args.clone(), cx))))
                         .into_any_element(),
                 )
             }
@@ -1282,7 +1282,7 @@ impl RemotePages {
         // Never silently: another job still runs here.
         if self.job.read(cx).is_running() {
             let other = self.job_label.clone().map(|l| l.to_string()).unwrap_or_else(|| "another job".into());
-            ui::show_error(format!("{label} cannot start yet"), format!("{other} is still running on {}. It starts once that has finished; try again then.", self.inst.name), cx);
+            ui::show_error(tf!("{label} cannot start yet"), tf!("{other} is still running on {}. It starts once that has finished; try again then.", self.inst.name), cx);
             return;
         }
         // Long actions show on their page (crate::manager::jobview).
@@ -1291,8 +1291,8 @@ impl RemotePages {
         }
         let inst = self.inst.clone();
         self.last_args = args.clone();
-        self.job_label = Some(format!("{label} on {}", inst.name).into());
-        let strip_label = format!("{label} on {}", inst.name);
+        self.job_label = Some(tf!("{label} on {}", inst.name).into());
+        let strip_label = tf!("{label} on {}", inst.name);
         let me = cx.entity().downgrade();
         let (l2, a2) = (label.clone(), args.clone());
         let on_page = self.shown_job == Some(self.kind);
@@ -1322,7 +1322,7 @@ impl RemotePages {
                     sink(sentient_installer_core::progress::Progress::Step { name: crate::jobplan::CONNECT.into() });
                     let updated = remote::deploy(&inst, &sink);
                     if let Err(e) = &updated {
-                        sink(sentient_installer_core::progress::Progress::Log { line: format!("The agent could not be updated: {}", remote::split_failure(e).0) });
+                        sink(sentient_installer_core::progress::Progress::Log { line: nf!("The agent could not be updated: {}", remote::split_failure(e).0) });
                     }
                     if generic {
                         sink(sentient_installer_core::progress::Progress::Step { name: label.to_string() });
@@ -1330,7 +1330,7 @@ impl RemotePages {
                     let a: Vec<&str> = args.iter().map(String::as_str).collect();
                     let run = remote::start_job(&inst, &a).and_then(|id| remote::follow(&inst, &id, &sink));
                     match (run, updated) {
-                        (Err(e), Err(u)) if e == remote::AGENT_OLD || e.contains("usage: --job") => Err(remote::failed("The agent on this server could not be updated, and the one there is too old for this.", &remote::split_failure(&u).1.unwrap_or(u.clone()))),
+                        (Err(e), Err(u)) if e == remote::AGENT_OLD || e.contains("usage: --job") => Err(remote::failed(t!("The agent on this server could not be updated, and the one there is too old for this."), &remote::split_failure(&u).1.unwrap_or(u.clone()))),
                         (r, _) => r,
                     }
                 },
@@ -1355,15 +1355,15 @@ impl RemotePages {
         let label = self.job_label.clone().map(|l| l.to_string()).unwrap_or_default();
         let migrating = label.starts_with("Moving the database") || self.pending_migrate.is_some();
         let page = match self.kind {
-            Kind::Migration => "Migration",
-            Kind::Update => "Update",
-            Kind::Backup => "Backup and restore",
-            Kind::Repair => "Repair and uninstall",
-            Kind::Settings => "Platform settings",
-            Kind::Gateway => "Gateway",
+            Kind::Migration => t!("Migration"),
+            Kind::Update => t!("Update"),
+            Kind::Backup => t!("Backup and restore"),
+            Kind::Repair => t!("Repair and uninstall"),
+            Kind::Settings => t!("Platform settings"),
+            Kind::Gateway => t!("Gateway"),
             _ => "the page",
         };
-        let title = if self.pending_migrate.is_some() { format!("{label} (the migration follows)") } else { label };
+        let title = if self.pending_migrate.is_some() { tf!("{label} (the migration follows)") } else { label };
         let this = cx.entity().downgrade();
         let back = crate::manager::jobview::back_button("job-back", page, move |_, cx| {
             this.update(cx, |p, cx| {
@@ -1374,7 +1374,7 @@ impl RemotePages {
             .ok();
         });
         let retry = match job.state() {
-            JobState::Failed(_) => job.retry().map(|r| crate::ui::button("job-retry").primary().label("Try again").on_click(move |_, _, cx| r(cx)).into_any_element()),
+            JobState::Failed(_) => job.retry().map(|r| crate::ui::button("job-retry").primary().label(t!("Try again")).on_click(move |_, _, cx| r(cx)).into_any_element()),
             _ => None,
         };
         let _ = migrating;
@@ -1399,11 +1399,11 @@ impl RemotePages {
                         .child(div().flex_1())
                         .child(ui::skeleton_block(theme, "st-open", px(124.).into(), 32.)),
                 )
-                .child(ui::card_fact_loading(theme, "SENTIENT version", 120.))
-                .child(ui::card_fact_loading(theme, "Database", 170.))
-                .child(ui::card_fact_loading(theme, "Runs as", 70.))
-                .child(ui::card_fact_loading(theme, "Server", 220.))
-                .child(ui::card_fact_loading(theme, "Server agent", 160.))
+                .child(ui::card_fact_loading(theme, t!("SENTIENT version"), 120.))
+                .child(ui::card_fact_loading(theme, t!("Database"), 170.))
+                .child(ui::card_fact_loading(theme, t!("Runs as"), 70.))
+                .child(ui::card_fact_loading(theme, t!("Server"), 220.))
+                .child(ui::card_fact_loading(theme, t!("Server agent"), 160.))
                 .children(ui::card_actions(theme, control_buttons_loading(theme)))
         };
         let services = || {
@@ -1419,16 +1419,16 @@ impl RemotePages {
                 .child(ui::card_pair(status_card(), services()))
                 .child(
                     ui::panel(theme)
-                        .child(div().font_weight(FontWeight::MEDIUM).child("Database"))
+                        .child(div().font_weight(FontWeight::MEDIUM).child(t!("Database")))
                         .child(ui::skeleton_line(theme, "db-disk", 220.))
                         .child(ui::skeleton_block(theme, "db-bar", relative(1.).into(), 10.))
                         .child(ui::skeleton_line(theme, "db-legend", 420.)),
                 ),
             Kind::Backup => col
-                .child(ui::skeleton_card(theme, "bk-now", Some("Back up now"), &["Save to"]))
-                .child(ui::skeleton_card(theme, "bk-auto", Some("Automatic backup"), &["Back up every day", "Keep", "Include"]))
-                .child(ui::skeleton_card(theme, "bk-list", Some("Backups"), &["", "", ""])),
-            Kind::Gateway => col.child(ui::skeleton_card(theme, "gw", Some("Sentient Gateway"), &["Version", "Runs as", "Connects to"])),
+                .child(ui::skeleton_card(theme, "bk-now", Some(t!("Back up now")), &[t!("Save to")]))
+                .child(ui::skeleton_card(theme, "bk-auto", Some(t!("Automatic backup")), &[t!("Back up every day"), t!("Keep"), t!("Include")]))
+                .child(ui::skeleton_card(theme, "bk-list", Some(t!("Backups")), &["", "", ""])),
+            Kind::Gateway => col.child(ui::skeleton_card(theme, "gw", Some("Sentient Gateway"), &[t!("Version"), t!("Runs as"), t!("Connects to")])),
             Kind::Settings => col.child(ui::skeleton_card(theme, "set", None, &["", "", "", "", ""])),
             Kind::Update => col.child(ui::skeleton_card(theme, "upd", None, &["", ""])),
             _ => col.child(ui::skeleton_card(theme, "page", None, &["", "", ""])),
@@ -1464,14 +1464,14 @@ impl RemotePages {
             // instance's record is the one the install wrote there, and the
             // window opens its Status.
             let mut det = self.inst.detected.clone().unwrap_or_default();
-            det.install = if engine == crate::installation::Engine::Docker { "Docker" } else { "systemd services" }.into();
+            det.install = if engine == crate::installation::Engine::Docker { t!("Docker") } else { "systemd services" }.into();
             self.inst.detected = Some(det.clone());
             let mut list = remote::load();
             if let Some(i) = list.iter_mut().find(|i| i.id == self.inst.id) {
                 i.detected = Some(det);
             }
             if let Err(e) = remote::save(&list) {
-                crate::maintenance_ops::log_line(&format!("{}: the instance list was not saved: {e}", self.inst.name));
+                crate::maintenance_ops::log_line(&tf!("{}: the instance list was not saved: {e}", self.inst.name));
             }
             remote::LIST_CHANGED.store(true, std::sync::atomic::Ordering::SeqCst);
             GO_STATUS.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -1490,7 +1490,7 @@ impl RemotePages {
     /// "Install SENTIENT": the flow, or off with why.
     fn install_sentient_button(&self, primary: bool, cx: &mut Context<Self>) -> AnyElement {
         let busy = self.job.read(cx).is_running();
-        let b = crate::ui::button("r-install-sentient").label("Install SENTIENT");
+        let b = crate::ui::button("r-install-sentient").label(t!("Install SENTIENT"));
         let b = if primary { b.primary() } else { b.outline() };
         match install_blocked(&self.inst, busy) {
             Some(why) => div().id("r-install-sentient-why").child(b.disabled(true)).tooltip(crate::ui::tooltip(why)).into_any_element(),
@@ -1519,11 +1519,11 @@ impl RemotePages {
             .text_sm()
             .text_color(theme.muted_foreground)
             .when(!system.is_empty(), |r| r.child(div().text_color(theme.foreground).child(system.clone())))
-            .when_some(docker.filter(|d| d == "true" || d == "false"), |r, d| r.child(format!("Docker: {}", if d == "true" { "yes" } else { "no" })))
-            .when_some(disk, |r, b| r.child(format!("{} free", crate::dbstatus::bytes_label(b))));
+            .when_some(docker.filter(|d| d == "true" || d == "false"), |r, d| r.child(tf!("Docker: {}", if d == "true" { "yes" } else { "no" })))
+            .when_some(disk, |r, b| r.child(tf!("{} free", crate::dbstatus::bytes_label(b))));
         let version = match &self.newest {
             Read::Got(Some(v)) => format!("{v}, {}", crate::updates::Prefs::load().channel.label()),
-            Read::Loading => "Looking for the newest…".into(),
+            Read::Loading => t!("Looking for the newest…").into(),
             _ => String::new(),
         };
         let gw_version = self.updates.read(cx).found.as_ref().and_then(|f| f.gateway.clone().ok()).flatten().map(|o| o.version).unwrap_or_default();
@@ -1541,7 +1541,7 @@ impl RemotePages {
         let sentient = offer(
             ui::Product::Sentient,
             "SENTIENT",
-            "The platform: devices, dashboards, rules and its database. Runs here in Docker or as services.",
+            t!("The platform: devices, dashboards, rules and its database. Runs here in Docker or as services."),
             self.install_sentient_button(true, cx),
             version,
         );
@@ -1549,10 +1549,10 @@ impl RemotePages {
             offer(
                 ui::Product::Gateway,
                 "Sentient Gateway",
-                "Reads the plant's devices next to this server and sends their data to a SENTIENT, here or elsewhere.",
+                t!("Reads the plant's devices next to this server and sends their data to a SENTIENT, here or elsewhere."),
                 {
                     let why = gateway_offer_blocked(remote::is_windows(&self.inst), busy);
-                    let b = crate::ui::button("r-go-gateway").outline().label("Install the gateway").disabled(why.is_some()).on_click(|_, _, cx| go_gateway(cx));
+                    let b = crate::ui::button("r-go-gateway").outline().label(t!("Install the gateway")).disabled(why.is_some()).on_click(|_, _, cx| go_gateway(cx));
                     match why {
                         Some(why) => div().id("r-go-gateway-why").flex_shrink_0().child(b).tooltip(crate::ui::tooltip(why)).into_any_element(),
                         None => b.into_any_element(),
@@ -1578,10 +1578,10 @@ impl RemotePages {
                     v_flex()
                         .flex_1()
                         .min_w_0()
-                        .child(div().text_sm().child(format!("SENTIENT runs on this server ({}).", det.install)))
-                        .child(div().text_sm().text_color(theme.muted_foreground).child("Add existing lets the Platform Manager look after it. Nothing on it is changed.")),
+                        .child(div().text_sm().child(tf!("SENTIENT runs on this server ({}).", det.install)))
+                        .child(div().text_sm().text_color(theme.muted_foreground).child(t!("Add existing lets the Platform Manager look after it. Nothing on it is changed."))),
                 )
-                .child(crate::ui::button("r-adopt").outline().label("Add existing").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.run_job("Adding the existing SENTIENT", vec!["add-if-one".into()], cx))))
+                .child(crate::ui::button("r-adopt").outline().label(t!("Add existing")).disabled(busy).on_click(cx.listener(|this, _, _, cx| this.run_job(t!("Adding the existing SENTIENT"), vec!["add-if-one".into()], cx))))
         });
         ui::panel(&theme)
             .child(
@@ -1589,13 +1589,13 @@ impl RemotePages {
                     .gap_3()
                     .items_center()
                     .flex_wrap()
-                    .child(div().font_weight(FontWeight::MEDIUM).child("Nothing from SENTIENT is on this server yet"))
-                    .when(found, |r| r.child(ui::pill(&theme, Tone::Neutral, "SENTIENT found, not added"))),
+                    .child(div().font_weight(FontWeight::MEDIUM).child(t!("Nothing from SENTIENT is on this server yet")))
+                    .when(found, |r| r.child(ui::pill(&theme, Tone::Neutral, t!("SENTIENT found, not added")))),
             )
             .child(found_line)
             .child(offers)
             .children(existing)
-            .child(div().text_sm().text_color(theme.muted_foreground).child("Either, both, or one now and the other later. Each install has its own steps and can be removed on its own."))
+            .child(div().text_sm().text_color(theme.muted_foreground).child(t!("Either, both, or one now and the other later. Each install has its own steps and can be removed on its own.")))
     }
 
     /// A server with the gateway and no SENTIENT: the server itself, and
@@ -1610,12 +1610,12 @@ impl RemotePages {
                     .gap_3()
                     .items_center()
                     .child(div().font_weight(FontWeight::MEDIUM).child(self.inst.name.clone()))
-                    .child(ui::pill(&theme, Tone::Good, "Agent connected")),
+                    .child(ui::pill(&theme, Tone::Good, t!("Agent connected"))),
             )
-            .child(ui::fact(&theme, "Address", format!("{} over SSH, as {}", self.inst.host, self.inst.user)))
-            .when(!system.is_empty(), |p| p.child(ui::fact(&theme, "System", system.clone())))
-            .when_some(s.disk_free, |p, free| p.child(ui::fact(&theme, "Disk", format!("{} free", crate::dbstatus::bytes_label(free)))))
-            .when(!s.manager_version.is_empty(), |p| p.child(ui::fact(&theme, "Server agent", s.manager_version.clone())));
+            .child(ui::fact(&theme, t!("Address"), tf!("{} over SSH, as {}", self.inst.host, self.inst.user)))
+            .when(!system.is_empty(), |p| p.child(ui::fact(&theme, t!("System"), system.clone())))
+            .when_some(s.disk_free, |p, free| p.child(ui::fact(&theme, t!("Disk"), tf!("{} free", crate::dbstatus::bytes_label(free)))))
+            .when(!s.manager_version.is_empty(), |p| p.child(ui::fact(&theme, t!("Server agent"), s.manager_version.clone())));
         let g = self.gateway.got().cloned().unwrap_or_default();
         let get = |k: &str| g.get(k).cloned().unwrap_or_default();
         let running = get("running") == "true";
@@ -1623,8 +1623,8 @@ impl RemotePages {
         let detail = match (get("version"), host.is_empty()) {
             (v, true) if v.is_empty() => String::new(),
             (v, true) => v,
-            (v, false) if v.is_empty() => format!("sends to {host}:{}", get("port")),
-            (v, false) => format!("{v}, sends to {host}:{}", get("port")),
+            (v, false) if v.is_empty() => tf!("sends to {host}:{}", get("port")),
+            (v, false) => tf!("{v}, sends to {host}:{}", get("port")),
         };
         let row = |logo: ui::Product, name: &'static str, pill: AnyElement, detail: String, action: AnyElement| {
             h_flex()
@@ -1638,17 +1638,17 @@ impl RemotePages {
                 .child(action)
         };
         let gw_pill = if self.gateway.got().is_none() {
-            ui::pill(&theme, Tone::Neutral, "Installed")
+            ui::pill(&theme, Tone::Neutral, t!("Installed"))
         } else if running {
-            ui::pill(&theme, Tone::Good, "Running")
+            ui::pill(&theme, Tone::Good, t!("Running"))
         } else {
-            ui::pill(&theme, Tone::Bad, "Stopped")
+            ui::pill(&theme, Tone::Bad, t!("Stopped"))
         };
         let products = ui::panel(&theme)
             .gap_0()
-            .child(row(ui::Product::Gateway, "Sentient Gateway", gw_pill.into_any_element(), detail, crate::ui::button("r-st-gateway").ghost().label("Open").on_click(|_, _, cx| go_gateway(cx)).into_any_element()))
+            .child(row(ui::Product::Gateway, "Sentient Gateway", gw_pill.into_any_element(), detail, crate::ui::button("r-st-gateway").ghost().label(t!("Open")).on_click(|_, _, cx| go_gateway(cx)).into_any_element()))
             .child(div().h(px(1.)).bg(theme.border))
-            .child(row(ui::Product::Sentient, "SENTIENT", ui::pill(&theme, Tone::Neutral, "Not installed").into_any_element(), String::new(), self.install_sentient_button(false, cx)));
+            .child(row(ui::Product::Sentient, "SENTIENT", ui::pill(&theme, Tone::Neutral, t!("Not installed")).into_any_element(), String::new(), self.install_sentient_button(false, cx)));
         v_flex().gap(px(ui::GAP)).child(server).child(products)
     }
 
@@ -1688,11 +1688,11 @@ impl RemotePages {
                     busy,
                     Some(crate::manager::status::Running { serving: s.serving, any_up }),
                     std::rc::Rc::new(move |_, cx| {
-                        t1.update(cx, |p, cx| p.run_job("Starting SENTIENT", vec!["control".into(), "start".into()], cx)).ok();
+                        t1.update(cx, |p, cx| p.run_job(t!("Starting SENTIENT"), vec!["control".into(), "start".into()], cx)).ok();
                     }),
                     std::rc::Rc::new(move |_, cx| {
                         t2.update(cx, |p, cx| {
-                            p.run_job("Restarting SENTIENT", vec!["control".into(), "restart".into()], cx)
+                            p.run_job(t!("Restarting SENTIENT"), vec!["control".into(), "restart".into()], cx)
                         })
                         .ok();
                     }),
@@ -1707,7 +1707,7 @@ impl RemotePages {
                             if force {
                                 args.push("--stop-shared-pg".into());
                             }
-                            t3.update(cx, |p, cx| p.run_job("Stopping SENTIENT", args, cx)).ok();
+                            t3.update(cx, |p, cx| p.run_job(t!("Stopping SENTIENT"), args, cx)).ok();
                         }));
                     }),
                 );
@@ -1722,10 +1722,10 @@ impl RemotePages {
                                 .child(div().flex_1())
                                 .child(h_flex().ml_auto().child(ui::open_sentient_button("r-open", s.serving, move |_, _, cx| ui::open_url(&url, cx)))),
                         )
-                        .child(ui::card_fact(&theme, "SENTIENT version", s.sentient_version.clone()))
-                        .child(ui::card_fact(&theme, "Database", s.database.clone()))
-                        .when(!det.install.is_empty(), |p| p.child(ui::card_fact(&theme, "Runs as", det.install.clone())))
-                        .child(ui::card_fact(&theme, "Server", format!("{} · {} {}", self.inst.address(), det.os_name, det.arch)))
+                        .child(ui::card_fact(&theme, t!("SENTIENT version"), s.sentient_version.clone()))
+                        .child(ui::card_fact(&theme, t!("Database"), s.database.clone()))
+                        .when(!det.install.is_empty(), |p| p.child(ui::card_fact(&theme, t!("Runs as"), det.install.clone())))
+                        .child(ui::card_fact(&theme, t!("Server"), format!("{} · {} {}", self.inst.address(), det.os_name, det.arch)))
                         .child(
                             // A pill only while the update runs or when it failed;
                             // the normal state has none.
@@ -1735,15 +1735,15 @@ impl RemotePages {
                                 .gap_x_3()
                                 .gap_y_1()
                                 .items_center()
-                                .child(ui::card_fact(&theme, "Server agent", s.manager_version.clone()).flex_1().min_w(px(200.)))
+                                .child(ui::card_fact(&theme, t!("Server agent"), s.manager_version.clone()).flex_1().min_w(px(200.)))
                                 .map(|r| match &self.agent_refresh {
-                                    AgentRefresh::Running => r.child(ui::pill(&theme, Tone::Warn, "Updating")),
+                                    AgentRefresh::Running => r.child(ui::pill(&theme, Tone::Warn, t!("Updating"))),
                                     AgentRefresh::Failed(why) => {
                                         // A button: the real error, Copy and Retry.
                                         let why = why.clone();
                                         let this = cx.entity().downgrade();
                                         let inst_for_sudo = self.inst.clone();
-                                        r.child(div().id("agent-failed").cursor_pointer().child(ui::pill(&theme, Tone::Bad, "Update failed ›")).on_click(move |_, _, cx| {
+                                        r.child(div().id("agent-failed").cursor_pointer().child(ui::pill(&theme, Tone::Bad, t!("Update failed ›"))).on_click(move |_, _, cx| {
                                             let this = this.clone();
                                             if needs_sudo_password(&why) {
                                                 let t = this.clone();
@@ -1753,7 +1753,7 @@ impl RemotePages {
                                                 return;
                                             }
                                             ui::show_error_with(
-                                                "The server agent could not be updated",
+                                                t!("The server agent could not be updated"),
                                                 why.clone(),
                                                 Some(std::rc::Rc::new(move |cx: &mut App| {
                                                     this.update(cx, |p, cx| p.update_agent(cx)).ok();
@@ -1770,32 +1770,32 @@ impl RemotePages {
             }
         }
         // The same Database panel as this computer's, read without asking.
-        let db = ui::panel(&theme).child(div().font_weight(FontWeight::MEDIUM).child("Database"));
+        let db = ui::panel(&theme).child(div().font_weight(FontWeight::MEDIUM).child(t!("Database")));
         let db = match &self.db {
             Read::Loading => db.child(ui::skeleton_line(&theme, "db-disk", 220.)).child(ui::skeleton_block(&theme, "db-bar", relative(1.).into(), 10.)).child(ui::skeleton_line(&theme, "db-legend", 420.)),
             // A notice in the page in place of the card, with Retry.
             Read::Failed(e) => ui::notice_with(
                 &theme,
                 Tone::Warn,
-                format!("The database's size and state could not be read.\n{e}"),
-                Some(crate::ui::button("db-retry").outline().label("Retry").on_click(cx.listener(|p, _, _, cx| p.reload(cx))).into_any_element()),
+                tf!("The database's size and state could not be read.\n{e}"),
+                Some(crate::ui::button("db-retry").outline().label(t!("Retry")).on_click(cx.listener(|p, _, _, cx| p.reload(cx))).into_any_element()),
             ),
             Read::Got(d) => {
                 // From the server's status (the same as its tile); "None" only
                 // once the status says so, never while it is being read.
                 let last = match &self.status {
-                    Read::Got(s) => s.last_backup.clone().unwrap_or_else(|| "None".into()),
+                    Read::Got(s) => s.last_backup.clone().unwrap_or_else(|| t!("None").into()),
                     _ => String::new(),
                 };
                 let this = cx.entity().downgrade();
                 let back_up: std::rc::Rc<dyn Fn(&mut App)> = std::rc::Rc::new(move |cx| {
-                    this.update(cx, |p, cx| p.run_job("Backing up", vec!["backup-now".into()], cx)).ok();
+                    this.update(cx, |p, cx| p.run_job(t!("Backing up"), vec!["backup-now".into()], cx)).ok();
                 });
                 crate::manager::status::db_details(
                     &theme,
                     db,
                     d,
-                    "The server's database disk",
+                    t!("The server's database disk"),
                     None,
                     last,
                     crate::manager::status::DbActions {
@@ -1887,7 +1887,7 @@ impl RemotePages {
             std::rc::Rc::new(move |cx: &mut App| {
                 this.update(cx, |p, cx| {
                     p.pick = None;
-                    p.run_job("Updating SENTIENT", vec!["update".into(), "--version".into(), v.clone()], cx);
+                    p.run_job(t!("Updating SENTIENT"), vec!["update".into(), "--version".into(), v.clone()], cx);
                 })
                 .ok();
             })
@@ -1929,7 +1929,7 @@ impl RemotePages {
         use crate::manager::update::{Offered, product_row, sentient_summary};
         let theme = cx.theme().clone();
         let busy = self.job.read(cx).is_running();
-        let installed = self.status.got().map(|s| s.sentient_version.clone()).unwrap_or_else(|| "Reading…".into());
+        let installed = self.status.got().map(|s| s.sentient_version.clone()).unwrap_or_else(|| t!("Reading…").into());
         // What updates compare with: the version the container runs (Docker
         // on "latest"), and whether its tag can be pinned to a release here.
         let running = self.status.got().map(|s| s.comparable_version()).unwrap_or_default();
@@ -1980,13 +1980,13 @@ impl RemotePages {
                 None => row.child(crate::manager::licence_gate::pill(&theme, &licence, &build)).child(
                     crate::ui::button("r-update")
                         .primary()
-                        .label(format!("Update to {}", o.version))
+                        .label(tf!("Update to {}", o.version))
                         .disabled(busy)
                         .on_click(cx.listener(move |this, _, window, cx| this.gated_update(version.clone(), build.clone(), true, window, cx))),
                 ),
             };
             row = row
-                .child(crate::ui::button("r-notes").outline().label("What's new").on_click(move |_, _, cx| crate::manager::update::open_notes("SENTIENT", &inst_v, &o2, cx)));
+                .child(crate::ui::button("r-notes").outline().label(t!("What's new")).on_click(move |_, _, cx| crate::manager::update::open_notes("SENTIENT", &inst_v, &o2, cx)));
         }
         // The running version stays listed only to pin its tag.
         let versions: Vec<(crate::online::Version, bool, &'static str)> = match &self.versions {
@@ -2003,12 +2003,12 @@ impl RemotePages {
         let this = cx.entity().downgrade();
         row = row.child(crate::ui::fitted_dropdown(
             "r-other",
-            crate::ui::button("r-other").outline().label("Other version").disabled(busy || versions.is_empty()),
+            crate::ui::button("r-other").outline().label(t!("Other version")).disabled(busy || versions.is_empty()),
             move |menu, _, _| {
                 let mut menu = menu;
                 for (v, is_running, note) in &versions {
                     let (t, ver) = (this.clone(), v.version.clone());
-                    let label = if *is_running { format!("{} (running)", v.label()) } else { format!("{}{note}", v.label()) };
+                    let label = if *is_running { tf!("{} (running)", v.label()) } else { format!("{}{note}", v.label()) };
                     menu = menu.item(PopupMenuItem::new(label).on_click(move |_, _, cx| {
                         t.update(cx, |p, cx| {
                             p.pick = Some(ver.clone());
@@ -2043,7 +2043,7 @@ impl RemotePages {
                         let v = u.version.clone();
                         r = r.child(crate::manager::gateway::update_button(&theme, "r-gateway-update", &u, busy, std::rc::Rc::new(move |_, cx: &mut App| {
                             let v = v.clone();
-                            this.update(cx, |p, cx| p.run_job("Updating the gateway", vec!["gateway-update".into(), v], cx)).ok();
+                            this.update(cx, |p, cx| p.run_job(t!("Updating the gateway"), vec!["gateway-update".into(), v], cx)).ok();
                         })));
                     }
                     r
@@ -2064,13 +2064,13 @@ impl RemotePages {
                     .gap_3()
                     .items_center()
                     .flex_wrap()
-                    .child(div().text_sm().child("Channel"))
+                    .child(div().text_sm().child(t!("Channel")))
                     .child(channels)
                     .child(div().flex_1())
                     .child(
                         crate::ui::button("r-check")
                             .outline()
-                            .label(if checking { "Checking" } else { "Check for updates" })
+                            .label(if checking { t!("Checking") } else { t!("Check for updates") })
                             .disabled(checking)
                             .on_click(cx.listener(|this, _, _, cx| this.reload(cx))),
                     ),
@@ -2081,7 +2081,7 @@ impl RemotePages {
                 p.child(ui::outcome(
                     &theme,
                     Tone::Warn,
-                    if e.contains("limiting") { "GitHub is limiting requests from this network. Try again in an hour." } else { "The release page could not be reached. Nothing was changed." },
+                    if e.contains("limiting") { t!("GitHub is limiting requests from this network. Try again in an hour.") } else { t!("The release page could not be reached. Nothing was changed.") },
                 ))
             })
             .child(row)
@@ -2098,31 +2098,31 @@ impl RemotePages {
                         .rounded(theme.radius)
                         .bg(theme.secondary)
                         .child(div().flex_1().min_w(px(220.)).text_sm().child(if pin_only {
-                            format!("Keep this server on SENTIENT {v}, the version it runs? Only the image tag changes: no update and no database copy.")
+                            tf!("Keep this server on SENTIENT {v}, the version it runs? Only the image tag changes: no update and no database copy.")
                         } else if can_pin {
-                            format!("Install SENTIENT {v} on this server instead of {installed}? The compose file then names {v}.")
+                            tf!("Install SENTIENT {v} on this server instead of {installed}? The compose file then names {v}.")
                         } else {
-                            format!("Install SENTIENT {v} on this server instead of {installed}?")
+                            tf!("Install SENTIENT {v} on this server instead of {installed}?")
                         }))
                         // Whether the licence covers it (not for the version running).
                         .when(!pin_only, |r| r.child(crate::manager::licence_gate::pill(&theme, &licence, &sentient_installer_core::licence_version::build_version(None, &v))))
-                        .child(crate::ui::probed(crate::ui::button("r-pick-go").primary().label(if pin_only { format!("Pin to {v}") } else { format!("Install {v}") }).disabled(busy).on_click(cx.listener(move |this, _, window, cx| {
+                        .child(crate::ui::probed(crate::ui::button("r-pick-go").primary().label(if pin_only { tf!("Pin to {v}") } else { tf!("Install {v}") }).disabled(busy).on_click(cx.listener(move |this, _, window, cx| {
                             if pin_only {
                                 this.pick = None;
-                                this.run_job("Pinning SENTIENT's image tag", vec!["update".into(), "--version".into(), v2.clone()], cx);
+                                this.run_job(t!("Pinning SENTIENT's image tag"), vec!["update".into(), "--version".into(), v2.clone()], cx);
                             } else {
                                 let build = sentient_installer_core::licence_version::build_version(None, &v2);
                                 this.gated_update(v2.clone(), build, false, window, cx);
                             }
                         }))))
-                        .child(crate::ui::probed(crate::ui::button("r-pick-no").ghost().label("Cancel").on_click(cx.listener(|this, _, _, cx| {
+                        .child(crate::ui::probed(crate::ui::button("r-pick-no").ghost().label(t!("Cancel")).on_click(cx.listener(|this, _, _, cx| {
                             this.pick = None;
                             cx.notify();
                         })))),
                 )
             })
             .child(div().text_size(px(13.)).text_color(theme.muted_foreground).child(
-                "The update runs on the server by itself: a dropped connection does not stop it, and the previous version comes back if SENTIENT does not start.",
+                t!("The update runs on the server by itself: a dropped connection does not stop it, and the previous version comes back if SENTIENT does not start."),
             ))
     }
 
@@ -2130,7 +2130,7 @@ impl RemotePages {
         let this = cx.entity().downgrade();
         crate::modal::alert(window, cx, move |d, _, _| {
             let (this, path) = (this.clone(), path.clone());
-            d.title(format!("Delete {name}?")).description("The file is deleted from the server. This cannot be undone.").confirm().ok_text("Delete").on_ok(move |_, _, cx| {
+            d.title(tf!("Delete {name}?")).description(t!("The file is deleted from the server. This cannot be undone.")).confirm().ok_text(t!("Delete")).on_ok(move |_, _, cx| {
                 this.update(cx, |p, cx| p.run_quiet("backups", vec!["backup-delete".into(), path.clone()], cx)).ok();
                 true
             })
@@ -2227,13 +2227,13 @@ impl RemotePages {
         let folder_row = bk::card_row(
             &theme,
             narrow,
-            "Backup folder",
+            t!("Backup folder"),
             None,
             bk::folder_value(&theme, &b.folder, b.free, self.saved_note(&theme, "folder", cx)),
             Some(bk::change_button("r-folder-change", busy).on_click(cx.listener(|this, _, window, cx| this.open_folder_chooser(window, cx))).into_any_element()),
             false,
         );
-        let auto_row = bk::card_row(&theme, narrow, "Automatic backup", Some("A backup every day at this time, on the server's clock."), {
+        let auto_row = bk::card_row(&theme, narrow, t!("Automatic backup"), Some(t!("A backup every day at this time, on the server's clock.")), {
             let (t1, this1) = (time.clone(), this.clone());
             h_flex()
                 .gap_3()
@@ -2247,7 +2247,7 @@ impl RemotePages {
                         .ghost()
                         
                         .disabled(!on || busy)
-                        .label(if on { format!("Every day at {time}") } else { "Off".to_string() })
+                        .label(if on { tf!("Every day at {time}") } else { t!("Off").to_string() })
                         .dropdown_menu(move |menu, _, _| {
                             let mut menu = menu;
                             for h in 0..24 {
@@ -2264,17 +2264,17 @@ impl RemotePages {
                 )
         }, None, false);
         let keep_row = match &self.keep_input {
-            Some(input) => bk::card_row(&theme, narrow, "Keep", Some("Older backups are deleted, across the folder and any folder used before."), bk::keep_field(&theme, input, busy), None, false),
-            None => bk::card_row(&theme, narrow, "Keep", None, div().text_sm().child(format!("{keep} backups")), None, false),
+            Some(input) => bk::card_row(&theme, narrow, t!("Keep"), Some(t!("Older backups are deleted, across the folder and any folder used before.")), bk::keep_field(&theme, input, busy), None, false),
+            None => bk::card_row(&theme, narrow, t!("Keep"), None, div().text_sm().child(tf!("{keep} backups")), None, false),
         };
         let what_row = bk::card_row(
             &theme,
             narrow,
-            "What to back up",
-            Some("Everything: settings and all telemetry.\nLast 90 days: settings and the last 90 days of telemetry.\nConfiguration only: devices, dashboards, users and settings, no telemetry."),
+            t!("What to back up"),
+            Some(t!("Everything: settings and all telemetry.\nLast 90 days: settings and the last 90 days of telemetry.\nConfiguration only: devices, dashboards, users and settings, no telemetry.")),
             {
                 let at = if on { time.clone() } else { "off".into() };
-                let options = [("everything", "Everything"), ("last90", "Last 90 days"), ("configuration", "Configuration only")];
+                let options = [("everything", t!("Everything")), ("last90", t!("Last 90 days")), ("configuration", t!("Configuration only"))];
                 // Wide: the mockup's segments; narrow: the same as a menu.
                 if narrow {
                     bk::choice_menu(
@@ -2314,7 +2314,7 @@ impl RemotePages {
         );
         let card = ui::panel(&theme)
             .gap_0()
-            .child(div().pb_1().child(self.section_title(&theme, "Backup", "auto", cx)))
+            .child(div().pb_1().child(self.section_title(&theme, t!("Backup"), "auto", cx)))
             .child(folder_row)
             .child(auto_row)
             .child(keep_row)
@@ -2328,12 +2328,12 @@ impl RemotePages {
                 .pb_2()
                 .items_center()
                 .child(ui::layout_probe("header-actions"))
-                .child(div().flex_1().min_w_0().child(self.section_title(&theme, "Backups", "backups", cx)))
-                .child(crate::ui::probed(crate::ui::button("r-restore-from").outline().icon(crate::manager::restore::icon("history")).label("Restore from file").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.restore_from(cx)))))
-                .child(crate::ui::probed(crate::ui::button("r-backup").outline().label("Back up now").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.run_job("Backing up", vec!["backup-now".into()], cx))))),
+                .child(div().flex_1().min_w_0().child(self.section_title(&theme, t!("Backups"), "backups", cx)))
+                .child(crate::ui::probed(crate::ui::button("r-restore-from").outline().icon(crate::manager::restore::icon("history")).label(t!("Restore from file")).disabled(busy).on_click(cx.listener(|this, _, _, cx| this.restore_from(cx)))))
+                .child(crate::ui::probed(crate::ui::button("r-backup").outline().label(t!("Back up now")).disabled(busy).on_click(cx.listener(|this, _, _, cx| this.run_job(t!("Backing up"), vec!["backup-now".into()], cx))))),
         );
         if b.list.is_empty() {
-            list = list.child(div().py_2().text_sm().text_color(theme.muted_foreground).child("No backups in this folder. Restore from… can still take a file from this computer or another instance."));
+            list = list.child(div().py_2().text_sm().text_color(theme.muted_foreground).child(t!("No backups in this folder. Restore from… can still take a file from this computer or another instance.")));
         } else {
             list = list.child(bk::table_header(&theme, narrow));
         }
@@ -2361,7 +2361,7 @@ impl RemotePages {
                     // On the server: no folder to show here.
                     reveal: None,
                     verify: std::rc::Rc::new(move |_, cx| {
-                        t2.update(cx, |p, cx| p.run_job("Verifying the backup", vec!["backup-verify".into(), p2.clone()], cx)).ok();
+                        t2.update(cx, |p, cx| p.run_job(t!("Verifying the backup"), vec!["backup-verify".into(), p2.clone()], cx)).ok();
                     }),
                     delete: std::rc::Rc::new(move |window, cx| {
                         t3.update(cx, |p, cx| p.confirm_delete(p3.clone(), name2.clone(), window, cx)).ok();
@@ -2428,7 +2428,7 @@ impl RemotePages {
             for g in &groups {
                 for st in &g.settings {
                     let v = values.get(&st.env).cloned().unwrap_or_default();
-                    let ph = if st.default.is_empty() { "not set".to_string() } else { format!("default {}", st.default) };
+                    let ph = if st.default.is_empty() { "not set".to_string() } else { tf!("default {}", st.default) };
                     let input = cx.new(|cx| InputState::new(window, cx).default_value(v).placeholder(ph));
                     self._subscriptions.push(cx.subscribe(&input, |_, _, e: &InputEvent, cx| {
                         if matches!(e, InputEvent::Change) {
@@ -2483,7 +2483,7 @@ impl RemotePages {
         // while the status, which says so, is still being read).
         let external = self.status.got().is_some_and(|s| s.external_compose);
         if external {
-            notices = notices.child(foreign_compose_notice(&theme, "The settings cannot be changed now.", self.take_over_button("r-set-take-over", busy, cx)));
+            notices = notices.child(foreign_compose_notice(&theme, t!("The settings cannot be changed now."), self.take_over_button("r-set-take-over", busy, cx)));
         }
         // The tabs' counts: changes on each, red where a field is not valid.
         let mut badges = vec![(0usize, false); 5];
@@ -2504,8 +2504,8 @@ impl RemotePages {
         }));
         let all: Vec<crate::catalog::Setting> = groups.iter().flat_map(|g| g.settings.iter().cloned()).collect();
         let help = |st: &crate::catalog::Setting| {
-            let default = if st.default.is_empty() { "SENTIENT's own".to_string() } else { st.default.clone() };
-            Some(format!("{}\n\nVariable: {}. Built-in value: {default}.", st.help, st.env))
+            let default = if st.default.is_empty() { t!("SENTIENT's own").to_string() } else { st.default.clone() };
+            Some(tf!("{}\n\nVariable: {}. Built-in value: {default}.", st.help, st.env))
         };
         let row_of = |st: &crate::catalog::Setting, desc: Option<String>, cx: &mut Context<Self>| -> Option<ui::SettingRow> {
             let (_, input) = self.inputs.iter().find(|(e, _)| *e == st.env)?;
@@ -2525,10 +2525,10 @@ impl RemotePages {
             let control = crate::manager::setting_field::control(st, input, set, crate::manager::setting_field::FileButton::Check(check), window, cx);
             // What Check found, on the line under the name.
             let checked = self.file_checks.get(&st.env).map(|r| match r {
-                Read::Loading => "Checking…".to_string(),
-                Read::Got(true) => "Found on the server".to_string(),
-                Read::Got(false) => "Not on the server".to_string(),
-                Read::Failed(_) => "Could not check".to_string(),
+                Read::Loading => t!("Checking…").to_string(),
+                Read::Got(true) => t!("Found on the server").to_string(),
+                Read::Got(false) => t!("Not on the server").to_string(),
+                Read::Failed(_) => t!("Could not check").to_string(),
             });
             let is_changed = changed.contains(&st.env);
             Some(ui::SettingRow {
@@ -2558,7 +2558,7 @@ impl RemotePages {
                     .clone()
             });
             if let Some(c) = card.clone().filter(|_| first) {
-                body = body.child(ui::group(&theme, "Where the data is", vec![], vec![c.into_any_element()], cx));
+                body = body.child(ui::group(&theme, t!("Where the data is"), vec![], vec![c.into_any_element()], cx));
             }
             for (title, keys) in local::TAB_GROUPS[self.settings_tab] {
                 let rows: Vec<ui::SettingRow> = keys.iter().filter_map(|k| all.iter().find(|s| s.env == *k)).filter_map(|st| row_of(st, None, cx)).collect();
@@ -2568,7 +2568,7 @@ impl RemotePages {
             }
             // Database: where each store keeps its data, each with its Move….
             if let Some(c) = card.filter(|_| !first) {
-                body = body.child(ui::group(&theme, "Where the data is", vec![], vec![c.into_any_element()], cx));
+                body = body.child(ui::group(&theme, t!("Where the data is"), vec![], vec![c.into_any_element()], cx));
             }
         } else {
             // The same search box and All / Set filter as the local page.
@@ -2592,8 +2592,8 @@ impl RemotePages {
                     .px(px(18.))
                     .pt(px(14.))
                     .child(div().flex_1().min_w(px(200.)).child(Input::new(&self.vars_search).cleanable(true)))
-                    .child(crate::ui::probed(filter("r-filter-all", format!("All {total}"), !self.vars_set_only, false)))
-                    .child(crate::ui::probed(filter("r-filter-set", format!("Set {set_n}"), self.vars_set_only, true))),
+                    .child(crate::ui::probed(filter("r-filter-all", tf!("All {total}"), !self.vars_set_only, false)))
+                    .child(crate::ui::probed(filter("r-filter-set", tf!("Set {set_n}"), self.vars_set_only, true))),
             );
             let mut any = false;
             for g in &groups {
@@ -2605,7 +2605,7 @@ impl RemotePages {
                 }
             }
             if !any {
-                body = body.child(div().px(px(18.)).py(px(14.)).text_sm().text_color(theme.muted_foreground).child("No setting matches."));
+                body = body.child(div().px(px(18.)).py(px(14.)).text_sm().text_color(theme.muted_foreground).child(t!("No setting matches.")));
             }
         }
         let (changes, n_invalid) = (changed.len(), invalid.len());
@@ -2655,7 +2655,7 @@ impl RemotePages {
             return;
         }
         let inst = self.inst.clone();
-        self.job_label = Some(format!("Taking over the compose file on {}", inst.name).into());
+        self.job_label = Some(tf!("Taking over the compose file on {}", inst.name).into());
         self.job.update(cx, |job, cx| {
             job.set_plan(std::iter::once(crate::jobplan::connect()).chain(crate::jobplan::takeover()).collect());
             job.start(
@@ -2689,16 +2689,16 @@ impl RemotePages {
             return;
         }
         let inst = self.inst.clone();
-        self.job_label = Some(format!("Applying settings on {}", inst.name).into());
+        self.job_label = Some(tf!("Applying settings on {}", inst.name).into());
         self.job.update(cx, |job, cx| {
-            job.set_plan(vec![crate::jobplan::connect(), sentient_installer_core::progress::PlanStep::new("Applying the settings").detail("SENTIENT restarts where a setting needs it").weight(3.)]);
+            job.set_plan(vec![crate::jobplan::connect(), sentient_installer_core::progress::PlanStep::new(n!("Applying the settings")).detail(n!("SENTIENT restarts where a setting needs it")).weight(3.)]);
             job.start(
                 move |sink| {
                     sink(sentient_installer_core::progress::Progress::Step { name: crate::jobplan::CONNECT.into() });
                     remote::deploy(&inst, &sink)?;
                     let file = format!("{}/.spm-settings.json", remote::home(&inst)?);
                     remote::put_text(&inst, &file, &serde_json::to_string(&values).map_err(|e| e.to_string())?)?;
-                    sink(sentient_installer_core::progress::Progress::Step { name: "Applying the settings".into() });
+                    sink(sentient_installer_core::progress::Progress::Step { name: n!("Applying the settings").into() });
                     let id = remote::start_job(&inst, &["apply-settings", &file])?;
                     let r = remote::follow(&inst, &id, &sink);
                     remote::remove_file(&inst, &file);
@@ -2729,14 +2729,14 @@ impl RemotePages {
         // any check: the notice shows and the change stays off until the
         // takeover is done.
         let notice = match &self.preflight {
-            _ if external => Some(foreign_compose_notice(&theme, "The database type cannot be changed now.", self.take_over_button("r-mig-take-over", busy, cx))),
+            _ if external => Some(foreign_compose_notice(&theme, t!("The database type cannot be changed now."), self.take_over_button("r-mig-take-over", busy, cx))),
             Preflight::Failed(why) => Some(preflight_notice(&theme, why, None)),
             _ => None,
         };
         // Until the status says which type runs, nothing can be picked.
         let locked = busy || external || now.is_none();
         v_flex().gap(px(ui::GAP)).children(notice).child(ui::panel(&theme)
-            .child(div().text_sm().font_weight(FontWeight::MEDIUM).child("Database type"))
+            .child(div().text_sm().font_weight(FontWeight::MEDIUM).child(t!("Database type")))
             .child(crate::manager::migration::type_cards(&theme, "r-", now, chosen, &targets, locked, crate::remote::is_windows(&self.inst), std::rc::Rc::new(move |f, cx| {
                 this.update(cx, |p, cx| {
                     if !p.job.read(cx).is_running() {
@@ -2757,7 +2757,7 @@ impl RemotePages {
                         r.child(
                             crate::ui::button("r-migrate")
                                 .primary()
-                                .label(chosen.map(|f| format!("Change to {}", crate::installation::flavor_label(f))).unwrap_or_else(|| "Change database".into()))
+                                .label(chosen.map(|f| tf!("Change to {}", crate::installation::flavor_label(f))).unwrap_or_else(|| t!("Change database").into()))
                                 // Off while the preflight says the change cannot be made.
                                 .disabled(busy || external || chosen.is_none() || now.is_none() || self.preflight != Preflight::Idle)
                                 .loading(self.preflight == Preflight::Checking)
@@ -2769,14 +2769,14 @@ impl RemotePages {
                         r.child(
                             crate::ui::button("r-migrate-confirm")
                                 .danger()
-                                .label("Stop SENTIENT and change now")
+                                .label(t!("Stop SENTIENT and change now"))
                                 .disabled(busy)
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     this.migrate_confirm = false;
-                                    this.run_job("Moving the database", vec!["migrate".into(), f.as_str().into()], cx);
+                                    this.run_job(t!("Moving the database"), vec!["migrate".into(), f.as_str().into()], cx);
                                 })),
                         )
-                        .child(crate::ui::button("r-migrate-no").ghost().label("Cancel").on_click(cx.listener(|this, _, _, cx| {
+                        .child(crate::ui::button("r-migrate-no").ghost().label(t!("Cancel")).on_click(cx.listener(|this, _, _, cx| {
                             this.migrate_confirm = false;
                             cx.notify();
                         })))
@@ -2848,7 +2848,7 @@ impl RemotePages {
                     }
                     p.preflight = Preflight::Idle;
                     if creds.db.is_none() && creds.ch.is_none() {
-                        p.run_job("Taking over the compose file", args, cx);
+                        p.run_job(t!("Taking over the compose file"), args, cx);
                     } else {
                         // Passwords go in files only the account reads, which
                         // the agent removes when it read them.
@@ -2863,7 +2863,7 @@ impl RemotePages {
     }
 
     fn take_over_button(&self, id: &'static str, busy: bool, cx: &mut Context<Self>) -> AnyElement {
-        crate::ui::button(id).outline().label("Take over the compose file").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.open_take_over(cx))).into_any_element()
+        crate::ui::button(id).outline().label(t!("Take over the compose file")).disabled(busy).on_click(cx.listener(|this, _, _, cx| this.open_take_over(cx))).into_any_element()
     }
 
     fn repair_page(&self, cx: &mut Context<Self>) -> Div {
@@ -2874,13 +2874,13 @@ impl RemotePages {
         // The same panels as this computer's Repair.
         let take_over = external.then(|| {
             ui::panel(&theme)
-                .child(div().font_weight(FontWeight::MEDIUM).child("Take over the compose file"))
+                .child(div().font_weight(FontWeight::MEDIUM).child(t!("Take over the compose file")))
                 .child(
                     h_flex()
                         .gap_1()
                         .items_center()
-                        .child(div().text_sm().text_color(theme.muted_foreground).child("SENTIENT runs from a compose file the Platform Manager did not write."))
-                        .child(ui::info("r-take-over-help".into(), "The Platform Manager does not change that file. Changing settings or the database type needs the Platform Manager's own compose file: the same containers on the same data.".into())),
+                        .child(div().text_sm().text_color(theme.muted_foreground).child(t!("SENTIENT runs from a compose file the Platform Manager did not write.")))
+                        .child(ui::info("r-take-over-help".into(), t!("The Platform Manager does not change that file. Changing settings or the database type needs the Platform Manager's own compose file: the same containers on the same data.").into())),
                 )
                 .child(h_flex().child(self.take_over_button("r-take-over", busy, cx)))
         });
@@ -2891,24 +2891,24 @@ impl RemotePages {
             let line = crate::manager::gateway::runs_as(&get("kind"), &target.name, get("managed") == "true", get("recorded") == "true");
             let button = crate::ui::button("r-repair-gw-remove")
                 .danger()
-                .label("Remove the Gateway")
+                .label(t!("Remove the Gateway"))
                 .disabled(busy)
                 .on_click(cx.listener(move |this, _, _, cx| this.open_gateway_remove(target.clone(), cx)))
                 .into_any_element();
             crate::manager::gateway::remove_panel(&theme, "r-repair-gw", line, button)
         });
         v_flex().gap(px(ui::GAP)).children(take_over).child(ui::panel(&theme)
-            .child(div().font_weight(FontWeight::MEDIUM).child("Repair"))
+            .child(div().font_weight(FontWeight::MEDIUM).child(t!("Repair")))
             .child(div().text_sm().text_color(theme.muted_foreground).child(
-                "For a SENTIENT that does not start or a service that went missing: the services and their configuration are written again from this installation's record, and SENTIENT is started. Data and settings are kept.",
+                t!("For a SENTIENT that does not start or a service that went missing: the services and their configuration are written again from this installation's record, and SENTIENT is started. Data and settings are kept."),
             ))
-            .child(h_flex().child(crate::ui::button("r-repair").outline().label("Repair").disabled(busy || !installed).on_click(cx.listener(|this, _, _, cx| this.run_job("Repairing", vec!["repair".into()], cx)))))).children(gw)
+            .child(h_flex().child(crate::ui::button("r-repair").outline().label(t!("Repair")).disabled(busy || !installed).on_click(cx.listener(|this, _, _, cx| this.run_job(t!("Repairing"), vec!["repair".into()], cx)))))).children(gw)
             .when(installed, |c| {
                 c.child(
                     ui::panel(&theme)
-                        .child(div().font_weight(FontWeight::MEDIUM).child("Uninstall"))
-                        .child(div().text_sm().text_color(theme.muted_foreground).child("Choose what to remove from this server, the same way as on this computer."))
-                        .child(ui::button_row(vec![crate::ui::button("r-uninstall").danger().label("Uninstall").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.open_uninstall(cx))).into_any_element()])),
+                        .child(div().font_weight(FontWeight::MEDIUM).child(t!("Uninstall")))
+                        .child(div().text_sm().text_color(theme.muted_foreground).child(t!("Choose what to remove from this server, the same way as on this computer.")))
+                        .child(ui::button_row(vec![crate::ui::button("r-uninstall").danger().label(t!("Uninstall")).disabled(busy).on_click(cx.listener(|this, _, _, cx| this.open_uninstall(cx))).into_any_element()])),
                 )
             })
     }
@@ -2957,8 +2957,8 @@ impl RemotePages {
             let found = self.updates.read(cx).found.as_ref().map(|f| f.gateway.clone());
             let offer = found.clone().and_then(|r| r.ok()).flatten();
             let looking = match &found {
-                Some(Err(e)) => Some(format!("Gateway updates: {e}")),
-                Some(Ok(None)) => Some("No gateway release on this channel.".to_string()),
+                Some(Err(e)) => Some(tf!("Gateway updates: {e}")),
+                Some(Ok(None)) => Some(t!("No gateway release on this channel.").to_string()),
                 _ => None,
             };
             let why = offer.as_ref().and_then(|o| sentient_installer_core::gateway::offer_blocker(&status, o, crate::remote::is_windows(&self.inst)));
@@ -2975,7 +2975,7 @@ impl RemotePages {
                 busy,
                 std::rc::Rc::new(move |_, cx: &mut App| {
                     let v = v.clone();
-                    this.update(cx, |p, cx| p.run_job("Updating the gateway", vec!["gateway-update".into(), v], cx)).ok();
+                    this.update(cx, |p, cx| p.run_job(t!("Updating the gateway"), vec!["gateway-update".into(), v], cx)).ok();
                 }),
             );
         }
@@ -2988,7 +2988,7 @@ impl RemotePages {
                 .items_center()
                 .child(ui::product_logo(ui::Product::Gateway, 24.))
                 .child(div().font_weight(FontWeight::MEDIUM).child("Sentient Gateway"))
-                .child(if !installed { ui::pill(&theme, Tone::Neutral, "Not installed") } else if running { ui::pill(&theme, Tone::Good, "Gateway is running") } else { ui::pill(&theme, Tone::Bad, "Gateway is stopped") })
+                .child(if !installed { ui::pill(&theme, Tone::Neutral, t!("Not installed")) } else if running { ui::pill(&theme, Tone::Good, t!("Gateway is running")) } else { ui::pill(&theme, Tone::Bad, t!("Gateway is stopped")) })
                 .children({
                     let s = match &self.gw_settings {
                         Read::Got(s) => Some(Ok(s.clone())),
@@ -3004,7 +3004,7 @@ impl RemotePages {
         let recorded = get("recorded") == "true";
         let managed = get("managed") == "true";
         let target = crate::manager::gateway::RemoveTarget::of_remote(&get, self.inst.name.clone());
-        let runs_as = if kind.is_empty() { "Not known".to_string() } else { crate::manager::gateway::runs_as(&kind, &target.name, managed, recorded) };
+        let runs_as = if kind.is_empty() { t!("Not known").to_string() } else { crate::manager::gateway::runs_as(&kind, &target.name, managed, recorded) };
         let outside = !managed && !recorded && kind != "windows-service" && !kind.is_empty();
         let compose = get("compose");
         let volumes = get("volumes");
@@ -3014,19 +3014,19 @@ impl RemotePages {
         let page = get("page");
         p = p
             .children(legacy)
-            .when(!version.is_empty(), |p| p.child(ui::fact(&theme, "Version", version.clone())))
-            .when(!kind.is_empty(), |p| p.child(ui::fact(&theme, "Runs as", runs_as.clone())))
-            .when(!host.is_empty(), |p| p.child(ui::fact(&theme, "Connects to", format!("{host}:{}", get("port")))))
+            .when(!version.is_empty(), |p| p.child(ui::fact(&theme, t!("Version"), version.clone())))
+            .when(!kind.is_empty(), |p| p.child(ui::fact(&theme, t!("Runs as"), runs_as.clone())))
+            .when(!host.is_empty(), |p| p.child(ui::fact(&theme, t!("Connects to"), format!("{host}:{}", get("port")))))
             .when(!compose.is_empty(), |p| {
                 let proj = get("project");
-                p.child(ui::fact(&theme, "Compose", if proj.is_empty() { compose.clone() } else { format!("{proj}, in {compose}") }))
+                p.child(ui::fact(&theme, t!("Compose"), if proj.is_empty() { compose.clone() } else { tf!("{proj}, in {compose}") }))
             })
-            .when(!volumes.is_empty(), |p| p.child(ui::fact(&theme, "Volumes", volumes.replace(',', ", "))))
+            .when(!volumes.is_empty(), |p| p.child(ui::fact(&theme, t!("Volumes"), volumes.replace(',', ", "))))
             .when(!page.is_empty(), |p| {
                 p.child(if page == "off" {
-                    ui::fact_help(&theme, "Web page", "Off", crate::manager::gateway::page_off_help(&kind))
+                    ui::fact_help(&theme, t!("Web page"), t!("Off"), crate::manager::gateway::page_off_help(&kind))
                 } else {
-                    ui::fact(&theme, "Web page", page.clone())
+                    ui::fact(&theme, t!("Web page"), page.clone())
                 })
             });
         // A plain process has no service to start it again: no controls.
@@ -3045,11 +3045,11 @@ impl RemotePages {
         let act = |action: &'static str| -> std::rc::Rc<dyn Fn(&mut Window, &mut App)> {
             let this = this.clone();
             std::rc::Rc::new(move |_, cx| {
-                this.update(cx, |p, cx| p.run_job("Gateway", vec!["gateway-control".into(), action.into()], cx)).ok();
+                this.update(cx, |p, cx| p.run_job(t!("Gateway"), vec!["gateway-control".into(), action.into()], cx)).ok();
             })
         };
         let services = if controllable {
-            crate::manager::status::service_buttons(&theme, "r-gw-", busy, Some(crate::manager::status::Running { serving: running, any_up: running }), "Stop", act("start"), act("restart"), act("stop"))
+            crate::manager::status::service_buttons(&theme, "r-gw-", busy, Some(crate::manager::status::Running { serving: running, any_up: running }), t!("Stop"), act("start"), act("restart"), act("stop"))
         } else {
             Vec::new()
         };
@@ -3071,12 +3071,12 @@ impl RemotePages {
                 // A wrapped line ends at the right too.
                 .justify_end()
                 .items_center()
-                .child(crate::ui::probed(crate::ui::button("r-gw-remove").danger().label("Remove the Gateway").disabled(busy).on_click(cx.listener(move |this, _, _, cx| this.open_gateway_remove(target.clone(), cx)))))
+                .child(crate::ui::probed(crate::ui::button("r-gw-remove").danger().label(t!("Remove the Gateway")).disabled(busy).on_click(cx.listener(move |this, _, _, cx| this.open_gateway_remove(target.clone(), cx)))))
                 .when(outside, |r| {
                     r.child(crate::ui::probed(
-                        h_flex().gap_1().items_center().child(crate::ui::button("r-gw-adopt").outline().label("Manage it here").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.run_job("Recording the gateway", vec!["gateway-adopt".into()], cx)))).child(ui::info(
+                        h_flex().gap_1().items_center().child(crate::ui::button("r-gw-adopt").outline().label(t!("Manage it here")).disabled(busy).on_click(cx.listener(|this, _, _, cx| this.run_job(t!("Recording the gateway"), vec!["gateway-adopt".into()], cx)))).child(ui::info(
                             "r-gw-adopt-help".into(),
-                            "Records this gateway as the one the Platform Manager manages on this server. Nothing about it changes: the container, its compose file and its volumes stay as they are.".into(),
+                            t!("Records this gateway as the one the Platform Manager manages on this server. Nothing about it changes: the container, its compose file and its volumes stay as they are.").into(),
                         )),
                     ))
                 })
@@ -3089,9 +3089,9 @@ impl RemotePages {
                     let v = o.version.clone();
                     let button = crate::ui::button("r-gw-update")
                         .primary()
-                        .label(format!("Update to {}", o.version))
+                        .label(tf!("Update to {}", o.version))
                         .disabled(busy || blocker.is_some())
-                        .on_click(cx.listener(move |this, _, _, cx| this.run_job("Updating the gateway", vec!["gateway-update".into(), v.clone()], cx)));
+                        .on_click(cx.listener(move |this, _, _, cx| this.run_job(t!("Updating the gateway"), vec!["gateway-update".into(), v.clone()], cx)));
                     r.child(crate::ui::probed(match blocker.clone() {
                         // A disabled button carries its reason as a tooltip.
                         Some(why) => div().id("r-gw-update-why").child(button).tooltip(crate::ui::tooltip(why)).into_any_element(),
@@ -3124,21 +3124,21 @@ impl RemotePages {
         }
         if self.job.read(cx).is_running() {
             let other = self.job_label.clone().map(|l| l.to_string()).unwrap_or_else(|| "another job".into());
-            ui::show_error("The gateway's settings cannot be changed yet", format!("{other} is still running on {}. Try again once it has finished.", inst.name), cx);
+            ui::show_error(t!("The gateway's settings cannot be changed yet"), tf!("{other} is still running on {}. Try again once it has finished.", inst.name), cx);
             return;
         }
         self.shown_job = Some(Kind::Gateway);
         match work {
             Work::Apply(plan) => {
-                self.job_label = Some(format!("Applying the gateway's settings on {}", inst.name).into());
+                self.job_label = Some(tf!("Applying the gateway's settings on {}", inst.name).into());
                 let kind = match &self.gw_settings {
                     Read::Got(s) => s.machine.kind.clone(),
                     _ => String::new(),
                 };
                 let names = format!("{}. {}", plan.names().join(", "), plan.restart_words(&kind));
                 self.job.update(cx, |job, cx| {
-                    job.set_plan(vec![crate::jobplan::connect(), PlanStep::new("Applying the settings").detail(names).weight(3.), PlanStep::new("Reading the settings back")]);
-                    job.set_label(format!("Applying the gateway's settings on {}", inst.name));
+                    job.set_plan(vec![crate::jobplan::connect(), PlanStep::new(n!("Applying the settings")).detail(names).weight(3.), PlanStep::new(n!("Reading the settings back"))]);
+                    job.set_label(tf!("Applying the gateway's settings on {}", inst.name));
                     job.set_on_page(true);
                     job.set_instance(inst.id.clone(), inst.name.clone(), inst.color.clone());
                     job.start(
@@ -3151,11 +3151,11 @@ impl RemotePages {
                             // As run_job: an agent that could not be brought up to
                             // date still runs the job when it knows it.
                             if let Err(e) = remote::deploy(&inst, &sink) {
-                                sink(Progress::Log { line: format!("The agent could not be updated: {}", remote::split_failure(&e).0) });
+                                sink(Progress::Log { line: nf!("The agent could not be updated: {}", remote::split_failure(&e).0) });
                             }
                             let file = format!("{}/.spm-gateway-apply.json", remote::home(&inst)?);
                             remote::put_text(&inst, &file, &serde_json::to_string(&plan).map_err(|e| e.to_string())?)?;
-                            sink(Progress::Step { name: "Applying the settings".into() });
+                            sink(Progress::Step { name: n!("Applying the settings").into() });
                             let id = remote::start_job(&inst, &["gateway-apply", &file])?;
                             let r = remote::follow(&inst, &id, &sink);
                             remote::remove_file(&inst, &file);
@@ -3166,10 +3166,10 @@ impl RemotePages {
                 });
             }
             Work::Password(pw) => {
-                self.job_label = Some(format!("Changing the gateway page's password on {}", inst.name).into());
+                self.job_label = Some(tf!("Changing the gateway page's password on {}", inst.name).into());
                 self.job.update(cx, |job, cx| {
-                    job.set_plan(vec![crate::jobplan::connect(), PlanStep::new("Setting the password")]);
-                    job.set_label(format!("Changing the gateway page's password on {}", inst.name));
+                    job.set_plan(vec![crate::jobplan::connect(), PlanStep::new(n!("Setting the password"))]);
+                    job.set_label(tf!("Changing the gateway page's password on {}", inst.name));
                     job.set_on_page(true);
                     job.set_instance(inst.id.clone(), inst.name.clone(), inst.color.clone());
                     job.start(
@@ -3180,9 +3180,9 @@ impl RemotePages {
                                 return Ok(());
                             }
                             if let Err(e) = remote::deploy(&inst, &sink) {
-                                sink(Progress::Log { line: format!("The agent could not be updated: {}", remote::split_failure(&e).0) });
+                                sink(Progress::Log { line: nf!("The agent could not be updated: {}", remote::split_failure(&e).0) });
                             }
-                            sink(Progress::Step { name: "Setting the password".into() });
+                            sink(Progress::Step { name: n!("Setting the password").into() });
                             remote::gateway_ui_password(&inst, &pw).map(|m| sink(Progress::Done { message: m }))
                         },
                         cx,
@@ -3213,14 +3213,14 @@ impl RemotePages {
         let blocker = gateway_install_blocker(windows, &runs, offer.as_ref());
         let runs_row = match runs {
             Ok(r) => r,
-            Err(why) => ("Docker container (Docker is not on this server)".to_string(), why),
+            Err(why) => (t!("Docker container (Docker is not on this server)").to_string(), why),
         };
         let action = match offer {
             Some(o) => {
                 let v = o.version.clone();
                 let button = crate::ui::button("r-gw-install")
                     .primary()
-                    .label("Install the gateway")
+                    .label(t!("Install the gateway"))
                     .disabled(busy || blocker.is_some())
                     .on_click(cx.listener(move |this, _, _, cx| this.start_gateway_install(v.clone(), cx)));
                 // What is installed on the left, Install at the card's end.
@@ -3228,10 +3228,10 @@ impl RemotePages {
                     .w_full()
                     .gap_3()
                     .items_center()
-                    .child(div().flex_1().min_w_0().text_sm().text_color(theme.muted_foreground).child(format!(
+                    .child(div().flex_1().min_w_0().text_sm().text_color(theme.muted_foreground).child(tf!(
                         "Sentient Gateway {}, {}",
                         o.version,
-                        if windows { "the installer from the SENTIENT releases site, checked before use" } else { "the quakestring/sentient-gateway-rs image, run by Docker" }
+                        if windows { t!("the installer from the SENTIENT releases site, checked before use") } else { t!("the quakestring/sentient-gateway-rs image, run by Docker") }
                     )))
                     .child(match blocker.clone() {
                         // A disabled button carries its reason as a tooltip.
@@ -3244,9 +3244,9 @@ impl RemotePages {
                 .text_sm()
                 .text_color(theme.muted_foreground)
                 .child(match &found {
-                    Some(Err(e)) => format!("The gateway releases could not be read: {e}"),
-                    Some(Ok(_)) => "No gateway release on this channel.".to_string(),
-                    None => "Looking for the newest gateway…".to_string(),
+                    Some(Err(e)) => tf!("The gateway releases could not be read: {e}"),
+                    Some(Ok(_)) => t!("No gateway release on this channel.").to_string(),
+                    None => t!("Looking for the newest gateway…").to_string(),
                 })
                 .into_any_element(),
         };
@@ -3257,13 +3257,13 @@ impl RemotePages {
                     .items_center()
                     .child(ui::product_logo(ui::Product::Gateway, 24.))
                     .child(div().font_weight(FontWeight::MEDIUM).child("Sentient Gateway"))
-                    .child(ui::pill(&theme, Tone::Neutral, "Not installed"))
-                    .child(ui::info("gw-not-installed".into(), format!("Looked for: {}", sentient_installer_core::gateway::CHECKS).into())),
+                    .child(ui::pill(&theme, Tone::Neutral, t!("Not installed")))
+                    .child(ui::info("gw-not-installed".into(), tf!("Looked for: {}", sentient_installer_core::gateway::CHECKS).into())),
             )
             .child(div().text_sm().text_color(theme.muted_foreground).child(
-                "The gateway reads devices next to this server. In SENTIENT, add a gateway device and copy its access token (Manage credentials).",
+                t!("The gateway reads devices next to this server. In SENTIENT, add a gateway device and copy its access token (Manage credentials)."),
             ))
-            .child(self.gw_form.fields(&theme, windows, Some(crate::manager::gateway::REMOTE_TOKEN_HELP), Some(runs_row)))
+            .child(self.gw_form.fields(&theme, windows, Some(crate::i18n::t(crate::manager::gateway::REMOTE_TOKEN_HELP)), Some(runs_row)))
             .children(self.gw_problem.clone().map(|p| ui::outcome(&theme, Tone::Bad, p)))
             .children(ui::card_actions(&theme, action))
     }
@@ -3276,7 +3276,7 @@ impl RemotePages {
         use sentient_installer_core::progress::{PlanStep, Progress};
         if self.job.read(cx).is_running() {
             let other = self.job_label.clone().map(|l| l.to_string()).unwrap_or_else(|| "another job".into());
-            ui::show_error("The gateway cannot be installed yet", format!("{other} is still running on {}. Try again once it has finished.", self.inst.name), cx);
+            ui::show_error(t!("The gateway cannot be installed yet"), tf!("{other} is still running on {}. Try again once it has finished.", self.inst.name), cx);
             return;
         }
         let windows = remote::is_windows(&self.inst);
@@ -3295,11 +3295,11 @@ impl RemotePages {
         let args = remote::gateway_install_args(&settings.host, settings.port, &version);
         self.last_args = args;
         self.shown_job = Some(Kind::Gateway);
-        let label = format!("Installing the gateway on {}", inst.name);
+        let label = tf!("Installing the gateway on {}", inst.name);
         self.job_label = Some(label.clone().into());
         let me = cx.entity().downgrade();
         self.job.update(cx, |job, cx| {
-            let mut plan = vec![crate::jobplan::connect(), PlanStep::new("Sending the access token")];
+            let mut plan = vec![crate::jobplan::connect(), PlanStep::new(n!("Sending the access token"))];
             plan.extend(gateway_install_steps(windows, &version));
             job.set_plan(plan);
             job.set_label(label);
@@ -3323,9 +3323,9 @@ impl RemotePages {
                         return Ok(());
                     }
                     if let Err(e) = remote::deploy(&inst, &sink) {
-                        sink(Progress::Log { line: format!("The agent could not be updated: {}", remote::split_failure(&e).0) });
+                        sink(Progress::Log { line: nf!("The agent could not be updated: {}", remote::split_failure(&e).0) });
                     }
-                    sink(Progress::Step { name: "Sending the access token".into() });
+                    sink(Progress::Step { name: n!("Sending the access token").into() });
                     let sentient_installer_core::gateway::Settings { host, port, token, ui_password } = settings;
                     remote::gateway_install(&inst, &host, port, &version, remote::GatewaySecrets { token, ui_password }, &sink)
                 },
@@ -3349,7 +3349,7 @@ impl RemotePages {
                 if image {
                     args.push("--remove-image".into());
                 }
-                this.update(cx, |p, cx| p.run_job("Removing the gateway", args, cx)).ok();
+                this.update(cx, |p, cx| p.run_job(t!("Removing the gateway"), args, cx)).ok();
             }),
             cx,
         );
@@ -3366,32 +3366,32 @@ impl RemotePages {
         let installed = remote::reuse::is_offer(&e);
         let usable = installed && remote::reuse::found(&self.inst.id).is_some_and(|f| remote::reuse::fit(&f.info, &remote::reuse::AgentInfo::this()) == remote::reuse::Fit::Compatible);
         let title = if installed {
-            "Platform Manager installed on this server"
+            t!("Platform Manager installed on this server")
         } else if not_set_up {
-            "Server agent not set up"
+            t!("Server agent not set up")
         } else {
-            "The server does not answer"
+            t!("The server does not answer")
         };
         let set_up = |primary: bool| {
-            let b = crate::ui::button("r-setup").label(if installed { "Set up the agent" } else { "Set up" }).loading(busy).disabled(busy).on_click(cx.listener(|this, _, _, cx| this.set_up(cx)));
+            let b = crate::ui::button("r-setup").label(if installed { t!("Set up the agent") } else { t!("Set up") }).loading(busy).disabled(busy).on_click(cx.listener(|this, _, _, cx| this.set_up(cx)));
             if primary { b.primary() } else { b.outline() }
         };
         ui::panel(&theme)
             .child(div().font_weight(FontWeight::MEDIUM).child(title))
             .child(div().text_sm().text_color(theme.muted_foreground).child(if not_set_up {
-                "The Platform Manager works on a server through its server agent. Set up copies the matching agent over SSH and checks it; nothing else on the server changes.".to_string()
+                t!("The Platform Manager works on a server through its server agent. Set up copies the matching agent over SSH and checks it; nothing else on the server changes.").to_string()
             } else {
                 e.clone()
             }))
             .child(if usable {
                 ui::button_group(vec![
-                    crate::ui::button("r-use-installed").primary().label("Use it").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.use_installed(cx))).into_any_element(),
+                    crate::ui::button("r-use-installed").primary().label(t!("Use it")).disabled(busy).on_click(cx.listener(|this, _, _, cx| this.use_installed(cx))).into_any_element(),
                     set_up(false).into_any_element(),
                 ])
             } else if not_set_up || installed {
                 h_flex().child(set_up(true))
             } else {
-                h_flex().child(crate::ui::button("r-retry").primary().label("Try again").on_click(cx.listener(|this, _, _, cx| {
+                h_flex().child(crate::ui::button("r-retry").primary().label(t!("Try again")).on_click(cx.listener(|this, _, _, cx| {
                     this.ready = Read::Loading;
                     this.reload(cx);
                 })))
@@ -3415,15 +3415,15 @@ impl RemotePages {
             return;
         }
         let inst = self.inst.clone();
-        self.job_label = Some(format!("Setting up {}", inst.name).into());
-        let strip_label = format!("Setting up the server agent on {}", inst.name);
+        self.job_label = Some(tf!("Setting up {}", inst.name).into());
+        let strip_label = tf!("Setting up the server agent on {}", inst.name);
         self.job.update(cx, |job, cx| {
             job.set_label(strip_label);
             // jobview: short (one step, followed in the progress strip).
             job.start(
                 move |sink| {
                     remote::deploy(&inst, &sink)?;
-                    sink(sentient_installer_core::progress::Progress::Done { message: format!("The Platform Manager is set up on {}.", inst.name) });
+                    sink(sentient_installer_core::progress::Progress::Done { message: nf!("The Platform Manager is set up on {}.", inst.name) });
                     Ok(())
                 },
                 cx,
@@ -3438,20 +3438,20 @@ impl Render for RemotePages {
         self.gw_form.apply_clear(window, cx);
         let theme = cx.theme().clone();
         let (title, summary) = match self.kind {
-            Kind::Status => ("Status", "SENTIENT on this server: its state, services and database."),
-            Kind::Logs => ("Logs", "SENTIENT's log and its database's on this server, newest at the bottom."),
-            Kind::Update => ("Update", "A newer SENTIENT for this server, from the update channel."),
-            Kind::Backup => ("Backup and restore", "The backups on this server."),
-            Kind::Settings => ("Platform settings", "SENTIENT's settings on this server."),
-            Kind::Migration => ("Migration", ""),
-            Kind::Repair => ("Repair and uninstall", "Write the services and their configuration again on this server."),
-            Kind::Gateway => ("Gateway", "The Sentient Gateway on this server."),
+            Kind::Status => (t!("Status"), t!("SENTIENT on this server: its state, services and database.")),
+            Kind::Logs => (t!("Logs"), t!("SENTIENT's log and its database's on this server, newest at the bottom.")),
+            Kind::Update => (t!("Update"), t!("A newer SENTIENT for this server, from the update channel.")),
+            Kind::Backup => (t!("Backup and restore"), t!("The backups on this server.")),
+            Kind::Settings => (t!("Platform settings"), t!("SENTIENT's settings on this server.")),
+            Kind::Migration => (t!("Migration"), ""),
+            Kind::Repair => (t!("Repair and uninstall"), t!("Write the services and their configuration again on this server.")),
+            Kind::Gateway => (t!("Gateway"), t!("The Sentient Gateway on this server.")),
         };
         let gateway_only = matches!(&self.status, Read::Got(s) if s.gateway_only());
         let summary = match self.kind {
-            Kind::Status if gateway_only => "This server and what runs on it.",
-            Kind::Status if matches!(&self.status, Read::Got(s) if !s.installed) => "This server: what runs on it, and what can be installed.",
-            Kind::Logs if gateway_only => "The gateway's log and the agent's on this server, newest at the bottom.",
+            Kind::Status if gateway_only => t!("This server and what runs on it."),
+            Kind::Status if matches!(&self.status, Read::Got(s) if !s.installed) => t!("This server: what runs on it, and what can be installed."),
+            Kind::Logs if gateway_only => t!("The gateway's log and the agent's on this server, newest at the bottom."),
             _ => summary,
         };
         // Set up earlier but nothing added: add a lone SENTIENT found there,
@@ -3482,7 +3482,7 @@ impl Render for RemotePages {
         }
         if !self.auto_add_tried && matches!(&self.ready, Read::Got(())) && matches!(&self.status, Read::Got(s) if !s.installed && s.running_job.is_none()) && !self.job.read(cx).is_running() {
             self.auto_add_tried = true;
-            self.run_job("Looking for SENTIENT on the server", vec!["add-if-one".into()], cx);
+            self.run_job(t!("Looking for SENTIENT on the server"), vec!["add-if-one".into()], cx);
         }
         let gate: Option<Div> = match &self.ready {
             Read::Loading => Some(self.skeleton(&theme)),
@@ -3562,8 +3562,8 @@ impl Render for RemotePages {
             ui::notice_with(
                 &theme,
                 Tone::Warn,
-                "The agent on this server is out of date.\nUpdate it to use this page. Nothing else on the server changes.",
-                Some(crate::ui::button("agent-update").primary().label("Update agent").disabled(busy).on_click(cx.listener(|p, _, _, cx| p.update_agent(cx))).into_any_element()),
+                t!("The agent on this server is out of date.\nUpdate it to use this page. Nothing else on the server changes."),
+                Some(crate::ui::button("agent-update").primary().label(t!("Update agent")).disabled(busy).on_click(cx.listener(|p, _, _, cx| p.update_agent(cx))).into_any_element()),
             )
         } else {
             body
@@ -3641,11 +3641,11 @@ fn canned_offer() -> crate::updates::Offer {
         build_version: None,
         min_glibc: None,
         between: vec![
-            n("4.4.0.2", "2026-11-14", "Request a demo or buy a licence from inside SENTIENT, and editor fixes.", vec![
-                ("Added", vec!["Licence: Request demo licence and Buy licence open dialogs inside SENTIENT."]),
-                ("Fixed", vec!["The fullscreen buttons of the JSON editor no longer submit the form they sit in.", "The licence limits on telemetry and attribute keys count the customer's keys only."]),
+            n("4.4.0.2", "2026-11-14", t!("Request a demo or buy a licence from inside SENTIENT, and editor fixes."), vec![
+                (t!("Added"), vec![t!("Licence: Request demo licence and Buy licence open dialogs inside SENTIENT.")]),
+                (t!("Fixed"), vec![t!("The fullscreen buttons of the JSON editor no longer submit the form they sit in."), t!("The licence limits on telemetry and attribute keys count the customer's keys only.")]),
             ]),
-            n("4.4.0.1", "2026-11-13", "First release of the 4.4 line.", vec![("Added", vec!["CoAP and LwM2M devices (DTLS, OSCORE).", "18 new widgets."])]),
+            n("4.4.0.1", "2026-11-13", t!("First release of the 4.4 line."), vec![(t!("Added"), vec![t!("CoAP and LwM2M devices (DTLS, OSCORE)."), t!("18 new widgets.")])]),
         ],
     }
 }

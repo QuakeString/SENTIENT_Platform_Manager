@@ -246,20 +246,20 @@ impl ServerInfo {
     pub fn attention(&self) -> Vec<String> {
         let mut v = Vec::new();
         for d in &self.disks {
-            let what = if d.sentient { "Data disk".to_string() } else { d.name.clone() };
+            let what = if d.sentient { t!("Data disk").to_string() } else { d.name.clone() };
             if d.smart_ok == Some(false) {
-                v.push(format!("{what} reports a health warning"));
+                v.push(tf!("{what} reports a health warning"));
             } else if d.worn() {
-                v.push(format!("{what} {} % worn", d.wear.unwrap_or(0)));
+                v.push(tf!("{what} {} % worn", d.wear.unwrap_or(0)));
             }
             if d.nearly_full() {
-                v.push(format!("{what} nearly full"));
+                v.push(tf!("{what} nearly full"));
             }
         }
         if self.clock.synced == Some(false) {
             v.push("Clock not synchronised".into());
         } else if let Some(o) = self.clock.offset.filter(|o| o.abs() > 1.) {
-            v.push(format!("Clock {} off", secs_label(o.abs())));
+            v.push(tf!("Clock {} off", secs_label(o.abs())));
         }
         if self.heavy_swap() {
             v.push("Heavy swap use: memory is short".into());
@@ -291,7 +291,7 @@ pub fn secs_label(s: f64) -> String {
     } else if s < 120. {
         format!("{s:.0} s")
     } else {
-        format!("{:.0} min", s / 60.)
+        tf!("{:.0} min", s / 60.)
     }
 }
 
@@ -355,9 +355,9 @@ pub const WINDOWS_UPDATES_LIMIT: Duration = Duration::from_secs(10 * 60);
 #[cfg_attr(not(windows), allow(dead_code))]
 pub fn windows_failed(timed_out: bool) -> String {
     if timed_out {
-        format!("Windows did not give this computer's details within {} s. Refresh to try again.", WINDOWS_SCRIPT_LIMIT.as_secs())
+        tf!("Windows did not give this computer's details within {} s. Refresh to try again.", WINDOWS_SCRIPT_LIMIT.as_secs())
     } else {
-        "Windows did not give this computer's details. Refresh to try again.".to_string()
+        t!("Windows did not give this computer's details. Refresh to try again.").to_string()
     }
 }
 
@@ -452,7 +452,7 @@ pub fn parse_os_release(text: &str) -> Option<String> {
     match (name, ver) {
         (Some(n), Some(v)) => {
             let n = n.trim_end_matches(" GNU/Linux").trim_end_matches(" Linux").to_string();
-            let n = if n.is_empty() { "Linux".into() } else { n };
+            let n = if n.is_empty() { t!("Linux").into() } else { n };
             Some(format!("{n} {v}"))
         }
         _ => get("PRETTY_NAME"),
@@ -478,13 +478,13 @@ pub fn parse_virt(word: &str) -> (bool, Option<String>) {
         "vmware" => "VMware",
         "microsoft" => "Hyper-V",
         "oracle" => "VirtualBox",
-        "xen" => "Xen",
-        "amazon" => "AWS Nitro",
-        "google" => "Google Cloud",
-        "parallels" => "Parallels",
+        "xen" => t!("Xen"),
+        "amazon" => t!("AWS Nitro"),
+        "google" => t!("Google Cloud"),
+        "parallels" => t!("Parallels"),
         "bhyve" => "bhyve",
         "wsl" => "WSL",
-        "docker" | "podman" | "lxc" | "lxc-libvirt" | "openvz" | "systemd-nspawn" => return (true, Some(format!("{w} container"))),
+        "docker" | "podman" | "lxc" | "lxc-libvirt" | "openvz" | "systemd-nspawn" => return (true, Some(tf!("{w} container"))),
         other => other,
     };
     (true, Some(name.to_string()))
@@ -726,7 +726,7 @@ fn virtual_if(name: &str) -> bool {
 /// `timedatectl show` → (synchronised, time zone).
 pub fn parse_timedatectl(text: &str) -> (Option<bool>, Option<String>) {
     let get = |k: &str| text.lines().find_map(|l| l.strip_prefix(&format!("{k}="))).map(|v| v.trim().to_string());
-    (get("NTPSynchronized").map(|v| v == "yes"), get("Timezone").filter(|z| !z.is_empty()))
+    (get("NTPSynchronized").map(|v| v == "yes"), get(t!("Timezone")).filter(|z| !z.is_empty()))
 }
 
 /// The offset from the time server, in seconds: chronyc tracking ("System
@@ -789,7 +789,7 @@ pub fn parse_nvidia(text: &str) -> Vec<Gpu> {
         .filter_map(|l| {
             let (n, m) = l.rsplit_once(',')?;
             let n = n.trim();
-            let name = if n.starts_with("NVIDIA") { n.to_string() } else { format!("NVIDIA {n}") };
+            let name = if n.starts_with("NVIDIA") { n.to_string() } else { tf!("NVIDIA {n}") };
             Some(Gpu { name, mem: m.trim().parse::<u64>().ok().map(|mib| mib << 20) })
         })
         .collect()
@@ -865,7 +865,7 @@ mod linux {
             hypervisor = None;
         }
         let model = (!product.is_empty() && !is_virtual).then(|| if vendor.is_empty() || product.starts_with(&vendor) { product.clone() } else { format!("{vendor} {product}") });
-        let os = parse_os_release(&read("/etc/os-release")).unwrap_or_else(|| "Linux".into());
+        let os = parse_os_release(&read("/etc/os-release")).unwrap_or_else(|| t!("Linux").into());
         let kernel = Some(short_kernel(&read("/proc/sys/kernel/osrelease"))).filter(|k| !k.is_empty());
         let (cpu_model, cores, threads) = parse_cpuinfo(&read("/proc/cpuinfo"));
         let (mem_total, swap_total, swap_used) = parse_meminfo(&read("/proc/meminfo"));
@@ -1067,7 +1067,7 @@ pub fn from_windows(raw: WinRaw, data: Option<&str>, updates: Option<u32>) -> Se
     let model = (!is_virtual && !raw.model.trim().is_empty()).then(|| {
         let m = raw.model.trim();
         let mk = raw.maker.trim();
-        if mk.is_empty() || m.starts_with(mk) || mk.eq_ignore_ascii_case("System manufacturer") { m.to_string() } else { format!("{mk} {m}") }
+        if mk.is_empty() || m.starts_with(mk) || mk.eq_ignore_ascii_case(t!("System manufacturer")) { m.to_string() } else { format!("{mk} {m}") }
     });
     let os = {
         let base = raw.os.trim().trim_start_matches("Microsoft ").to_string();
@@ -1099,7 +1099,7 @@ pub fn from_windows(raw: WinRaw, data: Option<&str>, updates: Option<u32>) -> Se
             let pd = v.disk.as_ref().and_then(|n| raw.disks.iter().find(|d| &d.number == n));
             Disk {
                 name: v.id.clone(),
-                device: pd.map(|d| format!("Disk {}", d.number)).unwrap_or_default(),
+                device: pd.map(|d| tf!("Disk {}", d.number)).unwrap_or_default(),
                 model: pd.map(|d| d.name.clone()).filter(|n| !n.is_empty()),
                 kind: pd.and_then(kind_of),
                 size: v.size,
@@ -1111,7 +1111,7 @@ pub fn from_windows(raw: WinRaw, data: Option<&str>, updates: Option<u32>) -> Se
         })
         .collect();
     for d in raw.disks.iter().filter(|d| !d.mounted) {
-        disks.push(Disk { name: format!("Disk {}", d.number), device: format!("Disk {}", d.number), model: Some(d.name.clone()).filter(|n| !n.is_empty()), kind: kind_of(d), size: d.size, free: None, sentient: false, smart_ok: health(d), wear: d.wear });
+        disks.push(Disk { name: tf!("Disk {}", d.number), device: tf!("Disk {}", d.number), model: Some(d.name.clone()).filter(|n| !n.is_empty()), kind: kind_of(d), size: d.size, free: None, sentient: false, smart_ok: health(d), wear: d.wear });
     }
     let w = &raw.w32tm;
     let source = w.lines().find_map(|l| l.trim().strip_prefix("Source:")).map(|s| s.trim().to_string());
@@ -1126,7 +1126,7 @@ pub fn from_windows(raw: WinRaw, data: Option<&str>, updates: Option<u32>) -> Se
         host: raw.host,
         machine: Machine { is_virtual, hypervisor, model },
         os,
-        kernel: Some(raw.build).filter(|b| !b.is_empty()).map(|b| format!("build {b}")),
+        kernel: Some(raw.build).filter(|b| !b.is_empty()).map(|b| tf!("build {b}")),
         cpu: Cpu { model: clean_cpu(&raw.cpu), cores: raw.cores.max(1), threads: raw.threads.max(raw.cores), temp_c: raw.temp_dk.map(|t| (t / 10. - 273.15) as f32).filter(|t| *t > 0. && *t < 125.) },
         mem_total: raw.mem,
         swap_total: raw.swap_total,
@@ -1139,7 +1139,7 @@ pub fn from_windows(raw: WinRaw, data: Option<&str>, updates: Option<u32>) -> Se
         nets: raw.nets.into_iter().filter(|n| !n.name.is_empty()).map(|n| Net { name: n.name, ip: n.ip.filter(|i| !i.is_empty()), speed: n.bps.filter(|b| *b > 0).map(|b| b / 1_000_000) }).collect(),
         updates,
         restart_needed: raw.reboot,
-        docker: Some(raw.docker.trim().to_string()).filter(|v| !v.is_empty()).map(|version| Docker { version, on_boot: match raw.docker_start.trim() { "" => None, s => Some(s.eq_ignore_ascii_case("Automatic") || s.eq_ignore_ascii_case("auto")) } }),
+        docker: Some(raw.docker.trim().to_string()).filter(|v| !v.is_empty()).map(|version| Docker { version, on_boot: match raw.docker_start.trim() { "" => None, s => Some(s.eq_ignore_ascii_case(t!("Automatic")) || s.eq_ignore_ascii_case("auto")) } }),
         at: 0,
     }
 }
@@ -1156,13 +1156,13 @@ pub fn windows_virt(maker: &str, model: &str) -> (bool, Option<String>) {
     } else if mk.contains("qemu") || m.contains("kvm") || m.starts_with("standard pc") {
         "KVM"
     } else if mk.contains("xen") || m.contains("hvm domu") {
-        "Xen"
+        t!("Xen")
     } else if mk.contains("amazon ec2") {
-        "AWS Nitro"
+        t!("AWS Nitro")
     } else if mk.contains("google") {
-        "Google Cloud"
+        t!("Google Cloud")
     } else if mk.contains("parallels") {
-        "Parallels"
+        t!("Parallels")
     } else {
         return (false, None);
     };

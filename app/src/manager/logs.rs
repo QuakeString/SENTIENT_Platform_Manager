@@ -131,7 +131,7 @@ impl LogView {
     }
 
     pub fn new(load: LoadFn, sources_fn: SourcesFn, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let filter = cx.new(|cx| InputState::new(window, cx).placeholder("Filter lines"));
+        let filter = cx.new(|cx| InputState::new(window, cx).placeholder(t!("Filter lines")));
         let _subscriptions = vec![cx.subscribe_in(&filter, window, |this, _, event, _, cx| {
             if matches!(event, InputEvent::Change) {
                 this.selected.clear();
@@ -355,7 +355,7 @@ impl LogView {
         };
         let n = text.len();
         cx.write_to_clipboard(ClipboardItem::new_string(text.join("\n")));
-        self.status = Some(format!("{n} line{} copied.", if n == 1 { "" } else { "s" }).into());
+        self.status = Some(tf!("{n} line{} copied.", if n == 1 { "" } else { "s" }).into());
         cx.notify();
     }
 
@@ -366,7 +366,7 @@ impl LogView {
         let (load, pick, sources) = (self.load.clone(), self.pick, self.sources.clone());
         let name = format!("sentient-{}-{}.log", pick.map(|s| s.key()).unwrap_or("all"), chrono::Local::now().format("%Y%m%d-%H%M"));
         let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(std::path::PathBuf::from).unwrap_or_default();
-        let rx = crate::chooser::save(cx, "Save the log as", &home, Some(&name));
+        let rx = crate::chooser::save(cx, t!("Save the log as"), &home, Some(&name));
         cx.spawn(async move |this, cx| {
             let Ok(Ok(Some(path))) = rx.await else { return };
             let text = match what {
@@ -380,8 +380,8 @@ impl LogView {
             let result = std::fs::write(&path, header + &text + "\n");
             this.update(cx, |v, cx| {
                 v.status = Some(match result {
-                    Ok(()) => format!("Saved to {}", path.display()).into(),
-                    Err(e) => format!("Could not save: {e}").into(),
+                    Ok(()) => tf!("Saved to {}", path.display()).into(),
+                    Err(e) => tf!("Could not save: {e}").into(),
                 });
                 cx.notify();
             })
@@ -476,14 +476,14 @@ impl Render for LogView {
             })));
         }
         if self.sources.len() > 1 {
-            sources = sources.child(ui::seg_item(&theme, "log-src-all", "All", all).on_click(cx.listener(|v, _, _, cx| {
+            sources = sources.child(ui::seg_item(&theme, "log-src-all", t!("All"), all).on_click(cx.listener(|v, _, _, cx| {
                 v.pick = None;
                 v.selected.clear();
                 v.start(cx);
                 cx.notify();
             })));
         }
-        let levels = ui::seg_track(&theme).children([(Levels::All, "All levels"), (Levels::Warnings, "Warnings and errors"), (Levels::Errors, "Errors")].into_iter().map(|(l, label)| {
+        let levels = ui::seg_track(&theme).children([(Levels::All, t!("All levels")), (Levels::Warnings, t!("Warnings and errors")), (Levels::Errors, t!("Errors"))].into_iter().map(|(l, label)| {
             ui::seg_item(&theme, SharedString::from(format!("log-lvl-{label}")), label, self.levels == l).on_click(cx.listener(move |v, _, _, cx| {
                 v.levels = l;
                 v.selected.clear();
@@ -491,17 +491,17 @@ impl Render for LogView {
             }))
         }));
         let this = cx.entity().downgrade();
-        let save = crate::ui::button("log-save").outline().label("Save log").dropdown_menu(move |menu, _, _| {
+        let save = crate::ui::button("log-save").outline().label(t!("Save log")).dropdown_menu(move |menu, _, _| {
             let opt = |label: &'static str, what: Option<(u32, bool)>| {
                 let t = this.clone();
                 PopupMenuItem::new(label).on_click(move |_, _, cx| {
                     t.update(cx, |v, cx| v.save(what, cx)).ok();
                 })
             };
-            menu.item(opt("The lines shown", None))
-                .item(opt("The last 1,000 lines", Some((1_000, false))))
-                .item(opt("The last 10,000 lines", Some((10_000, false))))
-                .item(opt("Today's lines", Some((1_000_000, true))))
+            menu.item(opt(t!("The lines shown"), None))
+                .item(opt(t!("The last 1,000 lines"), Some((1_000, false))))
+                .item(opt(t!("The last 10,000 lines"), Some((10_000, false))))
+                .item(opt(t!("Today's lines"), Some((1_000_000, true))))
         });
         let selected_n = self.selected.len();
         let toolbar = v_flex()
@@ -518,12 +518,12 @@ impl Render for LogView {
                     .child(ui::layout_probe("header-actions"))
                     .child(div().text_size(px(13.)).text_color(theme.muted_foreground).child(format!(
                         "{} · {}",
-                        if count == 1 { "1 line".to_string() } else { format!("{count} lines") },
+                        if count == 1 { t!("1 line").to_string() } else { tf!("{count} lines") },
                         logsource::zone_label()
                     )))
                     .child(div().flex_1())
                     .child(div().w(px(280.)).child(ui::probed_input(Input::new(&self.filter))))
-                    .child(Checkbox::new("log-follow").label("Follow").checked(self.follow).on_change(cx.listener(|v, on: &bool, _, cx| {
+                    .child(Checkbox::new("log-follow").label(t!("Follow")).checked(self.follow).on_change(cx.listener(|v, on: &bool, _, cx| {
                         v.follow = *on;
                         if *on {
                             v.selected.clear();
@@ -531,8 +531,8 @@ impl Render for LogView {
                         }
                         cx.notify();
                     })))
-                    .child(crate::ui::probed(crate::ui::button("log-refresh").outline().label("Refresh").on_click(cx.listener(|v, _, _, cx| v.start(cx)))))
-                    .child(crate::ui::probed(crate::ui::button("log-copy").outline().label(if selected_n > 0 { format!("Copy {selected_n}") } else { "Copy".into() }).on_click(cx.listener(|v, _, _, cx| v.copy(cx)))))
+                    .child(crate::ui::probed(crate::ui::button("log-refresh").outline().label(t!("Refresh")).on_click(cx.listener(|v, _, _, cx| v.start(cx)))))
+                    .child(crate::ui::probed(crate::ui::button("log-copy").outline().label(if selected_n > 0 { tf!("Copy {selected_n}") } else { t!("Copy").into() }).on_click(cx.listener(|v, _, _, cx| v.copy(cx)))))
                     .child(crate::ui::probed(save)),
             );
         let narrow = ui::narrow();
@@ -636,10 +636,10 @@ impl Render for LogView {
                     .text_size(px(12.5))
                     .when_some(self.error.clone().filter(|_| total == 0), |p, e| {
                         p.child(
-                            v_flex().flex_1().items_center().justify_center().gap_3().font_family(theme.font_family.clone()).text_sm().child(div().text_color(theme.muted_foreground).child("The log could not be read.")).child(
+                            v_flex().flex_1().items_center().justify_center().gap_3().font_family(theme.font_family.clone()).text_sm().child(div().text_color(theme.muted_foreground).child(t!("The log could not be read."))).child(
                                 div().max_w(px(560.)).text_color(theme.danger).child(e),
                             )
-                            .child(crate::ui::button("log-retry").outline().label("Try again").on_click(cx.listener(|v, _, _, cx| {
+                            .child(crate::ui::button("log-retry").outline().label(t!("Try again")).on_click(cx.listener(|v, _, _, cx| {
                                 v.error = None;
                                 v.read_sources(cx);
                                 v.start(cx);
@@ -650,7 +650,7 @@ impl Render for LogView {
                     .when(total == 0 && self.error.is_none(), |p| {
                         p.child(
                             div().flex_1().flex().items_center().justify_center().font_family(theme.font_family.clone()).text_sm().text_color(theme.muted_foreground).child(
-                                if self.lines.is_empty() { "No log lines" } else { "No lines match the filter" },
+                                if self.lines.is_empty() { t!("No log lines") } else { t!("No lines match the filter") },
                             ),
                         )
                     })
@@ -681,7 +681,7 @@ impl LogsPage {
 impl Render for LogsPage {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
-        let page = ui::page(&theme, "Logs", "SENTIENT's log and its database's, newest at the bottom.");
+        let page = ui::page(&theme, t!("Logs"), t!("SENTIENT's log and its database's, newest at the bottom."));
         match &self.view {
             Some(v) => page.child(v.clone()),
             None => page.child(ui::not_installed(&theme)),

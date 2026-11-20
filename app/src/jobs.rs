@@ -422,8 +422,8 @@ impl Job {
     /// "Installing the SENTIENT schema · 1:24" while running.
     pub fn step_with_time(&self) -> SharedString {
         match self.step_elapsed() {
-            Some(d) if !self.step.is_empty() => format!("{} · {}:{:02}", self.step, d.as_secs() / 60, d.as_secs() % 60).into(),
-            _ => self.step.clone(),
+            Some(d) if !self.step.is_empty() => format!("{} · {}:{:02}", crate::i18n::dynamic(&self.step), d.as_secs() / 60, d.as_secs() % 60).into(),
+            _ => crate::i18n::dynamic(&self.step).into_owned().into(),
         }
     }
 
@@ -690,8 +690,8 @@ impl Job {
 
     fn finish(&mut self, result: Result<(), String>) {
         match &result {
-            Ok(()) => activity(&format!("Done: {}", self.last_done.as_deref().unwrap_or("finished"))),
-            Err(e) => activity(&format!("Failed: {e}")),
+            Ok(()) => activity(&tf!("Done: {}", self.last_done.as_deref().unwrap_or("finished"))),
+            Err(e) => activity(&tf!("Failed: {e}")),
         }
         let now = std::time::Instant::now();
         self.took = self.began.map(|t| now.duration_since(t));
@@ -715,8 +715,9 @@ impl Job {
             }
         }
         self.state = match result {
-            Err(message) => JobState::Failed(message.into()),
-            Ok(()) => JobState::Done(self.last_done.take().unwrap_or_else(|| "Finished".into())),
+            // Shown as they are: in the language shown (the job wrote English).
+            Err(message) => JobState::Failed(crate::i18n::dynamic(&message).into_owned().into()),
+            Ok(()) => JobState::Done(self.last_done.take().map(|m| crate::i18n::dynamic(&m).into_owned().into()).unwrap_or_else(|| t!("Finished").into())),
         };
     }
 }

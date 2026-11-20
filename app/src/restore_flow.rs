@@ -71,7 +71,7 @@ fn log(sink: &ProgressFn, line: impl Into<String>) {
 }
 
 fn block_on<F: std::future::Future>(future: F) -> Result<F::Output, String> {
-    tokio::runtime::Builder::new_current_thread().enable_all().build().map(|rt| rt.block_on(future)).map_err(|e| format!("start the runtime: {e}"))
+    tokio::runtime::Builder::new_current_thread().enable_all().build().map(|rt| rt.block_on(future)).map_err(|e| nf!("start the runtime: {e}"))
 }
 
 // ---------------------------------------------------------------------------
@@ -144,7 +144,7 @@ fn gateways() -> Vec<String> {
         return Vec::new();
     }
     match (s.host, s.port) {
-        (Some(h), Some(p)) => vec![format!("This server's gateway → {h}:{p}")],
+        (Some(h), Some(p)) => vec![nf!("This server's gateway → {h}:{p}")],
         _ => Vec::new(),
     }
 }
@@ -252,8 +252,8 @@ pub enum Unreadable {
 impl Unreadable {
     pub fn message(&self) -> String {
         match self {
-            Unreadable::Passphrase => "This backup is encrypted: type its passphrase to read it.".into(),
-            Unreadable::WrongPassphrase => "The passphrase is wrong, or the file is damaged.".into(),
+            Unreadable::Passphrase => n!("This backup is encrypted: type its passphrase to read it.").into(),
+            Unreadable::WrongPassphrase => n!("The passphrase is wrong, or the file is damaged.").into(),
             Unreadable::NotABackup(m) | Unreadable::Other(m) => m.clone(),
         }
     }
@@ -282,7 +282,7 @@ pub fn inspect(record: Option<&InstallationRecord>, file: &Path, passphrase: Opt
     let manifest = sentient_backup_core::restore::inspect(file, passphrase).map_err(|e| Unreadable::of(&e.to_string(), encrypted))?;
     let file_bytes = sentient_backup_core::parts::total_size(file);
     let total: u64 = manifest.files.iter().map(|f| f.bytes).sum::<u64>().max(1);
-    step(sink, "Checking the backup");
+    step(sink, n!("Checking the backup"));
     let listed: Vec<(String, u64)> = manifest.files.iter().map(|f| (sentient_backup_core::restore::member_label(&f.path), f.bytes)).collect();
     sink(data_line("parts", &listed));
     log(sink, format!("PART\tFormat {}, made by Platform Manager {}\t0", manifest.format_version, manifest.tool_version));
@@ -579,7 +579,7 @@ fn store_places(record: &InstallationRecord, setup: &Setup) -> Vec<(&'static str
             v.push(("PostgreSQL", Place::Host(dir)));
             if hybrid {
                 // Windows: ClickHouse's WSL disk lives in the account's profile on C:.
-                v.push((if cfg!(windows) { "ClickHouse (WSL)" } else { "ClickHouse" }, Place::Host(if cfg!(windows) { PathBuf::from("C:\\Users") } else { PathBuf::from("/var/lib/clickhouse") })));
+                v.push((if cfg!(windows) { n!("ClickHouse (WSL)") } else { "ClickHouse" }, Place::Host(if cfg!(windows) { PathBuf::from("C:\\Users") } else { PathBuf::from("/var/lib/clickhouse") })));
             }
         }
     }
@@ -593,7 +593,7 @@ fn disk_rows(entries: Vec<(&str, Place, Vec<(String, u64)>)>) -> Vec<DiskRow> {
     let mut rows: Vec<(String, DiskRow)> = Vec::new();
     for (role, place, uses) in entries {
         let Some((device, mount, free)) = measure(&place) else {
-            rows.push((format!("?{role}"), DiskRow { disk: role.to_string(), detail: "free space not read".into(), uses: uses.clone(), need: uses.iter().map(|u| u.1).sum(), free: None }));
+            rows.push((format!("?{role}"), DiskRow { disk: role.to_string(), detail: n!("free space not read").into(), uses: uses.clone(), need: uses.iter().map(|u| u.1).sum(), free: None }));
             continue;
         };
         #[cfg(not(windows))]
@@ -646,7 +646,7 @@ fn probe(places: Vec<(String, Place)>) -> impl Fn() -> Vec<DiskFree> + Send + Sy
 /// Labels of the catalog settings, by name.
 fn setting_label(key: &str) -> String {
     if let Some((_, l)) = crate::settings::PORTS.iter().find(|(k, _)| *k == key) {
-        return format!("{l} port");
+        return nf!("{} port", crate::i18n::t(l));
     }
     crate::catalog::groups().into_iter().flat_map(|g| g.settings).find(|s| s.env == key).map(|s| s.label).unwrap_or_else(|| key.to_string())
 }
@@ -656,24 +656,24 @@ fn setting_label(key: &str) -> String {
 fn classify(key: &str) -> (bool, &'static str) {
     let k = key.to_ascii_uppercase();
     if k.starts_with("PORT:") || k.ends_with("_PORT") || k == "PORT" || k == "HOST" || k.ends_with("_HOST") {
-        (false, "Tied to this machine and its firewall")
+        (false, n!("Tied to this machine and its firewall"))
     } else if k.starts_with("PG:") {
-        (false, "Sized for this machine's memory")
+        (false, n!("Sized for this machine's memory"))
     } else if k.contains("SSL_PEM") {
-        (false, "A certificate belongs to the host name")
+        (false, n!("A certificate belongs to the host name"))
     } else if k.contains("CORS") || k.contains("URL") {
-        (false, "Devices and links reach this server by its own name")
+        (false, n!("Devices and links reach this server by its own name"))
     } else if k.starts_with("LICENSE") {
-        (false, "Licensing belongs to this server")
+        (false, n!("Licensing belongs to this server"))
     } else if k.contains("POOL") || k.contains("MAX_CONNECTIONS") || k.contains("BATCH") || k.starts_with("CACHE_") || k.contains("THREADS") || k.contains("WORKERS") || k.contains("CONSUMERS") || k == "PARTITION_COUNT" || k.contains("CACHE") {
-        (false, "Sized for this machine")
+        (false, n!("Sized for this machine"))
     } else {
-        (true, "A setting of the plant, not the machine")
+        (true, n!("A setting of the plant, not the machine"))
     }
 }
 
 fn expiry_day(rfc: &Option<String>) -> String {
-    rfc.as_deref().and_then(|e| chrono::DateTime::parse_from_rfc3339(e).ok()).map(|d| format!(", until {}", d.format("%-d %b %Y"))).unwrap_or_default()
+    rfc.as_deref().and_then(|e| chrono::DateTime::parse_from_rfc3339(e).ok()).map(|d| nf!(", until {}", d.format("%-d %b %Y"))).unwrap_or_default()
 }
 
 /// The settings that differ between the backup and the instance (R14), and
@@ -682,14 +682,14 @@ pub fn settings_rows(m: &Manifest, backup_type: &str, here: &Here, now: &Platfor
     let mut rows = Vec::new();
     let mut same = 0usize;
     let row = |key: &str, label: &str, b: String, h: String, kind: SettingKind, why: &str| SettingRow { key: key.into(), label: label.into(), backup: b, here: h, kind, why: why.into() };
-    let theirs = m.source.sentient_version.clone().unwrap_or_else(|| "Not recorded".into());
+    let theirs = m.source.sentient_version.clone().unwrap_or_else(|| n!("Not recorded").into());
     if theirs != here.sentient_version {
-        rows.push(row("sentient_version", "SENTIENT version", theirs, here.sentient_version.clone(), SettingKind::Fixed, "This server's; the data is upgraded"));
+        rows.push(row("sentient_version", n!("SENTIENT version"), theirs, here.sentient_version.clone(), SettingKind::Fixed, n!("This server's; the data is upgraded")));
     } else {
         same += 1;
     }
     if backup_type != here.database_type {
-        rows.push(row("database_type", "Database type", backup_type.into(), here.database_type.clone(), SettingKind::DatabaseType, "Converted to this server's type. To use the backup's, change the type in Migration first"));
+        rows.push(row("database_type", n!("Database type"), backup_type.into(), here.database_type.clone(), SettingKind::DatabaseType, n!("Converted to this server's type. To use the backup's, change the type in Migration first")));
     } else {
         same += 1;
     }
@@ -698,7 +698,7 @@ pub fn settings_rows(m: &Manifest, backup_type: &str, here: &Here, now: &Platfor
         for fs in &m.file_stores {
             let mine = now.file_store_paths.get(&fs.id).cloned().unwrap_or_default();
             if fs.source_path != mine {
-                rows.push(row(&format!("files:{}", fs.id), if fs.id == "reports" { "Report files" } else { "Version control files" }, fs.source_path.clone(), mine, SettingKind::Choice { backup_default: false }, "Paths of this machine"));
+                rows.push(row(&format!("files:{}", fs.id), if fs.id == "reports" { n!("Report files") } else { n!("Version control files") }, fs.source_path.clone(), mine, SettingKind::Choice { backup_default: false }, n!("Paths of this machine")));
             }
         }
         return (rows, same);
@@ -711,35 +711,35 @@ pub fn settings_rows(m: &Manifest, backup_type: &str, here: &Here, now: &Platfor
             continue;
         }
         let (backup_default, why) = classify(key);
-        let shown = |v: String| if v.is_empty() { "Default".to_string() } else { v };
+        let shown = |v: String| if v.is_empty() { n!("Default").to_string() } else { v };
         rows.push(row(key, &setting_label(key), shown(b), shown(h), SettingKind::Choice { backup_default }, why));
     }
     if p.public_url != now.public_url {
-        rows.push(row("public_url", "Public URL", p.public_url.clone().unwrap_or_else(|| "—".into()), now.public_url.clone().unwrap_or_else(|| "—".into()), SettingKind::Choice { backup_default: false }, "Devices and links reach this server by its own name"));
+        rows.push(row("public_url", n!("Public URL"), p.public_url.clone().unwrap_or_else(|| "—".into()), now.public_url.clone().unwrap_or_else(|| "—".into()), SettingKind::Choice { backup_default: false }, n!("Devices and links reach this server by its own name")));
     } else {
         same += 1;
     }
     let tls = |t: &Option<TlsInfo>| t.as_ref().map(|t| format!("{}{}", t.name, expiry_day(&t.expires))).unwrap_or_else(|| "—".into());
     if p.tls != now.tls {
-        rows.push(row("tls", "TLS certificate", tls(&p.tls), tls(&now.tls), SettingKind::Choice { backup_default: false }, "A certificate belongs to the host name"));
+        rows.push(row("tls", n!("TLS certificate"), tls(&p.tls), tls(&now.tls), SettingKind::Choice { backup_default: false }, n!("A certificate belongs to the host name")));
     } else {
         same += 1;
     }
     let lic = |l: &Option<LicenceInfo>, bound: bool| match l {
-        Some(l) if bound => format!("{}, bound to {}", l.kind, l.bound_to.clone().unwrap_or_else(|| "its server".into())),
-        Some(l) => format!("{}, bound to this server", l.kind),
-        None => "None".into(),
+        Some(l) if bound => nf!("{}, bound to {}", l.kind, l.bound_to.clone().unwrap_or_else(|| "its server".into())),
+        Some(l) => nf!("{}, bound to this server", l.kind),
+        None => n!("None").into(),
     };
     if p.licence.is_some() || now.licence.is_some() {
-        rows.push(row("licence", "Licence", lic(&p.licence, true), lic(&now.licence, false), SettingKind::Locked, "Bound to the hardware: not carried over"));
+        rows.push(row("licence", n!("Licence"), lic(&p.licence, true), lic(&now.licence, false), SettingKind::Locked, n!("Bound to the hardware: not carried over")));
     }
     if !p.gateways.is_empty() && p.gateways != now.gateways {
-        rows.push(row("gateways", "Gateway connections", p.gateways.join(", "), if now.gateways.is_empty() { "—".into() } else { now.gateways.join(", ") }, SettingKind::Gateway, "Gateways keep their own address; point them here after"));
+        rows.push(row("gateways", n!("Gateway connections"), p.gateways.join(", "), if now.gateways.is_empty() { "—".into() } else { now.gateways.join(", ") }, SettingKind::Gateway, n!("Gateways keep their own address; point them here after")));
     }
     for (id, path) in &p.file_store_paths {
         let mine = now.file_store_paths.get(id).cloned().unwrap_or_default();
         if *path != mine {
-            rows.push(row(&format!("files:{id}"), if id == "reports" { "Report files" } else { "Version control files" }, path.clone(), mine, SettingKind::Choice { backup_default: false }, "Paths of this machine"));
+            rows.push(row(&format!("files:{id}"), if id == "reports" { n!("Report files") } else { n!("Version control files") }, path.clone(), mine, SettingKind::Choice { backup_default: false }, n!("Paths of this machine")));
         } else {
             same += 1;
         }
@@ -765,7 +765,7 @@ pub fn precheck(record: &InstallationRecord, req: &Request, passphrase: Option<&
     let summary = crate::replace::from_manifest(&req.file, 0, false, &m);
     let status = crate::dbstatus::read(record);
     let hybrid = setup.flavor() == Flavor::Clickhouse;
-    step(sink, "Measuring the disks");
+    step(sink, n!("Measuring the disks"));
     let file_bytes = rs::bytes_for(&m, &req.scope, &req.skip_members);
     let dump = m.files.iter().find(|f| f.path == sentient_backup_core::backup::DUMP_MEMBER).map(|f| f.bytes).unwrap_or(0);
     let unpack = file_bytes + dump.saturating_mul(3);
@@ -780,21 +780,21 @@ pub fn precheck(record: &InstallationRecord, req: &Request, passphrase: Option<&
     let mut ch_uses: Vec<(String, u64)> = Vec::new();
     match &req.scope {
         Scope::Everything => {
-            pg_uses.push(("Restored database beside the live one".into(), config_bytes + if hybrid { 0 } else { history }));
+            pg_uses.push((n!("Restored database beside the live one").into(), config_bytes + if hybrid { 0 } else { history }));
             if hybrid {
-                ch_uses.push(("Restored history beside the live one".into(), history));
+                ch_uses.push((n!("Restored history beside the live one").into(), history));
             }
         }
         Scope::Configuration => {
-            pg_uses.push(("Restored database beside the live one".into(), config_bytes));
+            pg_uses.push((n!("Restored database beside the live one").into(), config_bytes));
             if req.keep_telemetry && !hybrid && live_pg_ts > 0 {
-                pg_uses.push(("This server's telemetry copied into it".into(), live_pg_ts));
+                pg_uses.push((n!("This server's telemetry copied into it").into(), live_pg_ts));
             }
         }
         Scope::TelemetryOnly | Scope::Range { .. } => {
-            pg_uses.push(("Telemetry staged, then added to the live data".into(), history.saturating_mul(if hybrid { 1 } else { 2 })));
+            pg_uses.push((n!("Telemetry staged, then added to the live data").into(), history.saturating_mul(if hybrid { 1 } else { 2 })));
             if hybrid {
-                ch_uses.push(("Telemetry added to the live history".into(), history));
+                ch_uses.push((n!("Telemetry added to the live history").into(), history));
             }
         }
     }
@@ -803,9 +803,9 @@ pub fn precheck(record: &InstallationRecord, req: &Request, passphrase: Option<&
     let pg_bytes = status.pg.as_ref().map(|p| p.db_bytes).unwrap_or(0);
     let (safety_bytes, safety_secs) = crate::backups::estimate(&crate::backups::BackupPrefs::default(), pg_bytes, live_ch, live_pg_ts);
     let temp_place = Place::Host(req.temp_dir.clone().or_else(|| req.file.parent().map(Path::to_path_buf)).unwrap_or_else(std::env::temp_dir));
-    let mut entries: Vec<(&str, Place, Vec<(String, u64)>)> = vec![("", temp_place, vec![("Unpacking".into(), unpack)])];
+    let mut entries: Vec<(&str, Place, Vec<(String, u64)>)> = vec![("", temp_place, vec![(n!("Unpacking").into(), unpack)])];
     if req.safety_backup {
-        entries.push(("", Place::Host(safety_folder.clone()), vec![("Safety backup".into(), safety_bytes)]));
+        entries.push(("", Place::Host(safety_folder.clone()), vec![(n!("Safety backup").into(), safety_bytes)]));
     }
     for (role, place) in store_places(record, &setup) {
         let uses = if role.starts_with("ClickHouse") { std::mem::take(&mut ch_uses) } else { std::mem::take(&mut pg_uses) };
@@ -813,10 +813,10 @@ pub fn precheck(record: &InstallationRecord, req: &Request, passphrase: Option<&
     }
     let disks = disk_rows(entries);
 
-    step(sink, "Reading this instance");
+    step(sink, n!("Reading this instance"));
     let live = live_facts(&setup, &status, hybrid);
     let orphans = if req.scope == Scope::Configuration && req.keep_telemetry {
-        step(sink, "Finding telemetry the backup has no device for");
+        step(sink, n!("Finding telemetry the backup has no device for"));
         block_on(rs::orphans(&setup.pg(), &req.file, passphrase, req.temp_dir.as_deref(), 3)).ok().and_then(|r| r.ok())
     } else {
         None
@@ -825,7 +825,7 @@ pub fn precheck(record: &InstallationRecord, req: &Request, passphrase: Option<&
     let carry = if req.scope == Scope::Configuration && req.keep_telemetry && !hybrid { live_pg_ts } else { 0 };
     let estimate = rs::estimate(file_bytes, restored, if req.safety_backup { safety_bytes } else { 0 }, carry, &req.scope, here.native);
     let upgrade = match (m.source.schema_version, here.schema_version) {
-        (Some(t), Some(o)) if t < o && !req.scope.into_live() => Some(format!(
+        (Some(t), Some(o)) if t < o && !req.scope.into_live() => Some(nf!(
             "Schema upgrade {t} → {o} (SENTIENT {} → {})",
             m.source.sentient_version.clone().unwrap_or_else(|| "older".into()),
             here.sentient_version
@@ -867,7 +867,7 @@ fn live_facts(setup: &Setup, status: &crate::dbstatus::DbStatus, hybrid: bool) -
         dashboards: counts.get(1).copied().unwrap_or(0),
         users: counts.get(2).copied().unwrap_or(0),
         telemetry_bytes: pg_ts + status.ch.as_ref().map(|c| c.disk_bytes).unwrap_or(0),
-        ch_problem: if hybrid { status.ch_error.clone().map(|e| format!("ClickHouse did not answer: {e}")) } else { None },
+        ch_problem: if hybrid { status.ch_error.clone().map(|e| nf!("ClickHouse did not answer: {e}")) } else { None },
     }
 }
 
@@ -876,22 +876,22 @@ fn live_facts(setup: &Setup, status: &crate::dbstatus::DbStatus, hybrid: bool) -
 // ---------------------------------------------------------------------------
 
 /// The watch's word for a cancel.
-const CANCELLED: &str = "the restore (cancelled)";
+const CANCELLED: &str = n!("the restore (cancelled)");
 
 /// A cancel in plain words, for the messages that carry the watch's.
 fn plain(e: String) -> String {
-    if e.contains(CANCELLED) { "Cancelled.".into() } else { e }
+    if e.contains(CANCELLED) { n!("Cancelled.").into() } else { e }
 }
 
-pub const STEP_SAFETY: &str = "Backing up the current data";
+pub const STEP_SAFETY: &str = n!("Backing up the current data");
 pub const STEP_CHECK: &str = crate::replace::STEP_CHECK;
 pub const STEP_RESTORE: &str = crate::replace::STEP_RESTORE;
-pub const STEP_INTO_LIVE: &str = "Adding the backup's telemetry to the running data";
-pub const STEP_KEEP: &str = "Carrying this server's telemetry into the restored data";
-pub const STEP_SCHEMA: &str = "Bringing the data up to this SENTIENT's schema";
+pub const STEP_INTO_LIVE: &str = n!("Adding the backup's telemetry to the running data");
+pub const STEP_KEEP: &str = n!("Carrying this server's telemetry into the restored data");
+pub const STEP_SCHEMA: &str = n!("Bringing the data up to this SENTIENT's schema");
 pub const STEP_SWITCH: &str = crate::replace::STEP_SWITCH;
-pub const STEP_SETTINGS: &str = "Applying the settings taken from the backup";
-pub const STEP_DELETE: &str = "Deleting the data from before";
+pub const STEP_SETTINGS: &str = n!("Applying the settings taken from the backup");
+pub const STEP_DELETE: &str = n!("Deleting the data from before");
 
 /// The steps a run shows, in order.
 pub fn planned_steps(req: &Request) -> Vec<String> {
@@ -935,10 +935,10 @@ pub enum Result_ {
 impl Result_ {
     pub fn label(self) -> &'static str {
         match self {
-            Result_::Done => "Done",
-            Result_::Failed => "Failed",
-            Result_::RolledBack => "Rolled back",
-            Result_::Stopped => "Stopped",
+            Result_::Done => n!("Done"),
+            Result_::Failed => n!("Failed"),
+            Result_::RolledBack => n!("Rolled back"),
+            Result_::Stopped => n!("Stopped"),
         }
     }
 }
@@ -1018,9 +1018,9 @@ fn append_history(e: &Entry) {
 /// A run's log, by its id.
 pub fn log_text(id: &str) -> Result<String, String> {
     if id.is_empty() || !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
-        return Err("Not a restore id.".into());
+        return Err(n!("Not a restore id.").into());
     }
-    std::fs::read_to_string(logs_dir().join(format!("{id}.log"))).map_err(|e| format!("The log of this restore is not there: {e}"))
+    std::fs::read_to_string(logs_dir().join(format!("{id}.log"))).map_err(|e| nf!("The log of this restore is not there: {e}"))
 }
 
 /// What a resumed run can skip (X1).
@@ -1047,7 +1047,7 @@ fn state_path() -> PathBuf {
 /// Who runs a restore from here: "ops on OPS-LAPTOP".
 pub fn by_here() -> String {
     let user = std::env::var("USER").or_else(|_| std::env::var("USERNAME")).unwrap_or_else(|_| "someone".into());
-    format!("{user} on {}", crate::backup_jobs::host_name().unwrap_or_else(|| "this computer".into()))
+    nf!("{user} on {}", crate::backup_jobs::host_name().unwrap_or_else(|| "this computer".into()))
 }
 
 /// Drop a half-restored database (PostgreSQL and ClickHouse).
@@ -1059,8 +1059,8 @@ fn drop_restored(setup: &Setup, target: &str, sink: &ProgressFn) {
         db.batch(&format!("DROP DATABASE IF EXISTS \"{target}\" WITH (FORCE)")).await.map_err(|e| e.to_string())
     });
     match r {
-        Ok(Ok(())) => log(sink, format!("The half-restored database {target} was removed.")),
-        Ok(Err(e)) | Err(e) => log(sink, format!("The half-restored database {target} could not be removed ({e}); remove it under Kept after earlier changes.")),
+        Ok(Ok(())) => log(sink, nf!("The half-restored database {target} was removed.")),
+        Ok(Err(e)) | Err(e) => log(sink, nf!("The half-restored database {target} could not be removed ({e}); remove it under Kept after earlier changes.")),
     }
     if setup.flavor() == Flavor::Clickhouse {
         let _ = setup.ch().with_database("default").text(&format!("DROP DATABASE IF EXISTS `{target}`"));
@@ -1074,7 +1074,7 @@ pub fn remove_restored(record: &InstallationRecord, name: &str, sink: &ProgressF
     let live = setup.pg().dbname;
     let ok = name.strip_prefix(&format!("{live}_restore_")).is_some_and(|s| (s.len() == 12 || s.len() == 14) && s.chars().all(|c| c.is_ascii_digit()));
     if !ok {
-        return Err(format!("{name} is not a database a restore left."));
+        return Err(nf!("{name} is not a database a restore left."));
     }
     drop_restored(&setup, name, sink);
     let still = block_on(async {
@@ -1084,7 +1084,7 @@ pub fn remove_restored(record: &InstallationRecord, name: &str, sink: &ProgressF
     })
     .ok()
     .flatten();
-    if still.as_deref() == Some("0") { Ok(()) } else { Err(format!("{name} could not be removed.")) }
+    if still.as_deref() == Some("0") { Ok(()) } else { Err(nf!("{name} could not be removed.")) }
 }
 
 /// Run the restore (blocking). The history gets the run whatever happens.
@@ -1111,8 +1111,8 @@ pub fn run(record: InstallationRecord, req: Request, passphrase: Option<String>,
         source: req.source.clone(),
         by: if req.by.is_empty() { by_here() } else { req.by.clone() },
         scope: match (&req.scope, req.keep_telemetry) {
-            (Scope::Configuration, true) => "Configuration only, keeping this server's telemetry".into(),
-            (Scope::Configuration, false) => "Configuration only, clearing this server's telemetry".into(),
+            (Scope::Configuration, true) => n!("Configuration only, keeping this server's telemetry").into(),
+            (Scope::Configuration, false) => n!("Configuration only, clearing this server's telemetry").into(),
             (s, _) => s.label(),
         },
         manager: env!("CARGO_PKG_VERSION").to_string(),
@@ -1158,7 +1158,7 @@ fn run_inner(record: &InstallationRecord, req: &Request, passphrase: Option<Stri
     if req.safety_backup {
         step(sink, STEP_SAFETY);
         match state.safety.clone().filter(|p| Path::new(p).exists()) {
-            Some(p) => log(sink, format!("The safety backup from the first attempt is used: {p}")),
+            Some(p) => log(sink, nf!("The safety backup from the first attempt is used: {p}")),
             None => {
                 let mut prefs = crate::backups::BackupPrefs::load();
                 if let Some(d) = &req.safety_dir {
@@ -1169,7 +1169,7 @@ fn run_inner(record: &InstallationRecord, req: &Request, passphrase: Option<Stri
                 prefs.copy_to = None;
                 let name = format!("sentient-before-restore-{}", chrono::Local::now().format("%Y-%m-%d_%H%M"));
                 let made = crate::backups::run_as(record, &prefs, None, false, Some(&name), nested(sink)).inspect_err(|_| fail_at(entry, STEP_SAFETY))?;
-                log(sink, format!("{} · {}, checked", made.path.display(), crate::dbstatus::bytes_label(made.bytes)));
+                log(sink, nf!("{} · {}, checked", made.path.display(), crate::dbstatus::bytes_label(made.bytes)));
                 state.safety = Some(made.path.display().to_string());
                 save_state(&state);
             }
@@ -1184,27 +1184,27 @@ fn run_inner(record: &InstallationRecord, req: &Request, passphrase: Option<Stri
     });
     let summary = summary.inspect_err(|_| fail_at(entry, STEP_CHECK))?;
     if summary.database_type != flavor_label(record.flavor()) && req.scope.restores_telemetry() {
-        entry.converted = Some(format!("history converted from {}", summary.database_type));
+        entry.converted = Some(nf!("history converted from {}", summary.database_type));
     }
     if !state.checked {
         let report = sentient_backup_core::restore::check(&req.file, passphrase.as_deref()).map_err(|e| e.to_string()).inspect_err(|_| fail_at(entry, STEP_CHECK))?;
         let bad: Vec<String> = report.members.iter().filter(|m| !m.ok && !req.skip_members.contains(&m.path)).map(|m| m.label.clone()).chain(report.missing.iter().filter(|p| !req.skip_members.contains(p)).map(|p| sentient_backup_core::restore::member_label(p))).collect();
         if !bad.is_empty() {
             fail_at(entry, STEP_CHECK);
-            return Err(format!("The backup is damaged: {}. Nothing on this instance changed.", bad.join(", ")));
+            return Err(nf!("The backup is damaged: {}. Nothing on this instance changed.", bad.join(", ")));
         }
-        log(sink, format!("Every part matches its SHA-256 ({} parts).", report.members.len()));
+        log(sink, nf!("Every part matches its SHA-256 ({} parts).", report.members.len()));
         state.checked = true;
         save_state(&state);
     } else {
-        log(sink, "The backup was checked by the first attempt.");
+        log(sink, n!("The backup was checked by the first attempt."));
     }
     let live = setup.pg();
     let schema_ok = crate::restore_switch::schema_version_now(&live).ok();
     if let (Some(theirs), Some(ours)) = (summary.schema_version, schema_ok) {
         if theirs > ours {
             fail_at(entry, STEP_CHECK);
-            return Err(format!("This backup is from a newer SENTIENT (schema {theirs}); this one has schema {ours}. Update SENTIENT first. Nothing on this instance changed."));
+            return Err(nf!("This backup is from a newer SENTIENT (schema {theirs}); this one has schema {ours}. Update SENTIENT first. Nothing on this instance changed."));
         }
     }
 
@@ -1250,12 +1250,12 @@ fn run_inner(record: &InstallationRecord, req: &Request, passphrase: Option<Stri
         };
         let r = block_on(sentient_backup_core::restore::run(&live, &opts, crate::backup_jobs::bridge_pub(nested(sink))))?;
         return match r {
-            Ok(_) => Ok(format!("The telemetry from {} is in {}; SENTIENT kept running.", entry.backup, flavor_label(record.flavor()))),
+            Ok(_) => Ok(nf!("The telemetry from {} is in {}; SENTIENT kept running.", entry.backup, flavor_label(record.flavor()))),
             Err(e) => {
                 let e = e.to_string();
                 stopped(&e, entry);
                 fail_at(entry, STEP_INTO_LIVE);
-                Err(format!("{} Nothing on this instance changed: the telemetry added so far was taken out again.", sentence(&plain(e))))
+                Err(nf!("{} Nothing on this instance changed: the telemetry added so far was taken out again.", sentence(&plain(e))))
             }
         };
     }
@@ -1284,10 +1284,10 @@ fn run_inner(record: &InstallationRecord, req: &Request, passphrase: Option<Stri
         ..Default::default()
     };
     let restored = block_on(async {
-        log(sink, format!(">> Creating the empty database {target}"));
+        log(sink, nf!(">> Creating the empty database {target}"));
         sentient_backup_core::db::create_database(&live, &target).await.map_err(|e| e.to_string())?;
         if let Some(ch) = &ch_target {
-            log(sink, format!(">> Creating the ClickHouse database {target}"));
+            log(sink, nf!(">> Creating the ClickHouse database {target}"));
             #[cfg(target_os = "linux")]
             if let Setup::Native(c) = &setup {
                 sentient_installer_core::native_linux::grant_clickhouse(c)?;
@@ -1301,7 +1301,7 @@ fn run_inner(record: &InstallationRecord, req: &Request, passphrase: Option<Stri
         stopped(&e, entry);
         fail_at(entry, STEP_RESTORE);
         drop_restored(&setup, &target, sink);
-        return Err(format!("{} Nothing on this instance changed: SENTIENT runs on its own data. The half-restored database was removed.", sentence(&plain(e))));
+        return Err(nf!("{} Nothing on this instance changed: SENTIENT runs on its own data. The half-restored database was removed.", sentence(&plain(e))));
     }
     entry.restored_db = Some(target.clone());
 
@@ -1315,20 +1315,20 @@ fn run_inner(record: &InstallationRecord, req: &Request, passphrase: Option<Stri
             stopped(&e, entry);
             fail_at(entry, STEP_KEEP);
             drop_restored(&setup, &target, sink);
-            return Err(format!("{} Nothing on this instance changed: SENTIENT runs on its own data. The half-restored database was removed.", sentence(&plain(e))));
+            return Err(nf!("{} Nothing on this instance changed: SENTIENT runs on its own data. The half-restored database was removed.", sentence(&plain(e))));
         }
     }
     if cancel_path().exists() {
         fail_at(entry, STEP_SCHEMA);
         drop_restored(&setup, &target, sink);
-        return Err("Cancelled before the switch. Nothing on this instance changed; the half-restored database was removed.".into());
+        return Err(n!("Cancelled before the switch. Nothing on this instance changed; the half-restored database was removed.").into());
     }
 
     step(sink, STEP_SCHEMA);
     if let Err(e) = crate::restore_switch::match_schema(record, &live, &setup.ch().password, &target, &nested(sink)).and_then(|_| crate::secrets_key::after_restore(&live, &target, &req.file, None, passphrase.as_deref(), &nested(sink))) {
         fail_at(entry, STEP_SCHEMA);
         drop_restored(&setup, &target, sink);
-        return Err(format!("{} Nothing on this instance changed. The half-restored database was removed.", sentence(&e)));
+        return Err(nf!("{} Nothing on this instance changed. The half-restored database was removed.", sentence(&e)));
     }
 
     step(sink, STEP_SWITCH);
@@ -1366,8 +1366,8 @@ fn run_inner(record: &InstallationRecord, req: &Request, passphrase: Option<Stri
         }
         if taken > 0 {
             match crate::settings::apply_with(record.clone(), &values, None, nested(sink)) {
-                Ok(_) => notes.push(format!("{taken} setting{} taken from the backup.", if taken == 1 { "" } else { "s" })),
-                Err(e) => notes.push(format!("The settings from the backup were not applied ({e}); this server's stay.")),
+                Ok(_) => notes.push(if taken == 1 { nf!("{taken} setting taken from the backup.") } else { nf!("{taken} settings taken from the backup.") }),
+                Err(e) => notes.push(nf!("The settings from the backup were not applied ({e}); this server's stay.")),
             }
         }
     }
@@ -1384,15 +1384,15 @@ fn run_inner(record: &InstallationRecord, req: &Request, passphrase: Option<Stri
         if hybrid && !keep {
             let _ = setup.ch().with_database("default").text(&format!("DROP DATABASE IF EXISTS `{target}`"));
         }
-        notes.push(format!("The data from before was deleted ({} freed).", crate::dbstatus::bytes_label(freed.max(0) as u64)));
+        notes.push(nf!("The data from before was deleted ({} freed).", crate::dbstatus::bytes_label(freed.max(0) as u64)));
         entry.aside = None;
     }
     let kept = if req.delete_old {
-        entry.safety.as_ref().map(|s| format!(" The safety backup {s} holds the data from before.")).unwrap_or_default()
+        entry.safety.as_ref().map(|s| nf!(" The safety backup {s} holds the data from before.")).unwrap_or_default()
     } else {
-        format!(" The data from before is kept as {aside}{}.", entry.safety.as_ref().map(|s| format!(", and as the safety backup {s}")).unwrap_or_default())
+        nf!(" The data from before is kept as {aside}{}.", entry.safety.as_ref().map(|s| nf!(", and as the safety backup {s}")).unwrap_or_default())
     };
-    Ok(format!("SENTIENT runs on the data from {}.{kept}{}", entry.backup, notes.iter().map(|n| format!(" {n}")).collect::<String>()))
+    Ok(nf!("SENTIENT runs on the data from {}.{kept}{}", entry.backup, notes.iter().map(|n| format!(" {n}")).collect::<String>()))
 }
 
 #[cfg(test)]

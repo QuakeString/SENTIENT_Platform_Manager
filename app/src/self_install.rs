@@ -110,7 +110,7 @@ mod imp {
     /// Copy the running program to `manager_exe()`. Skipped when it already
     /// runs from there (repair from an installed copy).
     pub fn install_manager() -> Result<PathBuf, String> {
-        let me = std::env::current_exe().map_err(|e| format!("locate this program: {e}"))?;
+        let me = std::env::current_exe().map_err(|e| nf!("locate this program: {e}"))?;
         let target = manager_exe();
         if me == target {
             return Ok(target);
@@ -141,7 +141,7 @@ mod imp {
             let hint = if crate::elevate::is_admin() {
                 ""
             } else {
-                " This needs administrator rights: open the setup with Run as administrator."
+                t!(" This needs administrator rights: open the setup with Run as administrator.")
             };
             format!("copy to {}: {e}.{hint}", target.display())
         })?;
@@ -215,7 +215,7 @@ mod imp {
             .status()
             .map(|s| s.success())
             .unwrap_or(false);
-        if ok { Ok(()) } else { Err(format!("Could not create the {name} shortcut")) }
+        if ok { Ok(()) } else { Err(nf!("Could not create the {name} shortcut")) }
     }
 
     /// An internet shortcut (`.url`) that opens SENTIENT in the default browser.
@@ -245,7 +245,7 @@ mod imp {
         let exe = manager.display().to_string();
         let dir = manager.parent().map(|d| d.display().to_string()).unwrap_or_default();
         let _ = quiet("reg.exe").args(["add", APP_PATH_KEY, "/ve", "/t", "REG_SZ", "/d", &exe, "/f"]).output();
-        let _ = quiet("reg.exe").args(["add", APP_PATH_KEY, "/v", "Path", "/t", "REG_SZ", "/d", &dir, "/f"]).output();
+        let _ = quiet("reg.exe").args(["add", APP_PATH_KEY, "/v", t!("Path"), "/t", "REG_SZ", "/d", &dir, "/f"]).output();
     }
 
     pub fn create_shortcuts(manager: &Path, url: &str, s: &Shortcuts) -> Result<(), String> {
@@ -301,7 +301,7 @@ mod imp {
         for (name, kind, data) in [
             ("DisplayName", "REG_SZ", PRODUCT.to_string()),
             ("DisplayVersion", "REG_SZ", crate::updates::manager_version().to_string()),
-            ("Publisher", "REG_SZ", "INVENIA SYSTEMS".to_string()),
+            (t!("Publisher"), "REG_SZ", "INVENIA SYSTEMS".to_string()),
             ("URLInfoAbout", "REG_SZ", crate::self_install::COMPANY_WEBSITE.to_string()),
             ("DisplayIcon", "REG_SZ", exe.clone()),
             ("InstallLocation", "REG_SZ", manager_dir().display().to_string()),
@@ -370,13 +370,13 @@ mod imp {
         const BREAKAWAY: u32 = 0x0100_0000; // CREATE_BREAKAWAY_FROM_JOB
         let log = crate::maintenance_ops::log_line;
         match spawn(NO_WINDOW | BREAKAWAY) {
-            Ok(_) => log(&format!("Removing {} once the Platform Manager has closed", dir.display())),
+            Ok(_) => log(&tf!("Removing {} once the Platform Manager has closed", dir.display())),
             Err(_) => {
                 let inside = spawn(NO_WINDOW);
                 delete_at_restart(&dir);
                 log(&match inside {
-                    Ok(_) => format!("Removing {} once the Platform Manager has closed (also marked for the next restart)", dir.display()),
-                    Err(e) => format!("Could not start the removal of {}: {e}. It is removed at the next restart", dir.display()),
+                    Ok(_) => tf!("Removing {} once the Platform Manager has closed (also marked for the next restart)", dir.display()),
+                    Err(e) => tf!("Could not start the removal of {}: {e}. It is removed at the next restart", dir.display()),
                 });
             }
         }
@@ -510,7 +510,7 @@ mod imp {
 
     /// Install this program, its command and its icon as root.
     pub fn install_manager() -> Result<PathBuf, String> {
-        let me = std::env::current_exe().map_err(|e| format!("locate this program: {e}"))?;
+        let me = std::env::current_exe().map_err(|e| nf!("locate this program: {e}"))?;
         let target = manager_exe();
         if me == target {
             return Ok(target);
@@ -518,13 +518,13 @@ mod imp {
         // A Flatpak is installed and updated by Flatpak, and its program
         // cannot run outside its sandbox.
         if sentient_installer_core::host::in_flatpak() {
-            return Err("This Platform Manager runs as a Flatpak: Flatpak installs and updates it (flatpak update).".into());
+            return Err(n!("This Platform Manager runs as a Flatpak: Flatpak installs and updates it (flatpak update).").into());
         }
         // Started from an AppImage, this program lives in the AppImage's
         // FUSE mount, which root cannot read: copy it out first.
         let staged = std::env::var_os("APPIMAGE").is_some().then(|| std::env::temp_dir().join(format!("sentient-platform-manager-{}", std::process::id())));
         if let Some(copy) = &staged {
-            std::fs::copy(&me, copy).map_err(|e| format!("copy this program out of the AppImage: {e}"))?;
+            std::fs::copy(&me, copy).map_err(|e| nf!("copy this program out of the AppImage: {e}"))?;
         }
         let me = staged.clone().unwrap_or(me);
         let icons = std::env::temp_dir().join("sentient-platform-manager-icons");
@@ -534,7 +534,7 @@ mod imp {
             let ext = if size == "scalable" { "svg" } else { "png" };
             let file = icons.join(format!("{size}.{ext}"));
             std::fs::write(&file, bytes).map_err(|e| format!("write icon: {e}"))?;
-            install_icons.push_str(&format!("install -Dm644 {} {HICOLOR}/{size}/apps/sentient-platform-manager.{ext}\n", q(&file.display().to_string())));
+            install_icons.push_str(&tf!("install -Dm644 {} {HICOLOR}/{size}/apps/sentient-platform-manager.{ext}\n", q(&file.display().to_string())));
         }
         let script = format!(
             "set -e\n\
@@ -559,7 +559,7 @@ mod imp {
     }
 
     fn desktop_entry(name: &str, exec: &str, comment: &str) -> String {
-        format!(
+        tf!(
             "[Desktop Entry]\nType=Application\nName={name}\nComment={comment}\nExec={exec}\n\
              Icon=sentient-platform-manager\nTerminal=false\nCategories=System;Monitor;\n"
         )
@@ -585,13 +585,13 @@ mod imp {
         if s.start_menu {
             script.push_str(&format!(
                 "cat > {APPS}/sentient-platform-manager.desktop <<'EOF'\n{}EOF\n",
-                manager_entry(super::PRODUCT, manager, "Run, update and back up SENTIENT")
+                manager_entry(super::PRODUCT, manager, t!("Run, update and back up SENTIENT"))
             ));
         }
         if s.desktop_sentient || s.start_menu {
             script.push_str(&format!(
                 "cat > {APPS}/sentient.desktop <<'EOF'\n{}EOF\n",
-                desktop_entry("SENTIENT", &format!("xdg-open {url}"), "Open SENTIENT in the browser")
+                desktop_entry("SENTIENT", &format!("xdg-open {url}"), t!("Open SENTIENT in the browser"))
             ));
         }
         script.push_str("command -v update-desktop-database >/dev/null && update-desktop-database -q || true\n");
@@ -628,7 +628,7 @@ mod imp {
         run(&noop(), &format!(
             "set -e\ncat > {APPS}/sentient-platform-manager.desktop <<'EOF'\n{}EOF\n\
              command -v update-desktop-database >/dev/null && update-desktop-database -q || true\n",
-            manager_entry(super::PRODUCT, manager, "Run, update and back up SENTIENT")
+            manager_entry(super::PRODUCT, manager, t!("Run, update and back up SENTIENT"))
         ))?;
         crate::shortcuts::note(crate::shortcuts::Owner::Manager, [PathBuf::from(format!("{APPS}/sentient-platform-manager.desktop"))]);
         Ok(())
@@ -659,7 +659,7 @@ mod imp {
             match self {
                 PackageOwner::Pacman(_) => "pacman",
                 PackageOwner::Dpkg(_) => "apt",
-                PackageOwner::Rpm(_) => "dnf (or zypper)",
+                PackageOwner::Rpm(_) => t!("dnf (or zypper)"),
                 PackageOwner::Flatpak(_) => "flatpak",
             }
         }
@@ -764,7 +764,7 @@ mod imp {
         std::fs::write(&tmp, json).map_err(|e| format!("write {}: {e}", tmp.display()))?;
         let result = run(
             &noop(),
-            &format!("install -Dm644 {} {}", q(&tmp.display().to_string()), q(&path.display().to_string())),
+            &tf!("install -Dm644 {} {}", q(&tmp.display().to_string()), q(&path.display().to_string())),
         );
         let _ = std::fs::remove_file(&tmp);
         result
@@ -786,7 +786,7 @@ pub fn refresh_operator_screen(sink: &sentient_installer_core::progress::Progres
         if let Some(record) = crate::installation::InstallationRecord::load() {
             match sentient_installer_core::kiosk::create_shortcut(sink, &manager_exe(), &record.state_dir) {
                 Ok(()) => crate::shortcuts::remember(crate::shortcuts::Owner::Sentient, sentient_installer_core::kiosk::shortcut_paths()),
-                Err(e) => sink(sentient_installer_core::progress::Progress::Log { line: format!("The kiosk shortcut was not renewed: {e}") }),
+                Err(e) => sink(sentient_installer_core::progress::Progress::Log { line: nf!("The kiosk shortcut was not renewed: {e}") }),
             }
         }
     }
@@ -803,7 +803,7 @@ pub fn set_open_at_signin(sink: &sentient_installer_core::progress::ProgressFn, 
     #[cfg(windows)]
     if mode.is_some() && !autostart().is_some_and(|(on, _)| on) {
         set_autostart(true, sentient_installer_core::native::DEFAULT_START_DELAY_SECS)?;
-        sink(sentient_installer_core::progress::Progress::Log { line: "SENTIENT's services start with Windows.".into() });
+        sink(sentient_installer_core::progress::Progress::Log { line: n!("SENTIENT's services start with Windows.").into() });
     }
     Ok(())
 }

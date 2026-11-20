@@ -56,7 +56,7 @@ pub fn open_url(url: &str, cx: &mut App) {
                 })
                 .await;
             if let Err(e) = result {
-                cx.update(|cx| show_error("Could not open it", format!("{url} could not be opened.{}", if e.is_empty() { String::new() } else { format!("\n{e}") }), cx));
+                cx.update(|cx| show_error(t!("Could not open it"), tf!("{url} could not be opened.{}", if e.is_empty() { String::new() } else { format!("\n{e}") }), cx));
             }
         })
         .detach();
@@ -67,7 +67,17 @@ pub fn open_url(url: &str, cx: &mut App) {
 
 /// A short error in the shared dialog, with Close (no window needed).
 pub fn show_error(title: impl Into<SharedString>, text: impl Into<SharedString>, cx: &mut App) {
-    show_error_with(title, text, None, cx)
+    show_error_with(title, shown(text), None, cx)
+}
+
+/// A text that may be a job's or an error's English (crate::i18n::dynamic),
+/// in the language shown.
+pub fn shown(text: impl Into<SharedString>) -> SharedString {
+    let text = text.into();
+    match crate::i18n::dynamic(&text) {
+        std::borrow::Cow::Borrowed(_) => text,
+        std::borrow::Cow::Owned(s) => s.into(),
+    }
 }
 
 /// An error in the shared dialog: the headline, the details (the step that
@@ -75,7 +85,7 @@ pub fn show_error(title: impl Into<SharedString>, text: impl Into<SharedString>,
 /// What a failure's retry button says: "Ask again" when the failure is a
 /// closed password prompt (sentient_installer_core::elevation), else `usual`.
 pub fn retry_label(failure: &str, usual: &'static str) -> &'static str {
-    if sentient_installer_core::elevation::ElevationError::is_cancelled(failure) { "Ask again" } else { usual }
+    if sentient_installer_core::elevation::ElevationError::is_cancelled(failure) { t!("Ask again") } else { usual }
 }
 
 pub fn show_error_with(title: impl Into<SharedString>, text: impl Into<SharedString>, retry: Option<std::rc::Rc<dyn Fn(&mut App)>>, cx: &mut App) {
@@ -87,7 +97,7 @@ pub fn show_error_with(title: impl Into<SharedString>, text: impl Into<SharedStr
             let theme = cx.theme().clone();
             let (head, detail) = crate::remote::split_failure(&self.0);
             let copy = self.0.to_string();
-            let again = retry_label(&self.0, "Retry");
+            let again = retry_label(&self.0, t!("Retry"));
             gpui_kit::component::v_flex()
                 .gap_3()
                 .child(div().text_sm().child(head))
@@ -98,14 +108,14 @@ pub fn show_error_with(title: impl Into<SharedString>, text: impl Into<SharedStr
                     gpui_kit::component::h_flex()
                         .gap(crate::ui::button_gap())
                         .justify_end()
-                        .child(crate::ui::probed(button("error-copy").outline().label("Copy").on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(copy.clone())))))
+                        .child(crate::ui::probed(button("error-copy").outline().label(t!("Copy")).on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(copy.clone())))))
                         .when_some(self.1.clone(), |r, retry| {
                             r.child(crate::ui::probed(button("error-retry").outline().label(again).on_click(move |_, _, cx| {
                                 crate::modal::close(cx);
                                 retry(cx);
                             })))
                         })
-                        .child(crate::ui::probed(button("error-close").primary().label("Close").on_click(|_, _, cx| crate::modal::close(cx)))),
+                        .child(crate::ui::probed(button("error-close").primary().label(t!("Close")).on_click(|_, _, cx| crate::modal::close(cx)))),
                 )
         }
     }
@@ -117,6 +127,7 @@ pub fn show_error_with(title: impl Into<SharedString>, text: impl Into<SharedStr
 /// What finished, in the shared dialog: the message as plain lines (a
 /// success is never read as an error, however long it is), and Close.
 pub fn show_info(title: impl Into<SharedString>, text: impl Into<SharedString>, cx: &mut App) {
+    let text = shown(text);
     struct InfoBody(SharedString);
     impl Render for InfoBody {
         fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -126,7 +137,7 @@ pub fn show_info(title: impl Into<SharedString>, text: impl Into<SharedString>, 
                 .gap_3()
                 .child(outcome(&theme, Tone::Good, info_lines(&self.0).0))
                 .children(info_lines(&self.0).1.map(|rest| div().text_sm().child(rest)))
-                .child(gpui_kit::component::h_flex().justify_end().child(button("info-close").primary().label("Close").on_click(|_, _, cx| crate::modal::close(cx))))
+                .child(gpui_kit::component::h_flex().justify_end().child(button("info-close").primary().label(t!("Close")).on_click(|_, _, cx| crate::modal::close(cx))))
         }
     }
     let view = cx.new(|_| InfoBody(text.into()));
@@ -179,10 +190,10 @@ pub fn open_web_app(url: &str, cx: &mut App) {
                 WebLaunch::Default => cx.open_url(&url),
                 WebLaunch::With(browser, exe) => {
                     if let Err(e) = std::process::Command::new(&exe).args(browser.open_args(&url, false, None)).spawn() {
-                        show_error("Could not open it", format!("{} could not be started to open {url}.\n{e}", browser.label()), cx);
+                        show_error(t!("Could not open it"), tf!("{} could not be started to open {url}.\n{e}", browser.label()), cx);
                     }
                 }
-                WebLaunch::Missing => show_error("No browser for SENTIENT", kiosk::no_browser_message(&url), cx),
+                WebLaunch::Missing => show_error(t!("No browser for SENTIENT"), kiosk::no_browser_message(&url), cx),
             });
         })
         .detach();
@@ -192,9 +203,9 @@ pub fn open_web_app(url: &str, cx: &mut App) {
 }
 
 /// What the start delay does, for its (i).
-pub const START_DELAY_HELP: &str = "Seconds SENTIENT waits after Windows starts before it starts itself, its database first. \
+pub const START_DELAY_HELP: &str = n!("Seconds SENTIENT waits after Windows starts before it starts itself, its database first. \
 0 starts it together with Windows. A few seconds let other programs and the network settle first; an operator screen shows \
-\"SENTIENT is starting\" meanwhile. Change it later in Platform settings, under Startup.";
+\"SENTIENT is starting\" meanwhile. Change it later in Platform settings, under Startup.");
 
 /// "Start delay [ 15 ] seconds (i)": the installer's and Startup's field.
 pub fn start_delay_row(theme: &Theme, state: &Entity<gpui_kit::component::input::InputState>) -> Div {
@@ -211,7 +222,7 @@ pub fn start_delay_row_checked(theme: &Theme, state: &Entity<gpui_kit::component
             gpui_kit::component::h_flex()
                 .gap_2()
                 .items_center()
-                .child(div().text_sm().child("Start delay"))
+                .child(div().text_sm().child(t!("Start delay")))
                 .child(div().w_20().child({
                     let i = gpui_kit::component::input::Input::new(state);
                     if problem.is_some() { i.border_color(theme.danger).focus_bordered(false) } else { i }
@@ -311,7 +322,7 @@ pub fn back_title(
     let back = button(id)
         .outline()
         .icon(gpui_kit::component::Icon::new(gpui_kit::assets::IconName::ChevronLeft))
-        .tooltip("Back")
+        .tooltip(t!("Back"))
         .when(disabled, |b| gpui_kit::component::Disableable::disabled(b, true))
         .on_click(on_click);
     // The button's gap to the title: the app's one gap between a button
@@ -356,8 +367,8 @@ pub fn debug_stale() -> Option<String> {
 
 pub fn stale_note(theme: &Theme, id: &'static str, why: &str, at: Option<&str>) -> AnyElement {
     let text = match at {
-        Some(t) => format!("Couldn't refresh · last updated {t}"),
-        None => "Couldn't refresh".to_string(),
+        Some(t) => tf!("Couldn't refresh · last updated {t}"),
+        None => t!("Couldn't refresh").to_string(),
     };
     h_flex()
         .gap_1()
@@ -596,15 +607,15 @@ impl Render for InfoTip {
 /// "this computer" page (not_installed, Setup), so they do not look empty.
 pub fn flatpak_local_notice(theme: &Theme) -> Div {
     panel(theme)
-        .child(div().font_weight(FontWeight::MEDIUM).child("This is the Flatpak build of the Platform Manager: it manages SENTIENT on other computers"))
+        .child(div().font_weight(FontWeight::MEDIUM).child(t!("This is the Flatpak build of the Platform Manager: it manages SENTIENT on other computers")))
         .child(
             gpui_kit::component::h_flex()
                 .gap_1()
                 .items_center()
-                .child(div().text_sm().text_color(theme.muted_foreground).child("To install or manage SENTIENT on this computer, use the .deb, .rpm, AppImage or Arch package."))
+                .child(div().text_sm().text_color(theme.muted_foreground).child(t!("To install or manage SENTIENT on this computer, use the .deb, .rpm, AppImage or Arch package.")))
                 .child(info(
                     "flatpak-help".into(),
-                    "The Flatpak runs in a sandbox that cannot reach SENTIENT's files and services on this computer, so it manages SENTIENT on other computers over SSH.\n\nAdd a server from the instance switcher.".into(),
+                    t!("The Flatpak runs in a sandbox that cannot reach SENTIENT's files and services on this computer, so it manages SENTIENT on other computers over SSH.\n\nAdd a server from the instance switcher.").into(),
                 )),
         )
 }
@@ -619,40 +630,40 @@ pub fn not_installed(theme: &Theme) -> Div {
     match crate::installer::plan::pending_offer_now() {
         crate::installer::plan::PendingOffer::Button | crate::installer::plan::PendingOffer::Resume => {
             return panel(theme)
-                .child(div().font_weight(FontWeight::MEDIUM).child("The SENTIENT install has not finished"))
-                .child(div().text_sm().text_color(theme.muted_foreground).child("It stopped for the Windows restart. Setup continues where it stopped, with the choices you made."))
+                .child(div().font_weight(FontWeight::MEDIUM).child(t!("The SENTIENT install has not finished")))
+                .child(div().text_sm().text_color(theme.muted_foreground).child(t!("It stopped for the Windows restart. Setup continues where it stopped, with the choices you made.")))
                 .child(button_row(vec![
-                    crate::ui::button("resume-install").primary().label("Continue the SENTIENT install").on_click(|_, window, cx| crate::standalone::resume_install(window, cx)).into_any_element(),
-                    crate::ui::button("install-sentient").outline().label("Start a new install").on_click(|_, window, cx| crate::standalone::install_sentient(window, cx)).into_any_element(),
+                    crate::ui::button("resume-install").primary().label(t!("Continue the SENTIENT install")).on_click(|_, window, cx| crate::standalone::resume_install(window, cx)).into_any_element(),
+                    crate::ui::button("install-sentient").outline().label(t!("Start a new install")).on_click(|_, window, cx| crate::standalone::install_sentient(window, cx)).into_any_element(),
                 ]));
         }
         crate::installer::plan::PendingOffer::AfterRestart => {
             return panel(theme)
-                .child(div().font_weight(FontWeight::MEDIUM).child("Restart Windows to finish installing SENTIENT"))
-                .child(div().text_sm().text_color(theme.muted_foreground).child("WSL 2 is turned on after the restart. Setup then continues by itself after you sign in."));
+                .child(div().font_weight(FontWeight::MEDIUM).child(t!("Restart Windows to finish installing SENTIENT")))
+                .child(div().text_sm().text_color(theme.muted_foreground).child(t!("WSL 2 is turned on after the restart. Setup then continues by itself after you sign in.")));
         }
         crate::installer::plan::PendingOffer::None => {}
     }
     // One short line; the how-to behind the (i). The buttons wrap on a
     // narrow window. Removing the Platform Manager lives in Repair.
     panel(theme)
-        .child(div().font_weight(FontWeight::MEDIUM).child("SENTIENT isn't installed on this computer"))
+        .child(div().font_weight(FontWeight::MEDIUM).child(t!("SENTIENT isn't installed on this computer")))
         .child(
             gpui_kit::component::h_flex()
                 .gap_1()
                 .items_center()
-                .child(div().text_sm().text_color(theme.muted_foreground).child("Install it from the internet or from a SENTIENT package folder."))
+                .child(div().min_w_0().text_sm().text_color(theme.muted_foreground).child(t!("Install it from the internet or from a SENTIENT package folder.")))
                 .child(info(
                     "install-help".into(),
-                    "Download and install: Setup downloads the version you choose from GitHub.\n\nInstall from local files: without internet, choose the unpacked SENTIENT package folder (the one with SENTIENT-Setup and payload).".into(),
+                    t!("Download and install: Setup downloads the version you choose from GitHub.\n\nInstall from local files: without internet, choose the unpacked SENTIENT package folder (the one with SENTIENT-Setup and payload).").into(),
                 )),
         )
         .child(button_row(vec![
             {
-                crate::ui::button("install-sentient").primary().label("Download and install SENTIENT").on_click(|_, window, cx| crate::standalone::install_sentient(window, cx)).into_any_element()
+                crate::ui::button("install-sentient").primary().label(t!("Download and install SENTIENT")).on_click(|_, window, cx| crate::standalone::install_sentient(window, cx)).into_any_element()
             },
             {
-                crate::ui::button("install-sentient-package").outline().label("Install from local files").on_click(|_, window, cx| crate::standalone::install_sentient_from_package(window, cx)).into_any_element()
+                crate::ui::button("install-sentient-package").outline().label(t!("Install from local files")).on_click(|_, window, cx| crate::standalone::install_sentient_from_package(window, cx)).into_any_element()
             },
         ]))
 }
@@ -697,7 +708,7 @@ pub fn probed_input(input: impl IntoElement) -> Div {
 /// A page's own notice, directly in the page (never inside a card): an
 /// icon, a headline, the rest of the text, and an optional action.
 pub fn notice(theme: &Theme, tone: Tone, text: impl Into<SharedString>) -> Div {
-    notice_with(theme, tone, text, None)
+    notice_with(theme, tone, shown(text), None)
 }
 
 pub fn notice_with(theme: &Theme, tone: Tone, text: impl Into<SharedString>, mut action: Option<AnyElement>) -> Div {
@@ -737,6 +748,7 @@ pub fn notice_with(theme: &Theme, tone: Tone, text: impl Into<SharedString>, mut
 /// The result of a job: like a pill in colour, but a block that wraps, one
 /// row per line, for messages longer than a word or two.
 pub fn outcome(theme: &Theme, tone: Tone, text: impl Into<SharedString>) -> Div {
+    let text = shown(text);
     let (bg, fg) = match tone {
         Tone::Good => (theme.success, theme.success_foreground),
         Tone::Warn => (theme.warning, theme.warning_foreground),
@@ -850,7 +862,7 @@ pub fn release_notes(theme: &Theme, notes: &[crate::notes::Notes]) -> Div {
                             .items_start()
                             .text_sm()
                             .child(div().flex_shrink_0().child("•"))
-                            .child(div().min_w_0().child(e.clone()))
+                            .child(div().min_w_0().child(crate::ui::shown(e.clone())))
                     }))
             }))
     }))
@@ -1234,11 +1246,11 @@ fn radio_card_inner(theme: &Theme, id: impl Into<ElementId>, title: AnyElement, 
 pub fn service_label(name: &str) -> Option<&'static str> {
     let n = name.to_lowercase();
     if n.contains("postgres") {
-        Some("Database (PostgreSQL)")
+        Some(t!("Database (PostgreSQL)"))
     } else if n.contains("clickhouse") {
         Some("ClickHouse")
     } else if n.contains("gateway") {
-        Some("Gateway")
+        Some(t!("Gateway"))
     } else if n.starts_with("sentient") || n.contains("sentientserver") {
         Some("SENTIENT")
     } else {
@@ -1285,9 +1297,9 @@ pub fn service_rows(
     // One order on every page: SENTIENT, Database, ClickHouse, Gateway.
     let rank = |n: &str| match service_label(n) {
         Some("SENTIENT") => 0,
-        Some("Database (PostgreSQL)") => 1,
+        Some(l) if l == t!("Database (PostgreSQL)") => 1,
         Some("ClickHouse") => 2,
-        Some("Gateway") => 3,
+        Some(l) if l == t!("Gateway") => 3,
         _ => 4,
     };
     let (act, log, busy_name) = actions;
@@ -1297,12 +1309,12 @@ pub fn service_rows(
     services
         .into_iter()
         .map(|(name, running, starting, detail)| {
-            let (tone, label) = if running { (Tone::Good, "Running") } else if starting { (Tone::Warn, "Starting") } else { (Tone::Bad, "Stopped") };
+            let (tone, label) = if running { (Tone::Good, t!("Running")) } else if starting { (Tone::Warn, t!("Starting")) } else { (Tone::Bad, t!("Stopped")) };
             let plain = service_label(&name);
             let busy = busy_name.as_ref().is_some_and(|b| *b == *name);
             // The pill hugs its word; the uptime goes on its own line under
             // the name, so the name and the unit keep the row's room.
-            let state_pill = if busy { pill(theme, Tone::Warn, "Working…") } else { pill(theme, tone, label) };
+            let state_pill = if busy { pill(theme, Tone::Warn, t!("Working…")) } else { pill(theme, tone, label) };
             let piece = |d: Div| d.min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis();
             let names = gpui_kit::component::v_flex()
                 .flex_1()
@@ -1350,7 +1362,7 @@ pub fn service_rows(
                         icon("start", gpui_kit::component::Icon::new(gpui_kit::assets::IconName::Play), "Start", !running).into_any_element(),
                         icon("stop", gpui_kit::component::Icon::new(gpui_kit::assets::IconName::Square), "Stop", running).into_any_element(),
                         icon("restart", gpui_kit::component::Icon::new(gpui_kit::assets::IconName::RotateCw), "Restart", running).into_any_element(),
-                        svc_icon_button(theme, SharedString::from(format!("svc-log-{name}")), gpui_kit::component::Icon::empty().path("icons/file-text.svg"), "Logs", true, false)
+                        svc_icon_button(theme, SharedString::from(format!("svc-log-{name}")), gpui_kit::component::Icon::empty().path("icons/file-text.svg"), t!("Logs"), true, false)
                             .on_click(move |_, window, cx| log(&n, window, cx))
                             .into_any_element(),
                     ])
@@ -1366,7 +1378,7 @@ pub fn services_foot(theme: &Theme, running: usize, total: usize) -> Div {
         .items_center()
         .text_size(px(13.))
         .text_color(theme.muted_foreground)
-        .child(format!("{running} of {total} running"))
+        .child(tf!("{running} of {total} running"))
 }
 
 /// A popover's pointer under it, at `x` from its left: a 12 px wide
@@ -1769,7 +1781,7 @@ pub fn refresh_button(id: &'static str, busy: bool, window: &mut Window, on: imp
     button(id)
         .outline()
         .icon(gpui_kit::component::Icon::new(gpui_kit::component::IconName::RefreshCw).rotate(radians(angle)))
-        .tooltip("Refresh")
+        .tooltip(t!("Refresh"))
         .disabled(start.is_some())
         .on_click(move |_, window, cx| {
             SPINS.with(|s| {
@@ -1798,12 +1810,12 @@ pub fn open_sentient_button(id: &'static str, serving: bool, on_click: impl Fn(&
     use gpui_kit::component::button::ButtonVariants as _;
     use gpui_kit::component::Disableable as _;
     if serving {
-        button(id).primary().label("Open SENTIENT").on_click(on_click).into_any_element()
+        button(id).primary().label(t!("Open SENTIENT")).on_click(on_click).into_any_element()
     } else {
         div()
             .id(SharedString::from(format!("{id}-why")))
-            .child(button(id).outline().label("Open SENTIENT").disabled(true))
-            .tooltip(crate::ui::tooltip("SENTIENT is stopped. Start it first."))
+            .child(button(id).outline().label(t!("Open SENTIENT")).disabled(true))
+            .tooltip(crate::ui::tooltip(t!("SENTIENT is stopped. Start it first.")))
             .into_any_element()
     }
 }
@@ -2171,7 +2183,7 @@ pub const COL_GAP: f32 = 18.;
 pub fn control_h() -> Length {
     use gpui_kit::component::StyleSized as _;
     let mut d = div().input_h(gpui_kit::component::Size::Medium);
-    d.style().size.height.expect("the toolkit's input sets a height")
+    d.style().size.height.expect(t!("the toolkit's input sets a height"))
 }
 
 #[cfg(test)]
@@ -2315,7 +2327,7 @@ pub fn toggle(theme: &Theme, id: impl Into<ElementId>, on: bool, note: Option<&'
         .gap(px(10.))
         .items_center()
         .child(gpui_kit::component::switch::Switch::new(id).checked(on).on_click(flip))
-        .child(div().text_sm().child(if on { "On" } else { "Off" }))
+        .child(div().text_sm().child(if on { t!("On") } else { t!("Off") }))
         .when_some(note, |r, n| r.child(div().text_size(px(12.)).text_color(theme.muted_foreground).child(n)))
         .child(layout_probe("field-control"))
 }
@@ -2336,7 +2348,7 @@ pub fn current_cell(theme: &Theme, id: impl Into<SharedString>, text: Option<Str
         .items_center()
         .when_some(text, |d, t| {
             let tip: SharedString = t.clone().into();
-            d.child(div().flex_shrink_0().text_size(px(12.)).text_color(theme.muted_foreground).child("Current")).child(
+            d.child(div().flex_shrink_0().text_size(px(12.)).text_color(theme.muted_foreground).child(t!("Current"))).child(
                 div()
                     .id(SharedString::from(format!("cur-{id}")))
                     .flex_1()
@@ -2356,7 +2368,7 @@ pub fn current_cell(theme: &Theme, id: impl Into<SharedString>, text: Option<Str
 pub fn restart_pill(cx: &App) -> Div {
     let (bg, fg) = if crate::theme::is_dark(cx) { (hsla(38. / 360., 0.92, 0.50, 0.14), rgb(0xfbbf24).into()) } else { (rgb(0xfef3c7).into(), rgb(0xb45309).into()) };
     let (bg, fg): (Hsla, Hsla) = (bg, fg);
-    h_flex().flex_shrink_0().h(px(22.)).px(px(8.)).rounded(px(11.)).bg(bg).text_color(fg).text_size(px(11.)).font_weight(FontWeight::MEDIUM).child("Restart")
+    h_flex().flex_shrink_0().h(px(22.)).px(px(8.)).rounded(px(11.)).bg(bg).text_color(fg).text_size(px(11.)).font_weight(FontWeight::MEDIUM).child(t!("Restart"))
 }
 
 /// A group heading inside the settings card (12 px, uppercase, muted).
@@ -2545,9 +2557,9 @@ pub fn settings_card(theme: &Theme, scroll_id: &'static str, tabs: Div, body: im
 /// What the Apply bar says: how many changes, or how many fields to fix.
 pub fn pending_text(changes: usize, invalid: usize) -> String {
     if invalid > 0 {
-        format!("Fix {invalid} field{} first", if invalid == 1 { "" } else { "s" })
+        if invalid == 1 { tf!("Fix {invalid} field first") } else { tf!("Fix {invalid} fields first") }
     } else {
-        format!("{changes} change{} not applied", if changes == 1 { "" } else { "s" })
+        if changes == 1 { tf!("{changes} change not applied") } else { tf!("{changes} changes not applied") }
     }
 }
 
@@ -2555,8 +2567,8 @@ pub fn pending_text(changes: usize, invalid: usize) -> String {
 /// restart, or what is wrong and how many changes wait.
 pub fn pending_line(changes: usize, names: &[String], restart: bool, first_invalid: Option<(&str, bool)>) -> String {
     if let Some((label, number)) = first_invalid {
-        let what = if number { "needs a number" } else { "is out of range" };
-        return format!("{label} {what}. {changes} change{} waiting.", if changes == 1 { "" } else { "s" });
+        let what = if number { t!("needs a number") } else { t!("is out of range") };
+        return if changes == 1 { tf!("{label} {what}. {changes} change waiting.") } else { tf!("{label} {what}. {changes} changes waiting.") };
     }
     let mut line = names.join(", ");
     if !line.is_empty() {
@@ -2566,7 +2578,7 @@ pub fn pending_line(changes: usize, names: &[String], restart: bool, first_inval
         if !line.is_empty() {
             line.push(' ');
         }
-        line.push_str(if changes == 1 { "SENTIENT restarts once to apply it." } else { "SENTIENT restarts once to apply them." });
+        line.push_str(if changes == 1 { t!("SENTIENT restarts once to apply it.") } else { t!("SENTIENT restarts once to apply them.") });
     }
     line
 }
@@ -2627,11 +2639,11 @@ pub fn pending_bar(
                     )
                 }),
         )
-        .child(probed(button(SharedString::from(format!("{id}-discard"))).outline().label("Discard").on_click(on_discard)))
+        .child(probed(button(SharedString::from(format!("{id}-discard"))).outline().label(t!("Discard")).on_click(on_discard)))
         .child(probed(
             button(SharedString::from(format!("{id}-apply")))
                 .primary()
-                .label(if restart { "Apply and restart" } else { "Apply" })
+                .label(if restart { t!("Apply and restart") } else { t!("Apply") })
                 .disabled(invalid > 0 || !can_apply)
                 .on_click(on_apply),
         ));
@@ -2681,26 +2693,26 @@ pub fn ask_before_leaving(scope: Option<String>, window: &mut Window, cx: &mut A
     }
     let list = (u.list)(cx);
     let text = if invalid > 0 {
-        format!("These settings are changed but not applied, and {invalid} field{} not valid (stay to fix {}):", if invalid == 1 { " is" } else { "s are" }, if invalid == 1 { "it" } else { "them" })
+        if invalid == 1 { tf!("These settings are changed but not applied, and {invalid} field is not valid (stay to fix it):") } else { tf!("These settings are changed but not applied, and {invalid} fields are not valid (stay to fix them):") }
     } else {
-        "These settings are changed but not applied:".to_string()
+        t!("These settings are changed but not applied:").to_string()
     };
     let (go2, discard) = (go.clone(), u.discard.clone());
     crate::modal::alert(window, cx, move |dialog, _, _| {
         let (go, go2, apply, discard) = (go.clone(), go2.clone(), u.apply.clone(), discard.clone());
         let d = dialog
-            .title("Apply your changes first?")
+            .title(t!("Apply your changes first?"))
             .description(text.clone())
             .list(list.clone())
-            .cancel_text("Stay")
-            .secondary("Discard", move |window, cx| {
+            .cancel_text(t!("Stay"))
+            .secondary(t!("Discard"), move |window, cx| {
                 discard(window, cx);
                 go2(window, cx);
             });
         if invalid > 0 {
             d.no_ok()
         } else {
-            d.ok_text("Apply and leave").on_ok(move |_, window, cx| {
+            d.ok_text(t!("Apply and leave")).on_ok(move |_, window, cx| {
                 apply(window, cx);
                 go(window, cx);
                 true

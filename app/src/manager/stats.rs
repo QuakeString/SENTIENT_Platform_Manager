@@ -84,7 +84,7 @@ impl Services {
 }
 
 /// What the Services card says when SENTIENT is stopped.
-const SERVICES_STOPPED: &str = "SENTIENT is stopped. Its services are read when it runs.";
+const SERVICES_STOPPED: &str = n!("SENTIENT is stopped. Its services are read when it runs.");
 
 #[derive(Clone)]
 pub enum Source {
@@ -174,10 +174,10 @@ impl Range {
 
     fn label(self) -> &'static str {
         match self {
-            Range::Live => "Live",
-            Range::Hour => "1 hour",
-            Range::Day => "24 hours",
-            Range::Week => "7 days",
+            Range::Live => t!("Live"),
+            Range::Hour => t!("1 hour"),
+            Range::Day => t!("24 hours"),
+            Range::Week => t!("7 days"),
         }
     }
 
@@ -276,8 +276,8 @@ impl Source {
     /// afresh).
     fn key(&self) -> String {
         match self {
-            Source::Local(r) => format!("local {}", serde_json::to_string(r).unwrap_or_default()),
-            Source::Remote(i) => format!("remote {}", serde_json::to_string(&(&i.id, &i.host, i.port, &i.user, &i.auth, &i.key_file)).unwrap_or_default()),
+            Source::Local(r) => tf!("local {}", serde_json::to_string(r).unwrap_or_default()),
+            Source::Remote(i) => tf!("remote {}", serde_json::to_string(&(&i.id, &i.host, i.port, &i.user, &i.auth, &i.key_file)).unwrap_or_default()),
         }
     }
 }
@@ -618,7 +618,7 @@ impl StatsPage {
             cx.background_executor().timer(Duration::from_secs(20)).await;
             this.update(cx, |p, cx| {
                 if p.live.is_empty() && p.live_err.is_none() {
-                    p.live_err = Some("The server did not answer within 20 seconds.".into());
+                    p.live_err = Some(t!("The server did not answer within 20 seconds.").into());
                     cx.notify();
                 }
             })
@@ -806,7 +806,7 @@ impl StatsPage {
         let me = cx.entity().downgrade();
         let me2 = me.clone();
         self.job.update(cx, |job, cx| {
-            job.set_label(format!("Updating the server agent on {}", inst.name));
+            job.set_label(tf!("Updating the server agent on {}", inst.name));
             job.set_retry(Rc::new(move |cx: &mut App| {
                 me.update(cx, |p, cx| p.update_agent(cx)).ok();
             }));
@@ -912,14 +912,14 @@ fn charts(points: &[Sample]) -> Vec<Chart> {
     // Rates keep a floor of 1 MB/s, so a quiet line is not stretched.
     let io_max = nice(peak(&io).max(1.));
     vec![
-        Chart { title: "Processor", values: col(&|s| s.cpu), max: 100., fmt: |v| format!("{v:.0} %"), axis: |v| format!("{v:.0}"), high: last.is_some_and(|s| s.cpu_high()) },
-        Chart { title: "Memory", values: col(&|s| gb(s.mem_used)), max: nice_memory(mem_total), fmt: |v| format!("{v:.1} GB"), axis: |v| format!("{v}"), high: last.is_some_and(|s| s.mem_high()) },
-        Chart { title: "Processor load", max: nice(peak(&load).max(cores)), values: load, fmt: |v| format!("{v:.2}"), axis: |v| if v.fract() == 0. { format!("{v:.0}") } else { format!("{v:.1}") }, high: last.is_some_and(|s| s.load.unwrap_or(0.) > s.cores as f32) },
-        Chart { title: "Network received", max: nice(peak(&rx).max(1.)), values: rx, fmt: |v| format!("{v:.1} MB/s"), axis: |v| if v == 0. || (v >= 1. && v.fract() == 0.) { format!("{v:.0}") } else { format!("{v:.1}") }, high: false },
-        Chart { title: "Network sent", max: nice(peak(&tx).max(1.)), values: tx, fmt: |v| format!("{v:.1} MB/s"), axis: |v| if v == 0. || (v >= 1. && v.fract() == 0.) { format!("{v:.0}") } else { format!("{v:.1}") }, high: false },
+        Chart { title: t!("Processor"), values: col(&|s| s.cpu), max: 100., fmt: |v| format!("{v:.0} %"), axis: |v| format!("{v:.0}"), high: last.is_some_and(|s| s.cpu_high()) },
+        Chart { title: t!("Memory"), values: col(&|s| gb(s.mem_used)), max: nice_memory(mem_total), fmt: |v| tf!("{v:.1} GB"), axis: |v| format!("{v}"), high: last.is_some_and(|s| s.mem_high()) },
+        Chart { title: t!("Processor load"), max: nice(peak(&load).max(cores)), values: load, fmt: |v| format!("{v:.2}"), axis: |v| if v.fract() == 0. { format!("{v:.0}") } else { format!("{v:.1}") }, high: last.is_some_and(|s| s.load.unwrap_or(0.) > s.cores as f32) },
+        Chart { title: t!("Network received"), max: nice(peak(&rx).max(1.)), values: rx, fmt: |v| tf!("{v:.1} MB/s"), axis: |v| if v == 0. || (v >= 1. && v.fract() == 0.) { format!("{v:.0}") } else { format!("{v:.1}") }, high: false },
+        Chart { title: t!("Network sent"), max: nice(peak(&tx).max(1.)), values: tx, fmt: |v| tf!("{v:.1} MB/s"), axis: |v| if v == 0. || (v >= 1. && v.fract() == 0.) { format!("{v:.0}") } else { format!("{v:.1}") }, high: false },
         // Disk activity is high when it runs near its own peak for the
         // range and that peak is real work (over 50 MB/s).
-        Chart { title: "Disk activity", high: io.last().is_some_and(|v| *v >= 50. && *v >= io_max * 0.8), max: io_max, values: io, fmt: |v| format!("{v:.0} MB/s"), axis: |v| format!("{v:.0}") },
+        Chart { title: t!("Disk activity"), high: io.last().is_some_and(|v| *v >= 50. && *v >= io_max * 0.8), max: io_max, values: io, fmt: |v| tf!("{v:.0} MB/s"), axis: |v| format!("{v:.0}") },
     ]
 }
 
@@ -927,7 +927,7 @@ fn time_label(t: i64, range: Range) -> String {
     let Some(dt) = chrono::DateTime::from_timestamp(t, 0) else { return String::new() };
     let local = dt.with_timezone(&chrono::Local);
     match range {
-        Range::Week => local.format("%a %H:%M").to_string(),
+        Range::Week => crate::i18n::date(&local, "%a %H:%M"),
         Range::Live => local.format("%H:%M:%S").to_string(),
         _ => local.format("%H:%M").to_string(),
     }
@@ -991,7 +991,7 @@ impl StatsPage {
         let tip = hover.map(|k| {
             let at = if self.range == Range::Live {
                 let ago = times.last().copied().unwrap_or(0) - times.get(k).copied().unwrap_or(0);
-                if ago <= 0 { "now".to_string() } else { format!("{ago} s ago") }
+                if ago <= 0 { t!("now").to_string() } else { tf!("{ago} s ago") }
             } else {
                 time_label(times.get(k).copied().unwrap_or(0), self.range)
             };
@@ -1021,13 +1021,14 @@ impl StatsPage {
                 // A narrow card shortens the title, never the value or the
                 // High pill, and nothing reaches into the card's padding.
                 h_flex()
-                    .gap_2()
+                    .flex_wrap()
+                    .gap_x_2()
                     .items_center()
                     .min_w_0()
                     .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().font_weight(FontWeight::MEDIUM).child(c.title))
-                    .when(c.high, |r| r.child(ui::pill(&theme, ui::Tone::Warn, "High").text_size(px(11.5)).flex_shrink_0()))
+                    .when(c.high, |r| r.child(ui::pill(&theme, ui::Tone::Warn, t!("High")).text_size(px(11.5)).flex_shrink_0()))
                     .child(div().flex_1())
-                    .child(div().flex_shrink_0().text_size(px(12.)).text_color(theme.muted_foreground).font_features(ui::tabular()).whitespace_nowrap().child(format!("now {now}"))),
+                    .child(div().flex_shrink_0().text_size(px(12.)).text_color(theme.muted_foreground).font_features(ui::tabular()).whitespace_nowrap().child(tf!("now {now}"))),
             )
             .child(
                 h_flex()
@@ -1050,9 +1051,9 @@ impl StatsPage {
                             .when(empty, |d| {
                                 d.child(
                                     div().absolute().inset_0().px_2().flex().items_center().justify_center().child(div().w_full().text_center().text_size(px(12.5)).text_color(theme.muted_foreground).child(if self.range == Range::Live {
-                                        "Reading…"
+                                        t!("Reading…")
                                     } else {
-                                        "No history yet. It fills up, one reading a minute."
+                                        t!("No history yet. It fills up, one reading a minute.")
                                     })),
                                 )
                             })
@@ -1166,7 +1167,7 @@ impl Render for StatsPage {
 
         let mut seg = ui::seg_track(&theme);
         for r in Range::ALL {
-            seg = seg.child(ui::seg_item(&theme, SharedString::from(format!("range-{}", r.label())), r.label(), self.range == r).on_click(cx.listener(move |p, _, _, cx| p.pick(r, cx))));
+            seg = seg.child(ui::seg_item(&theme, SharedString::from(format!("range-{}", crate::i18n::t(r.label()))), crate::i18n::t(r.label()), self.range == r).on_click(cx.listener(move |p, _, _, cx| p.pick(r, cx))));
         }
         let me = cx.entity().downgrade();
         let refresh = crate::ui::refresh_button("stats-refresh", self.refreshing, window, move |_, cx| {
@@ -1179,7 +1180,7 @@ impl Render for StatsPage {
             .flex_wrap()
             .gap_3()
             .items_center()
-            .child(div().text_size(px(22.)).font_weight(FontWeight::MEDIUM).child("Statistics"))
+            .child(div().text_size(px(22.)).font_weight(FontWeight::MEDIUM).child(t!("Statistics")))
             .child(div().flex_1())
             // The stale note wraps on its own: the range and Refresh never move.
             .children(stale.map(|n| div().max_w_full().child(n)))
@@ -1192,7 +1193,7 @@ impl Render for StatsPage {
         // "Back to Statistics".
         if self.server_shown && !matches!(self.server_job.read(cx).state(), crate::jobs::JobState::Idle) {
             let me = cx.entity().downgrade();
-            let back = crate::manager::jobview::back_button("srv-job-back", "Statistics", move |_, cx| {
+            let back = crate::manager::jobview::back_button("srv-job-back", t!("Statistics"), move |_, cx| {
                 me.update(cx, |p, cx| {
                     p.server_shown = false;
                     p.server_job.update(cx, |j, cx| j.reset(cx));
@@ -1202,7 +1203,7 @@ impl Render for StatsPage {
             });
             let job = self.server_job.read(cx);
             let retry = match job.state() {
-                crate::jobs::JobState::Failed(_) => job.retry().map(|r| crate::ui::button("srv-job-retry").primary().label("Try again").on_click(move |_, _, cx| r(cx)).into_any_element()),
+                crate::jobs::JobState::Failed(_) => job.retry().map(|r| crate::ui::button("srv-job-retry").primary().label(t!("Try again")).on_click(move |_, _, cx| r(cx)).into_any_element()),
                 _ => None,
             };
             let label = self.server_job_label.clone();
@@ -1229,8 +1230,8 @@ impl Render for StatsPage {
                 col = col.child(ui::notice_with(
                     &theme,
                     ui::Tone::Neutral,
-                    format!("{} is off.\nIt was shut down from here. Platform Manager cannot switch it on again: someone has to, or use the cloud provider's console.", i.name),
-                    Some(crate::ui::button("stats-off-check").outline().label("Check again").on_click(cx.listener(|p, _, _, cx| p.read_again(cx))).into_any_element()),
+                    tf!("{} is off.\nIt was shut down from here. Platform Manager cannot switch it on again: someone has to, or use the cloud provider's console.", i.name),
+                    Some(crate::ui::button("stats-off-check").outline().label(t!("Check again")).on_click(cx.listener(|p, _, _, cx| p.read_again(cx))).into_any_element()),
                 ));
                 return page(col);
             }
@@ -1244,15 +1245,15 @@ impl Render for StatsPage {
                     ui::notice_with(
                         &theme,
                         ui::Tone::Warn,
-                        "The agent on this server is out of date.\nUpdate it to read the server's statistics. Nothing else on the server changes.",
-                        Some(crate::ui::button("stats-agent-update").primary().label("Update agent").disabled(busy).on_click(cx.listener(|p, _, _, cx| p.update_agent(cx))).into_any_element()),
+                        t!("The agent on this server is out of date.\nUpdate it to read the server's statistics. Nothing else on the server changes."),
+                        Some(crate::ui::button("stats-agent-update").primary().label(t!("Update agent")).disabled(busy).on_click(cx.listener(|p, _, _, cx| p.update_agent(cx))).into_any_element()),
                     )
                 } else {
                     ui::notice_with(
                         &theme,
                         ui::Tone::Bad,
-                        format!("The statistics could not be read.\n{e}"),
-                        Some(crate::ui::button("stats-retry").outline().label("Retry").on_click(cx.listener(|p, _, _, cx| {
+                        tf!("The statistics could not be read.\n{e}"),
+                        Some(crate::ui::button("stats-retry").outline().label(t!("Retry")).on_click(cx.listener(|p, _, _, cx| {
                             p.live_err = None;
                             p.start(cx);
                             cx.notify();
@@ -1264,7 +1265,7 @@ impl Render for StatsPage {
         }
         if let Some(Err(e)) = &self.hist {
             if self.range != Range::Live {
-                col = col.child(ui::notice(&theme, ui::Tone::Warn, format!("The history could not be read.\n{e}")));
+                col = col.child(ui::notice(&theme, ui::Tone::Warn, tf!("The history could not be read.\n{e}")));
             }
         }
 
@@ -1273,33 +1274,33 @@ impl Render for StatsPage {
             Some(s) => {
                 let used = s.disk_total.saturating_sub(s.disk_free);
                 let up = (s.t - s.boot).max(0);
-                let (n, unit) = if up >= 86_400 { (up / 86_400, if up / 86_400 == 1 { "day" } else { "days" }) } else { (up / 3600, if up / 3600 == 1 { "hour" } else { "hours" }) };
+                let (n, unit) = if up >= 86_400 { (up / 86_400, if up / 86_400 == 1 { t!("day") } else { t!("days") }) } else { (up / 3600, if up / 3600 == 1 { t!("hour") } else { t!("hours") }) };
                 let started = chrono::DateTime::from_timestamp(s.boot, 0).map(|t| t.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M").to_string()).unwrap_or_default();
                 let figs = [
-                    figure(&theme, "Processor", format!("{:.0}", s.cpu), "%".into(), Some((s.cpu / 100., s.cpu_high())), match s.load {
-                        Some(l) => format!("{} cores · load {l:.2}", s.cores),
-                        None => format!("{} cores", s.cores),
+                    figure(&theme, t!("Processor"), format!("{:.0}", s.cpu), "%".into(), Some((s.cpu / 100., s.cpu_high())), match s.load {
+                        Some(l) => tf!("{} cores · load {l:.2}", s.cores),
+                        None => tf!("{} cores", s.cores),
                     }),
                     figure(
                         &theme,
-                        "Memory",
+                        t!("Memory"),
                         format!("{:.1}", gb(s.mem_used)),
-                        format!("of {:.0} GB", gb(s.mem_total)),
+                        tf!("of {:.0} GB", gb(s.mem_total)),
                         Some((if s.mem_total > 0 { s.mem_used as f32 / s.mem_total as f32 } else { 0. }, s.mem_high())),
-                        if s.swap_total > 0 { format!("Swap {:.1} of {:.0} GB", gb(s.swap_used), gb(s.swap_total)) } else { "No swap".into() },
+                        if s.swap_total > 0 { tf!("Swap {:.1} of {:.0} GB", gb(s.swap_used), gb(s.swap_total)) } else { t!("No swap").into() },
                     ),
                     {
                         let free = bytes_label(s.disk_free);
-                        let (num, unit) = free.split_once(' ').map(|(a, b)| (a.to_string(), format!("{b} free"))).unwrap_or((free.clone(), "free".into()));
-                        figure(&theme, "Disk", num, unit, Some((if s.disk_total > 0 { used as f32 / s.disk_total as f32 } else { 0. }, s.disk_low())), format!("{} of {} used", bytes_label(used), bytes_label(s.disk_total)))
+                        let (num, unit) = free.split_once(' ').map(|(a, b)| (a.to_string(), tf!("{b} free"))).unwrap_or((free.clone(), "free".into()));
+                        figure(&theme, t!("Disk"), num, unit, Some((if s.disk_total > 0 { used as f32 / s.disk_total as f32 } else { 0. }, s.disk_low())), tf!("{} of {} used", bytes_label(used), bytes_label(s.disk_total)))
                     },
-                    figure(&theme, "Running for", n.to_string(), unit.into(), None, format!("Started {started}")),
+                    figure(&theme, t!("Running for"), n.to_string(), unit.into(), None, tf!("Started {started}")),
                 ];
                 self.timing("figures drawn");
                 col = col.child(grid(fig_cols, figs.into_iter().map(|f| f.flex_1().into_any_element()).collect()));
             }
             None => {
-                let figs = ["Processor", "Memory", "Disk", "Running for"].into_iter().enumerate().map(|(i, n)| skeleton_figure(&theme, i, n)).collect();
+                let figs = [t!("Processor"), t!("Memory"), t!("Disk"), t!("Running for")].into_iter().enumerate().map(|(i, n)| skeleton_figure(&theme, i, n)).collect();
                 col = col.child(grid(fig_cols, figs));
             }
         }
@@ -1310,7 +1311,7 @@ impl Render for StatsPage {
             _ => self.hist.is_none(),
         };
         let charts: Vec<AnyElement> = if loading {
-            ["Processor", "Memory", "Processor load", "Network received", "Network sent", "Disk activity"].into_iter().enumerate().map(|(i, t)| skeleton_chart(&theme, i, t)).collect()
+            [t!("Processor"), t!("Memory"), t!("Processor load"), t!("Network received"), t!("Network sent"), t!("Disk activity")].into_iter().enumerate().map(|(i, t)| skeleton_chart(&theme, i, t)).collect()
         } else {
             let points = self.points().to_vec();
             let times: Vec<i64> = points.iter().map(|s| s.t).collect();
@@ -1321,14 +1322,14 @@ impl Render for StatsPage {
         // Services and Database: each its own source, a placeholder while
         // it is read, left out when there is nothing in it.
         let services = match &self.services {
-            None => Some(ui::skeleton_card(&theme, "stats-svc", Some("Services"), &["", "", ""])),
+            None => Some(ui::skeleton_card(&theme, "stats-svc", Some(t!("Services")), &["", "", ""])),
             Some(Ok(Services::List(list))) if !list.is_empty() => Some(services_panel(&theme, list, self.live.last())),
             // Stopped: a plain line in the card (nothing failed).
             Some(Ok(Services::Stopped)) => Some(
                 ui::panel(&theme)
                     .min_w_0()
-                    .child(div().font_weight(FontWeight::MEDIUM).child("Services"))
-                    .child(div().text_sm().text_color(theme.muted_foreground).child(SERVICES_STOPPED)),
+                    .child(div().font_weight(FontWeight::MEDIUM).child(t!("Services")))
+                    .child(div().text_sm().text_color(theme.muted_foreground).child(crate::i18n::t(SERVICES_STOPPED))),
             ),
             Some(_) => None,
         };
@@ -1375,6 +1376,9 @@ fn grid(cols: usize, items: Vec<AnyElement>) -> AnyElement {
 /// else" (left out until it comes).
 fn services_panel(theme: &gpui_kit::component::Theme, list: &[crate::stats::Service], s: Option<&Sample>) -> Div {
     let mem_total = s.map(|s| s.mem_total as f32).filter(|t| *t > 0.).unwrap_or(f32::MAX);
+    // "Restarts" is one short word in English but a phrase in some languages
+    // (Arabic): the column grows with its heading, header and rows alike.
+    let restart_w = (t!("Restarts").chars().count() as f32 * 7.).max(RESTART_W);
     let head = |t: &'static str, w: Option<f32>, right: bool| {
         div().when_some(w, |d, w| d.w(px(w)).flex_shrink_0()).when(w.is_none(), |d| d.flex_1().min_w_0()).when(right, |d| d.text_right()).text_size(px(12.)).text_color(theme.muted_foreground).child(t)
     };
@@ -1388,18 +1392,18 @@ fn services_panel(theme: &gpui_kit::component::Theme, list: &[crate::stats::Serv
             .text_sm()
             .child(name.flex_1().min_w_0())
             .child(h_flex().w(px(PROC_W)).flex_shrink_0().gap(px(7.)).items_center().child(mini_bar(theme, cpu / 100.)).child(div().font_features(ui::tabular()).whitespace_nowrap().child(format!("{cpu:.1} %"))))
-            .child(h_flex().w(px(MEM_W)).flex_shrink_0().gap(px(7.)).items_center().child(mini_bar(theme, mem as f32 / mem_total)).child(div().font_features(ui::tabular()).whitespace_nowrap().child(format!("{:.1} GB", gb(mem)))))
-            .child(div().w(px(RESTART_W)).flex_shrink_0().text_right().font_features(ui::tabular()).child(restarts.map(|r| r.to_string()).unwrap_or_default()))
+            .child(h_flex().w(px(MEM_W)).flex_shrink_0().gap(px(7.)).items_center().child(mini_bar(theme, mem as f32 / mem_total)).child(div().font_features(ui::tabular()).whitespace_nowrap().child(tf!("{:.1} GB", gb(mem)))))
+            .child(div().w(px(restart_w)).flex_shrink_0().text_right().font_features(ui::tabular()).child(restarts.map(|r| r.to_string()).unwrap_or_default()))
     };
     let mut p = ui::panel(theme)
         .gap_0()
         .min_w_0()
-        .child(div().pb(px(7.)).font_weight(FontWeight::MEDIUM).child("Services"))
-        .child(h_flex().gap_3().pb(px(5.)).child(head("Service", None, false)).child(head("Processor", Some(PROC_W), false)).child(head("Memory", Some(MEM_W), false)).child(head("Restarts", Some(RESTART_W), true)));
+        .child(div().pb(px(7.)).font_weight(FontWeight::MEDIUM).child(t!("Services")))
+        .child(h_flex().gap_3().pb(px(5.)).child(head(t!("Service"), None, false)).child(head(t!("Processor"), Some(PROC_W), false)).child(head(t!("Memory"), Some(MEM_W), false)).child(head(t!("Restarts"), Some(restart_w), true)));
     let mut list = list.to_vec();
     list.sort_by_key(|v| match ui::service_label(&v.name) {
         Some("SENTIENT") => 0,
-        Some("Database (PostgreSQL)") => 1,
+        Some(l) if l == t!("Database (PostgreSQL)") => 1,
         Some("ClickHouse") => 2,
         _ => 3,
     });
@@ -1420,7 +1424,7 @@ fn services_panel(theme: &gpui_kit::component::Theme, list: &[crate::stats::Serv
     }
     let n = list.len();
     match s {
-        Some(s) => p.child(row(div().child("Everything else on the server"), (s.cpu - cpu_sum).max(0.), s.mem_used.saturating_sub(mem_sum), None, n)),
+        Some(s) => p.child(row(div().child(t!("Everything else on the server")), (s.cpu - cpu_sum).max(0.), s.mem_used.saturating_sub(mem_sum), None, n)),
         None => p,
     }
 }

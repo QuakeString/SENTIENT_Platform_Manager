@@ -59,7 +59,7 @@ pub fn pane(c: &Ctx, cx: &App) -> AnyElement {
             .font_weight(FontWeight::MEDIUM)
             .text_color(theme.muted_foreground)
             .child(Icon::new(if pc { gpui_kit::assets::IconName::Monitor } else { gpui_kit::assets::IconName::Server }).size(px(13.)))
-            .child(if pc { "On this computer" } else { "On the server" })
+            .child(if pc { t!("On this computer") } else { t!("On the server") })
     };
     let cmd = |line: String| {
         let n = {
@@ -96,7 +96,7 @@ pub fn pane(c: &Ctx, cx: &App) -> AnyElement {
                     .text_color(if done { theme.primary } else { theme.muted_foreground })
                     .hover(|d| d.bg(theme.list_hover))
                     .child(Icon::new(if done { IconName::Check } else { IconName::Copy }).size(px(15.)))
-                    .tooltip(crate::ui::tooltip("Copy"))
+                    .tooltip(crate::ui::tooltip(t!("Copy")))
                     .on_click(move |_, _, cx| copy(l2.clone(), cx)),
             )
     };
@@ -128,7 +128,7 @@ pub fn pane(c: &Ctx, cx: &App) -> AnyElement {
         v_flex()
             .text_sm()
             .text_color(theme.muted_foreground)
-            .child(div().min_w_0().child(format!("The Platform Manager reaches the server over SSH. {who} No SSH key yet?")))
+            .child(div().min_w_0().child(tf!("The Platform Manager reaches the server over SSH. {who} No SSH key yet?")))
             .child(
                 div()
                     .id("guide-jump")
@@ -137,7 +137,7 @@ pub fn pane(c: &Ctx, cx: &App) -> AnyElement {
                     .underline()
                     .cursor_pointer()
                     .self_start()
-                    .child("Create one.")
+                    .child(t!("Create one."))
                     .on_click(move |_, _, _| scroll.scroll_to_item(KEY_INDEX)),
             )
     };
@@ -155,17 +155,17 @@ pub fn pane(c: &Ctx, cx: &App) -> AnyElement {
                 cmd(format!("ssh-copy-id {ssh_p}-i {kp}.pub {user}@{addr}"))
             }
             .into_any_element(),
-            sub("It asks for the user's password once.").into_any_element(),
+            sub(t!("It asks for the user's password once.")).into_any_element(),
         ]
     } else {
         vec![
             tag(true).into_any_element(),
             cmd(if host_windows { format!("Get-Content \"{kp}.pub\" | Set-Clipboard") } else { format!("cat {kp}.pub") }).into_any_element(),
-            sub(&format!("{} Then, in PowerShell as administrator:", if host_windows { "This copies the public key." } else { "Copy the line it shows." })).into_any_element(),
+            sub(&tf!("{} Then, in PowerShell as administrator:", if host_windows { t!("This copies the public key.") } else { t!("Copy the line it shows.") })).into_any_element(),
             tag(false).into_any_element(),
             cmd("Add-Content -Path C:\\ProgramData\\ssh\\administrators_authorized_keys -Value 'paste the key here'".into()).into_any_element(),
             cmd("icacls C:\\ProgramData\\ssh\\administrators_authorized_keys /inheritance:r /grant \"Administrators:F\" /grant \"SYSTEM:F\"".into()).into_any_element(),
-            sub("Windows reads an administrator's keys from this file, not from the user's own folder.").into_any_element(),
+            sub(t!("Windows reads an administrator's keys from this file, not from the user's own folder.")).into_any_element(),
         ]
     };
     let key_path = if host_windows {
@@ -180,40 +180,40 @@ pub fn pane(c: &Ctx, cx: &App) -> AnyElement {
         .rounded(px(8.))
         .border_1()
         .border_color(theme.border)
-        .child(h_flex().gap_2().items_center().font_weight(FontWeight::SEMIBOLD).child(Icon::new(gpui_kit::assets::IconName::KeyRound).size(px(16.)).text_color(theme.primary)).child("Create an SSH key"))
-        .child(sub("Skip this if you already have a key, or if you sign in with a password."))
+        .child(h_flex().gap_2().items_center().font_weight(FontWeight::SEMIBOLD).child(Icon::new(gpui_kit::assets::IconName::KeyRound).size(px(16.)).text_color(theme.primary)).child(t!("Create an SSH key")))
+        .child(sub(t!("Skip this if you already have a key, or if you sign in with a password.")))
         .child(step(
             "a",
-            "Make the key",
+            t!("Make the key"),
             vec![
                 tag(true).into_any_element(),
-                sub(if host_windows { "In PowerShell:" } else { "In a terminal:" }).into_any_element(),
+                sub(if host_windows { t!("In PowerShell:") } else { t!("In a terminal:") }).into_any_element(),
                 cmd(gen).into_any_element(),
-                sub("Press Enter to save it there. A passphrase is optional; if you set one, enter it as Key passphrase.").into_any_element(),
+                sub(t!("Press Enter to save it there. A passphrase is optional; if you set one, enter it as Key passphrase.")).into_any_element(),
             ],
         ))
-        .child(step("b", "Put the public key on the server", put))
+        .child(step("b", t!("Put the public key on the server"), put))
         .child(step(
             "c",
-            "Choose the key in the form",
+            t!("Choose the key in the form"),
             vec![
                 h_flex()
                     .flex_wrap()
                     .gap_1()
                     .items_center()
-                    .child(text("Key file:"))
+                    .child(text(t!("Key file:")))
                     .child(div().px(px(5.)).rounded(px(4.)).border_1().border_color(theme.border).bg(theme.muted).font_family(theme.mono_font_family.clone()).text_size(px(12.5)).child(key_path))
                     .into_any_element(),
-                sub("Choose the file without .pub. The .pub file is the one that goes on the server.").into_any_element(),
+                sub(t!("Choose the file without .pub. The .pub file is the one that goes on the server.")).into_any_element(),
             ],
         ));
 
     let fingerprint = |path: &str| {
         step(
             "4",
-            "Check the key fingerprint",
+            t!("Check the key fingerprint"),
             vec![
-                sub("When you select Connect, the Platform Manager shows the server's fingerprint. Compare it with:").into_any_element(),
+                sub(t!("When you select Connect, the Platform Manager shows the server's fingerprint. Compare it with:")).into_any_element(),
                 tag(false).into_any_element(),
                 cmd(format!("ssh-keygen -lf {path}")).into_any_element(),
             ],
@@ -221,24 +221,24 @@ pub fn pane(c: &Ctx, cx: &App) -> AnyElement {
     };
     let body: Vec<AnyElement> = if linux {
         vec![
-            intro("Sign in as root, or as a user that may use sudo.").into_any_element(),
+            intro(t!("Sign in as root, or as a user that may use sudo.")).into_any_element(),
             step(
                 "1",
-                "Install the SSH server",
+                t!("Install the SSH server"),
                 vec![
                     tag(false).into_any_element(),
-                    sub("Debian and Ubuntu:").into_any_element(),
+                    sub(t!("Debian and Ubuntu:")).into_any_element(),
                     cmd("sudo apt install openssh-server".into()).into_any_element(),
-                    sub("Red Hat, Rocky, Alma and Fedora:").into_any_element(),
+                    sub(t!("Red Hat, Rocky, Alma and Fedora:")).into_any_element(),
                     cmd("sudo dnf install openssh-server".into()).into_any_element(),
                 ],
             )
             .into_any_element(),
-            step("2", "Start it now and with the system", vec![tag(false).into_any_element(), cmd("sudo systemctl enable --now ssh".into()).into_any_element(), sub("On the Red Hat family the service is called sshd.").into_any_element()]).into_any_element(),
+            step("2", t!("Start it now and with the system"), vec![tag(false).into_any_element(), cmd("sudo systemctl enable --now ssh".into()).into_any_element(), sub(t!("On the Red Hat family the service is called sshd.")).into_any_element()]).into_any_element(),
             step(
                 "3",
-                &format!("Allow TCP port {}", port.unwrap_or(22)),
-                vec![tag(false).into_any_element(), sub("Only if a firewall is on. For example:").into_any_element(), cmd(format!("sudo ufw allow {}/tcp", port.unwrap_or(22))).into_any_element()],
+                &tf!("Allow TCP port {}", port.unwrap_or(22)),
+                vec![tag(false).into_any_element(), sub(t!("Only if a firewall is on. For example:")).into_any_element(), cmd(format!("sudo ufw allow {}/tcp", port.unwrap_or(22))).into_any_element()],
             )
             .into_any_element(),
             key_box.into_any_element(),
@@ -250,29 +250,29 @@ pub fn pane(c: &Ctx, cx: &App) -> AnyElement {
                 .bg(theme.warning)
                 .text_color(theme.warning_foreground)
                 .text_size(px(13.))
-                .child("When sudo asks for a password and you sign in with a key, enter that password as sudo password.")
+                .child(t!("When sudo asks for a password and you sign in with a key, enter that password as sudo password."))
                 .into_any_element(),
         ]
     } else {
         vec![
-            intro("Sign in with an account in the Administrators group.").into_any_element(),
+            intro(t!("Sign in with an account in the Administrators group.")).into_any_element(),
             step(
                 "1",
-                "Turn on OpenSSH Server",
+                t!("Turn on OpenSSH Server"),
                 vec![
                     tag(false).into_any_element(),
-                    sub("Settings, System, Optional features, Add a feature, OpenSSH Server. Or in PowerShell as administrator:").into_any_element(),
-                    cmd("Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0".into()).into_any_element(),
+                    sub(t!("Settings, System, Optional features, Add a feature, OpenSSH Server. Or in PowerShell as administrator:")).into_any_element(),
+                    cmd(t!("Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0").into()).into_any_element(),
                 ],
             )
             .into_any_element(),
-            step("2", "Start it now and with Windows", vec![tag(false).into_any_element(), cmd("Start-Service sshd\nSet-Service sshd -StartupType Automatic".into()).into_any_element()]).into_any_element(),
+            step("2", t!("Start it now and with Windows"), vec![tag(false).into_any_element(), cmd("Start-Service sshd\nSet-Service sshd -StartupType Automatic".into()).into_any_element()]).into_any_element(),
             step(
                 "3",
-                "Check the firewall",
+                t!("Check the firewall"),
                 vec![
                     tag(false).into_any_element(),
-                    sub("Installing the feature adds the rule OpenSSH SSH Server (sshd), which allows TCP port 22. To check it:").into_any_element(),
+                    sub(t!("Installing the feature adds the rule OpenSSH SSH Server (sshd), which allows TCP port 22. To check it:")).into_any_element(),
                     cmd("Get-NetFirewallRule -Name *OpenSSH-Server* | Select-Object Name, Enabled".into()).into_any_element(),
                 ],
             )
@@ -298,7 +298,7 @@ pub fn pane(c: &Ctx, cx: &App) -> AnyElement {
                 .border_b_1()
                 .border_color(theme.border)
                 .child(Icon::new(IconName::BookOpen).size(px(16.)).text_color(theme.primary))
-                .child(div().flex_1().text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).child(format!("Prepare a {} server", if linux { "Linux" } else { "Windows" })))
+                .child(div().flex_1().text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).child(tf!("Prepare a {} server", if linux { t!("Linux") } else { t!("Windows") })))
                 .child(
                     div()
                         .id("guide-close")
@@ -311,7 +311,7 @@ pub fn pane(c: &Ctx, cx: &App) -> AnyElement {
                         .text_color(theme.muted_foreground)
                         .hover(|d| d.bg(theme.list_hover))
                         .child(Icon::new(IconName::Close).size(px(16.)))
-                        .tooltip(crate::ui::tooltip("Close the guide"))
+                        .tooltip(crate::ui::tooltip(t!("Close the guide")))
                         .on_click(move |_, _, cx| close(cx)),
                 ),
         )

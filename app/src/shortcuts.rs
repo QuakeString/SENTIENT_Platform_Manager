@@ -205,14 +205,14 @@ pub fn remove(owner: Owner, manifest: &[Entry], sink: &sentient_installer_core::
         let (system, user): (Vec<PathBuf>, Vec<PathBuf>) = paths.into_iter().filter(|p| p.symlink_metadata().is_ok()).partition(|p| is_system(p, &homes));
         for p in user {
             if std::fs::remove_file(&p).is_ok() {
-                sink(sentient_installer_core::progress::Progress::Log { line: format!("removed: {}", p.display()) });
+                sink(sentient_installer_core::progress::Progress::Log { line: nf!("removed: {}", p.display()) });
             }
         }
         if !system.is_empty() {
             let list: Vec<String> = system.iter().map(|p| sentient_installer_core::privileged::shell_quote(&p.display().to_string())).collect();
             if sentient_installer_core::privileged::run(&sentient_installer_core::progress::noop(), &format!("rm -f {}", list.join(" "))).is_ok() {
                 for p in &system {
-                    sink(sentient_installer_core::progress::Progress::Log { line: format!("removed: {}", p.display()) });
+                    sink(sentient_installer_core::progress::Progress::Log { line: nf!("removed: {}", p.display()) });
                 }
             }
         }
@@ -224,7 +224,7 @@ pub fn remove(owner: Owner, manifest: &[Entry], sink: &sentient_installer_core::
         // self_install and kiosk clean by name.
         for p in of(manifest, owner) {
             if std::fs::remove_file(&p).is_ok() {
-                sink(sentient_installer_core::progress::Progress::Log { line: format!("removed: {}", p.display()) });
+                sink(sentient_installer_core::progress::Progress::Log { line: nf!("removed: {}", p.display()) });
             }
         }
     }
@@ -262,7 +262,7 @@ pub fn menu_refresh_commands(homes: &[PathBuf], have: impl Fn(&str) -> bool) -> 
 /// rebuilt as the account that asked, which is whose menu shows.
 #[cfg(unix)]
 fn refresh_menus(homes: &[PathBuf]) {
-    let have = |b: &str| sentient_installer_core::host::host_command("sh").args(["-c", &format!("command -v {b}")]).output().is_ok_and(|o| o.status.success());
+    let have = |b: &str| sentient_installer_core::host::host_command("sh").args(["-c", &tf!("command -v {b}")]).output().is_ok_and(|o| o.status.success());
     let asker = ["PKEXEC_UID", "SUDO_UID"].iter().find_map(|v| std::env::var(v).ok()).and_then(|uid| account_of(&uid));
     for cmd in menu_refresh_commands(homes, have) {
         let per_user = cmd[0].starts_with("kbuildsycoca") || cmd[0] == "xdg-desktop-menu";

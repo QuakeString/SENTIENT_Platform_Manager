@@ -91,7 +91,7 @@ impl Target {
     /// Move data to another disk on the same instance (X3, B2).
     fn open_move_data(&self, window: &mut Window, cx: &mut App) {
         match self {
-            Target::Here(_) => crate::manager::movedata::open(crate::movedata::Target::Local, "This computer", None, window, cx),
+            Target::Here(_) => crate::manager::movedata::open(crate::movedata::Target::Local, t!("This computer"), None, window, cx),
             Target::Server(i) => crate::manager::movedata::open(crate::movedata::Target::Remote(i.clone()), i.name.clone(), None, window, cx),
         }
     }
@@ -109,7 +109,7 @@ impl Target {
         match self {
             Target::Server(inst) => {
                 let args = remote::restore_args(inst, job, req, passphrase)?;
-                sink(Progress::Log { line: format!("On {}", inst.name) });
+                sink(Progress::Log { line: nf!("On {}", inst.name) });
                 remote::run_followed(inst, &args, sink)
             }
             Target::Here(record) => {
@@ -207,7 +207,7 @@ impl EventEmitter<Leave> for RestoreFlow {}
 // Small parts shared by the steps
 // ---------------------------------------------------------------------------
 
-const STEPS: [&str; 7] = ["Source", "Check", "What", "Where", "Pre-check", "Settings", "Confirm"];
+const STEPS: [&str; 7] = [n!("Source"), n!("Check"), n!("What"), n!("Where"), n!("Pre-check"), n!("Settings"), n!("Confirm")];
 
 /// The wizard's steps: done ✓, this one filled, the rest outlined.
 fn stepper(theme: &gpui_kit::component::Theme, current: usize) -> Div {
@@ -228,7 +228,7 @@ fn stepper(theme: &gpui_kit::component::Theme, current: usize) -> Div {
                 .gap(px(8.))
                 .items_center()
                 .child(div().size(px(20.)).flex_shrink_0().rounded_full().bg(fill).border_1().border_color(border).flex().items_center().justify_center().text_size(px(11.)).font_weight(FontWeight::SEMIBOLD).text_color(fg).child(text))
-                .child(div().whitespace_nowrap().when(i == current, |d| d.font_weight(FontWeight::MEDIUM)).when(i > current, |d| d.text_color(theme.muted_foreground)).child(*s)),
+                .child(div().whitespace_nowrap().when(i == current, |d| d.font_weight(FontWeight::MEDIUM)).when(i > current, |d| d.text_color(theme.muted_foreground)).child(crate::i18n::t(s))),
         );
     }
     row
@@ -304,7 +304,7 @@ fn blk(theme: &gpui_kit::component::Theme, warn: bool, title: impl Into<SharedSt
         .child(h_flex().gap(px(10.)).items_start().font_weight(FontWeight::MEDIUM).child(Icon::new(ic).size(px(18.)).text_color(fg).mt(px(2.)).flex_shrink_0()).child(div().flex_1().min_w_0().child(title.into())))
         .child(div().text_sm().child(why.into()))
         .when(!steps.is_empty(), |c| {
-            c.child(div().text_size(px(12.5)).font_weight(FontWeight::MEDIUM).text_color(theme.muted_foreground).child("To fix it"))
+            c.child(div().text_size(px(12.5)).font_weight(FontWeight::MEDIUM).text_color(theme.muted_foreground).child(t!("To fix it")))
                 .child(v_flex().gap(px(4.)).text_sm().children(steps.iter().enumerate().map(|(i, s)| h_flex().gap(px(8.)).items_start().child(div().w(px(14.)).flex_shrink_0().text_color(theme.muted_foreground).child(format!("{}.", i + 1))).child(div().flex_1().min_w_0().child(s.clone())))))
         })
         .when(!actions.is_empty(), |c| c.child(ui::button_row(actions)))
@@ -422,9 +422,9 @@ pub struct RestoreFlow {
 
 impl RestoreFlow {
     pub fn new(target: Target, source: Source, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let pass = cx.new(|cx| InputState::new(window, cx).masked(true).placeholder("Passphrase"));
-        let from = cx.new(|cx| InputState::new(window, cx).placeholder("1 Sep 2026"));
-        let to = cx.new(|cx| InputState::new(window, cx).placeholder("14 Nov 2026"));
+        let pass = cx.new(|cx| InputState::new(window, cx).masked(true).placeholder(t!("Passphrase")));
+        let from = cx.new(|cx| InputState::new(window, cx).placeholder(t!("1 Sep 2026")));
+        let to = cx.new(|cx| InputState::new(window, cx).placeholder(t!("14 Nov 2026")));
         let confirm = cx.new(|cx| InputState::new(window, cx));
         let check = cx.new(|_| Job::new());
         let pre = cx.new(|_| Job::new());
@@ -523,7 +523,7 @@ impl RestoreFlow {
 
     fn label(&self, what: &str) -> String {
         match &self.target {
-            Target::Server(i) => format!("{what} on {}", i.name),
+            Target::Server(i) => tf!("{what} on {}", i.name),
             Target::Here(_) => what.to_string(),
         }
     }
@@ -563,7 +563,7 @@ impl RestoreFlow {
         self.unreadable = None;
         self.check_error = None;
         let req = self.base_request();
-        let label = self.label("Checking the backup");
+        let label = self.label(t!("Checking the backup"));
         let job = self.check.clone();
         self.start(&job, "restore-inspect", label, req, cx);
         cx.notify();
@@ -684,7 +684,7 @@ impl RestoreFlow {
                 .unwrap_or_default(),
             by: match &self.target {
                 Target::Here(_) => rf::by_here(),
-                Target::Server(i) => format!("{} on {}", i.user, crate::backup_jobs::host_name().unwrap_or_else(|| "this computer".into())),
+                Target::Server(i) => tf!("{} on {}", i.user, crate::backup_jobs::host_name().unwrap_or_else(|| "this computer".into())),
             },
             source: self.source.note.clone(),
             resume: false,
@@ -710,7 +710,7 @@ impl RestoreFlow {
         // The pre-check measures the safety backup when it may be taken.
         let mut req = self.request(cx);
         req.safety_backup = !self.skip_safety && (self.delete_old || matches!(req.scope, Scope::Range { .. }) || self.safety);
-        let label = self.label("Checking the room for the restore");
+        let label = self.label(t!("Checking the room for the restore"));
         let job = self.pre.clone();
         self.start(&job, "restore-precheck", label, req, cx);
         cx.notify();
@@ -797,7 +797,7 @@ impl RestoreFlow {
         self.planned = rf::planned_steps(&req);
         self.outcome = None;
         self.show_log = false;
-        let label = self.label("Restoring");
+        let label = self.label(t!("Restoring"));
         let job = self.run.clone();
         job.update(cx, |j, _| j.set_plan(self.plan_of(&req)));
         self.start(&job, "restore-run", label, req, cx);
@@ -816,12 +816,12 @@ fn parse_day(t: &str) -> Option<i64> {
 }
 
 fn day_label(ms: i64) -> String {
-    chrono::DateTime::from_timestamp_millis(ms).map(|d| d.format("%-d %b %Y").to_string()).unwrap_or_default()
+    chrono::DateTime::from_timestamp_millis(ms).map(|d| crate::i18n::date(&d, "%-d %b %Y")).unwrap_or_default()
 }
 
 fn mins(secs: u64) -> String {
     let m = secs.div_ceil(60).max(1);
-    if m >= 90 { format!("{} h {} min", m / 60, m % 60) } else { format!("{m} min") }
+    if m >= 90 { tf!("{} h {} min", m / 60, m % 60) } else { tf!("{m} min") }
 }
 
 // ---------------------------------------------------------------------------
@@ -836,35 +836,35 @@ impl RestoreFlow {
     /// The comparison of the backup with the instance (R9, B1).
     fn compare(&self, theme: &gpui_kit::component::Theme, i: &Inspection) -> Div {
         let here = self.target.instance_name();
-        let here_cap = if self.target.is_server() { here.clone() } else { "This instance".into() };
-        let theirs_v = i.manifest.source.sentient_version.clone().unwrap_or_else(|| "Not recorded".into());
+        let here_cap = if self.target.is_server() { here.clone() } else { t!("This instance").into() };
+        let theirs_v = i.manifest.source.sentient_version.clone().unwrap_or_else(|| t!("Not recorded").into());
         let bad = |t: String, b: bool| -> AnyElement { div().when(b, |d| d.text_color(theme.danger).font_weight(FontWeight::MEDIUM)).child(t).into_any_element() };
-        let type_what = if i.same_type() { "The same type".to_string() } else { format!("History is converted to {}", i.here.database_type.trim_start_matches("PostgreSQL + ")) };
+        let type_what = if i.same_type() { t!("The same type").to_string() } else { tf!("History is converted to {}", i.here.database_type.trim_start_matches("PostgreSQL + ")) };
         let version_what = if i.newer_schema() {
-            "Newer than this SENTIENT: blocked".to_string()
+            t!("Newer than this SENTIENT: blocked").to_string()
         } else if theirs_v == i.here.sentient_version {
-            "The same version".into()
+            t!("The same version").into()
         } else {
-            format!("Brought up to {}", i.here.sentient_version)
+            tf!("Brought up to {}", i.here.sentient_version)
         };
-        let schema = |s: Option<i64>| s.map(|s| s.to_string()).unwrap_or_else(|| "Not recorded".into());
+        let schema = |s: Option<i64>| s.map(|s| s.to_string()).unwrap_or_else(|| t!("Not recorded").into());
         let schema_what = match (i.manifest.source.schema_version, i.here.schema_version) {
-            (Some(t), Some(o)) if t > o => "Cannot be read here".to_string(),
-            (Some(t), Some(o)) if t < o => format!("Upgraded {t} → {o} after the restore"),
-            (Some(_), Some(_)) => "The same schema".into(),
-            _ => "Checked after the restore".into(),
+            (Some(t), Some(o)) if t > o => t!("Cannot be read here").to_string(),
+            (Some(t), Some(o)) if t < o => tf!("Upgraded {t} → {o} after the restore"),
+            (Some(_), Some(_)) => t!("The same schema").into(),
+            _ => t!("Checked after the restore").into(),
         };
-        let made = format!("{}{}", i.made, i.manifest.source.host.as_ref().map(|h| format!(" on {h}")).unwrap_or_default());
+        let made = format!("{}{}", i.made, i.manifest.source.host.as_ref().map(|h| tf!(" on {h}")).unwrap_or_default());
         table(
             theme,
             &[1.1, 1.3, 1.3, 1.7],
-            &["", "In the backup", &format!("On {here_cap}"), "What happens"],
+            &["", t!("In the backup"), &tf!("On {here_cap}"), t!("What happens")],
             vec![
-                vec![txt("Database type"), txt(i.database_type.clone()), txt(i.here.database_type.clone()), txt(type_what)],
+                vec![txt(t!("Database type")), txt(i.database_type.clone()), txt(i.here.database_type.clone()), txt(type_what)],
                 vec![txt("SENTIENT"), bad(theirs_v, i.newer_schema()), txt(i.here.sentient_version.clone()), bad(version_what, i.newer_schema())],
-                vec![txt("Schema"), bad(schema(i.manifest.source.schema_version), i.newer_schema()), txt(schema(i.here.schema_version)), bad(schema_what, i.newer_schema())],
-                vec![txt("Holds"), txt(capital(&i.holds.join(", "))), txt(""), txt("")],
-                vec![txt("Made"), txt(made), txt(""), txt("")],
+                vec![txt(t!("Schema")), bad(schema(i.manifest.source.schema_version), i.newer_schema()), txt(schema(i.here.schema_version)), bad(schema_what, i.newer_schema())],
+                vec![txt(t!("Holds")), txt(capital(&i.holds.join(", "))), txt(""), txt("")],
+                vec![txt(t!("Made")), txt(made), txt(""), txt("")],
             ],
             13.5,
         )
@@ -875,24 +875,24 @@ impl RestoreFlow {
         // R8, B4: the passphrase.
         if let Some(u @ (Unreadable::Passphrase | Unreadable::WrongPassphrase)) = self.unreadable.clone() {
             let wrong = u == Unreadable::WrongPassphrase;
-            let body = card(theme, "This backup is encrypted", None)
-                .child(muted(theme, "Type its passphrase to read it. Nothing is kept on the server."))
+            let body = card(theme, t!("This backup is encrypted"), None)
+                .child(muted(theme, t!("Type its passphrase to read it. Nothing is kept on the server.")))
                 .child(
                     h_flex()
                         .flex_wrap()
                         .gap_2()
                         .items_center()
                         .child(div().w(px(320.)).max_w_full().when(wrong, |d| d.rounded(theme.radius).border_1().border_color(theme.danger)).child(Input::new(&self.pass).mask_toggle()))
-                        .child(ui::button("rs-read").primary().label("Read the backup").disabled(running).on_click(cx.listener(|f, _, _, cx| f.read_with_passphrase(cx)))),
+                        .child(ui::button("rs-read").primary().label(t!("Read the backup")).disabled(running).on_click(cx.listener(|f, _, _, cx| f.read_with_passphrase(cx)))),
                 )
                 .when(wrong, |c| {
                     c.child(blk(
                         theme,
                         false,
-                        "The passphrase is wrong, or the file is damaged",
-                        "The file is encrypted with age; the passphrase did not open it.",
-                        &["Type it again: it is case-sensitive.".into(), "If it is surely right, Verify the file from the Backups list.".into()],
-                        vec![ui::button("rs-again").primary().label("Try again").on_click(cx.listener(|f, _, _, cx| f.read_with_passphrase(cx))).into_any_element()],
+                        t!("The passphrase is wrong, or the file is damaged"),
+                        t!("The file is encrypted with age; the passphrase did not open it."),
+                        &[t!("Type it again: it is case-sensitive.").into(), t!("If it is surely right, Verify the file from the Backups list.").into()],
+                        vec![ui::button("rs-again").primary().label(t!("Try again")).on_click(cx.listener(|f, _, _, cx| f.read_with_passphrase(cx))).into_any_element()],
                     ))
                 });
             return (body, false);
@@ -903,10 +903,10 @@ impl RestoreFlow {
                 blk(
                     theme,
                     false,
-                    "This file is not a SENTIENT backup",
-                    "There is no manifest at its start. It may be another program's file, or only part of a split backup.",
-                    &["For a split backup (.001, .002, …), choose the first part, or the folder holding all parts.".into(), "Otherwise, choose another file.".into()],
-                    vec![ui::button("rs-other-file").outline().label("Choose another file").on_click(cx.listener(|f, _, _, cx| f.leave(None, cx))).into_any_element()],
+                    t!("This file is not a SENTIENT backup"),
+                    t!("There is no manifest at its start. It may be another program's file, or only part of a split backup."),
+                    &[t!("For a split backup (.001, .002, …), choose the first part, or the folder holding all parts.").into(), t!("Otherwise, choose another file.").into()],
+                    vec![ui::button("rs-other-file").outline().label(t!("Choose another file")).on_click(cx.listener(|f, _, _, cx| f.leave(None, cx))).into_any_element()],
                 ),
                 false,
             );
@@ -916,7 +916,7 @@ impl RestoreFlow {
             _ => None,
         }) {
             return (
-                blk(theme, false, "The backup could not be read", e, &[], vec![ui::button("rs-check-again").primary().label("Try again").on_click(cx.listener(|f, _, _, cx| f.start_check(cx))).into_any_element()]),
+                blk(theme, false, t!("The backup could not be read"), e, &[], vec![ui::button("rs-check-again").primary().label(t!("Try again")).on_click(cx.listener(|f, _, _, cx| f.start_check(cx))).into_any_element()]),
                 false,
             );
         }
@@ -924,12 +924,12 @@ impl RestoreFlow {
             // R7: reading.
             let (parts, read, total) = self.parts(cx);
             let pct = if total > 0 { read as f32 * 100. / total as f32 } else { 0. };
-            let mut c = card(theme, "Checking the backup", None).child(
+            let mut c = card(theme, t!("Checking the backup"), None).child(
                 h_flex()
                     .gap_3()
                     .items_center()
                     .child(progress_bar(theme, "rs-check-bar", pct, false))
-                    .child(div().flex_shrink_0().text_sm().font_features(ui::tabular()).child(if total > 0 { format!("{} of {}", gb(read), gb(total)) } else { "Reading…".into() })),
+                    .child(div().flex_shrink_0().text_sm().font_features(ui::tabular()).child(if total > 0 { tf!("{} of {}", gb(read), gb(total)) } else { t!("Reading…").into() })),
             );
             let mut lines = v_flex().gap_0();
             for (label, mark, sub) in condense(&parts) {
@@ -944,10 +944,10 @@ impl RestoreFlow {
                 blk(
                     theme,
                     false,
-                    "This backup needs a newer Platform Manager",
-                    format!("It is in format {}; this Platform Manager reads formats 1 to {}.", i.manifest.format_version, sentient_backup_core::manifest::FORMAT_VERSION),
-                    &[format!("Update the Platform Manager on this computer{}.", if self.target.is_server() { format!(" (and the agent on {} with it)", self.target.name()) } else { String::new() }), "Start the restore again.".into()],
-                    vec![ui::button("rs-update-pm").primary().icon(IconName::RefreshCw).label("Update the Platform Manager").on_click(cx.listener(|f, _, _, cx| f.leave(Some("about"), cx))).into_any_element()],
+                    t!("This backup needs a newer Platform Manager"),
+                    tf!("It is in format {}; this Platform Manager reads formats 1 to {}.", i.manifest.format_version, sentient_backup_core::manifest::FORMAT_VERSION),
+                    &[tf!("Update the Platform Manager on this computer{}.", if self.target.is_server() { tf!(" (and the agent on {} with it)", self.target.name()) } else { String::new() }), t!("Start the restore again.").into()],
+                    vec![ui::button("rs-update-pm").primary().icon(IconName::RefreshCw).label(t!("Update the Platform Manager")).on_click(cx.listener(|f, _, _, cx| f.leave(Some("about"), cx))).into_any_element()],
                 ),
                 false,
             );
@@ -962,16 +962,16 @@ impl RestoreFlow {
                     .child(blk(
                         theme,
                         false,
-                        "This backup is from a newer SENTIENT",
-                        format!(
+                        t!("This backup is from a newer SENTIENT"),
+                        tf!(
                             "Made on SENTIENT {v} (schema {}). {} runs {} (schema {}) and cannot read newer data.",
                             i.manifest.source.schema_version.unwrap_or_default(),
                             capital(&here),
                             i.here.sentient_version,
                             i.here.schema_version.unwrap_or_default()
                         ),
-                        &[format!("Update SENTIENT on {here} to {v} or later."), "Start the restore again; this backup stays chosen.".into()],
-                        vec![ui::button("rs-update").primary().icon(IconName::RefreshCw).label("Update SENTIENT").on_click(cx.listener(|f, _, _, cx| f.leave(Some("update"), cx))).into_any_element()],
+                        &[tf!("Update SENTIENT on {here} to {v} or later."), t!("Start the restore again; this backup stays chosen.").into()],
+                        vec![ui::button("rs-update").primary().icon(IconName::RefreshCw).label(t!("Update SENTIENT")).on_click(cx.listener(|f, _, _, cx| f.leave(Some("update"), cx))).into_any_element()],
                     ))
                     .child(self.compare(theme, &i)),
                 false,
@@ -985,35 +985,44 @@ impl RestoreFlow {
             let mut steps: Vec<String> = Vec::new();
             let mut acts: Vec<AnyElement> = Vec::new();
             if let Some(copy) = i.other_copy.clone() {
-                steps.push(format!("Use the copy in {}, or", copy.parent().map(|p| p.display().to_string()).unwrap_or_default()));
-                let label = format!("Use the copy in {}", copy.parent().map(|p| p.display().to_string()).unwrap_or_default());
+                steps.push(tf!("Use the copy in {}, or", copy.parent().map(|p| p.display().to_string()).unwrap_or_default()));
+                let label = tf!("Use the copy in {}", copy.parent().map(|p| p.display().to_string()).unwrap_or_default());
                 acts.push(ui::button("rs-copy").primary().label(label).on_click(cx.listener(move |f, _, _, cx| {
                     f.source.file = copy.clone();
                     f.start_check(cx);
                 })).into_any_element());
             }
-            steps.push(if i.damage_is_months() { "choose another backup, or".into() } else { "choose another backup.".into() });
-            acts.push(ui::button("rs-another").outline().label("Choose another backup").on_click(cx.listener(|f, _, _, cx| f.leave(None, cx))).into_any_element());
+            steps.push(if i.damage_is_months() { t!("choose another backup, or").into() } else { t!("choose another backup.").into() });
+            acts.push(ui::button("rs-another").outline().label(t!("Choose another backup")).on_click(cx.listener(|f, _, _, cx| f.leave(None, cx))).into_any_element());
             if i.damage_is_months() {
                 let months: Vec<String> = names.iter().map(|n| n.trim_start_matches("Telemetry history, ").to_string()).collect();
-                steps.push(format!("restore without {}.", months.join(", ")));
+                steps.push(tf!("restore without {}.", months.join(", ")));
                 let skip: Vec<String> = damaged.iter().map(|d| d.0.clone()).collect();
-                acts.push(ui::button("rs-skip").outline().label(format!("Restore without {}", months.join(", "))).on_click(cx.listener(move |f, _, _, cx| {
+                acts.push(ui::button("rs-skip").outline().label(tf!("Restore without {}", months.join(", "))).on_click(cx.listener(move |f, _, _, cx| {
                     f.skip = skip.clone();
                     f.step = Step::What;
                     cx.notify();
                 })).into_any_element());
             }
             let marks: Vec<(String, u64, StepMark)> = i.parts.iter().map(|p| (p.label.clone(), p.bytes, if p.ok { StepMark::Done } else { StepMark::Failed })).collect();
-            let parts = card(theme, "Parts", None).child(v_flex().children(condense(&marks).into_iter().map(|(l, m, sub)| check_line(theme, m, l, Some(if m == StepMark::Failed { "does not match".into() } else { sub.map(|s| s.replace("SHA-256 matches", "match")).unwrap_or_else(|| "matches".into()) })))).children(i.missing.iter().map(|m| check_line(theme, StepMark::Failed, sentient_backup_core::restore::member_label(m), Some("missing".into())))));
+            let parts = card(theme, t!("Parts"), None).child(v_flex().children(condense(&marks).into_iter().map(|(l, m, sub)| check_line(theme, m, l, Some(if m == StepMark::Failed { t!("does not match").into() } else { sub.unwrap_or_else(|| t!("matches").into()) })))).children(i.missing.iter().map(|m| check_line(theme, StepMark::Failed, sentient_backup_core::restore::member_label(m), Some(t!("missing").into())))));
             return (
                 v_flex()
                     .gap(px(ui::GAP))
                     .child(blk(
                         theme,
                         false,
-                        "This backup is damaged",
-                        format!("{} {} not match its SHA-256. The other {sound} part{} are sound.", names.join(", "), if names.len() == 1 { "does" } else { "do" }, if sound == 1 { "" } else { "s" }),
+                        t!("This backup is damaged"),
+                        {
+                            let one_bad = names.len() == 1;
+                            let names = names.join(", ");
+                            match (one_bad, sound == 1) {
+                                (true, true) => tf!("{names} does not match its SHA-256. The other {sound} part is sound."),
+                                (true, false) => tf!("{names} does not match its SHA-256. The other {sound} parts are sound."),
+                                (false, true) => tf!("{names} do not match their SHA-256. The other {sound} part is sound."),
+                                (false, false) => tf!("{names} do not match their SHA-256. The other {sound} parts are sound."),
+                            }
+                        },
                         &steps,
                         acts,
                     ))
@@ -1023,8 +1032,8 @@ impl RestoreFlow {
         }
         // R9: sound.
         let n = i.parts.len();
-        let c = card(theme, "The backup is sound", None)
-            .child(ui::outcome(theme, Tone::Good, format!("Every part matches its SHA-256 ({n} parts, {}). Format {}.", gb(i.file_bytes), i.manifest.format_version)))
+        let c = card(theme, t!("The backup is sound"), None)
+            .child(ui::outcome(theme, Tone::Good, tf!("Every part matches its SHA-256 ({n} parts, {}). Format {}.", gb(i.file_bytes), i.manifest.format_version)))
             .child(self.compare(theme, &i));
         (c, true)
     }
@@ -1041,29 +1050,29 @@ impl RestoreFlow {
                 .min_w(px(240.))
                 .when(enabled, |c| c.on_click(cx.listener(move |f, _, window, cx| f.set_scope(n, window, cx))))
         };
-        let no = "This backup holds no telemetry.".to_string();
+        let no = t!("This backup holds no telemetry.").to_string();
         let options = h_flex()
             .flex_wrap()
             .gap_3()
-            .child(opt(self, 0, "Everything", "Configuration and all telemetry in the backup.".into(), true, cx))
-            .child(opt(self, 1, "Configuration only, without telemetry", "Devices, dashboards, users and settings. Offered even when the backup holds telemetry.".into(), true, cx))
-            .child(opt(self, 2, "Telemetry only", if holds { format!("History from the backup into {here}; its configuration stays.") } else { no.clone() }, holds, cx))
-            .child(opt(self, 3, "Telemetry for a date range", if holds { "From the backup, within the dates you pick.".into() } else { no }, holds, cx));
-        let mut c = card(theme, "What to restore", None).child(options);
+            .child(opt(self, 0, t!("Everything"), t!("Configuration and all telemetry in the backup.").into(), true, cx))
+            .child(opt(self, 1, t!("Configuration only, without telemetry"), t!("Devices, dashboards, users and settings. Offered even when the backup holds telemetry.").into(), true, cx))
+            .child(opt(self, 2, t!("Telemetry only"), if holds { tf!("History from the backup into {here}; its configuration stays.") } else { no.clone() }, holds, cx))
+            .child(opt(self, 3, t!("Telemetry for a date range"), if holds { t!("From the backup, within the dates you pick.").into() } else { no }, holds, cx));
+        let mut c = card(theme, t!("What to restore"), None).child(options);
         let span = i.telemetry_span();
         match self.scope {
             1 => {
                 let live = self.precheck.as_ref().map(|p| p.live.clone());
-                let help = live.as_ref().map(|l| format!("{} of history now. Kept history stays tied to device ids; a device that the backup does not have keeps its history, but nothing shows it.", gb(l.telemetry_bytes))).unwrap_or_else(|| "Kept history stays tied to device ids; a device that the backup does not have keeps its history, but nothing shows it.".into());
+                let help = live.as_ref().map(|l| tf!("{} of history now. Kept history stays tied to device ids; a device that the backup does not have keeps its history, but nothing shows it.", gb(l.telemetry_bytes))).unwrap_or_else(|| t!("Kept history stays tied to device ids; a device that the backup does not have keeps its history, but nothing shows it.").into());
                 let mut t = tint(theme)
-                    .child(h_flex().gap_2().items_center().child(div().font_weight(FontWeight::MEDIUM).child(format!("The telemetry on {here} now"))).child(ui::info("rs-keep-help".into(), help.into())))
+                    .child(h_flex().gap_2().items_center().child(div().font_weight(FontWeight::MEDIUM).child(tf!("The telemetry on {here} now"))).child(ui::info("rs-keep-help".into(), help.into())))
                     .child({
                         let mut seg = ui::seg_track(theme);
-                        seg = seg.child(ui::seg_item(theme, "rs-keep", "Keep it", self.keep).on_click(cx.listener(|f, _, _, cx| {
+                        seg = seg.child(ui::seg_item(theme, "rs-keep", t!("Keep it"), self.keep).on_click(cx.listener(|f, _, _, cx| {
                             f.keep = true;
                             f.start_precheck(cx);
                         })));
-                        seg = seg.child(ui::seg_item(theme, "rs-clear", "Clear it", !self.keep).on_click(cx.listener(|f, _, _, cx| {
+                        seg = seg.child(ui::seg_item(theme, "rs-clear", t!("Clear it"), !self.keep).on_click(cx.listener(|f, _, _, cx| {
                             f.keep = false;
                             f.precheck = None;
                             cx.notify();
@@ -1073,13 +1082,13 @@ impl RestoreFlow {
                 let orphans = self.precheck.as_ref().and_then(|p| p.orphans.clone());
                 t = if self.keep {
                     t.child(ui::outcome(theme, Tone::Neutral, match orphans {
-                        Some((names, n)) if n > 0 => format!("Telemetry of {n} device{} not in the backup stays without a device ({}{}). It is removed with the next retention clean-up or by hand.", if n == 1 { "" } else { "s" }, names.join(", "), if n > names.len() { ", …" } else { "" }),
-                        Some(_) => "Every device with telemetry here is in the backup: the kept history stays with its devices.".into(),
-                        None if self.pre.read(cx).is_running() => "Looking for telemetry the backup has no device for…".into(),
-                        None => "Telemetry of devices the backup does not have stays without a device. It is removed with the next retention clean-up or by hand.".into(),
+                        Some((names, n)) if n > 0 => { let more = if n > names.len() { ", …" } else { "" }; if n == 1 { tf!("Telemetry of {n} device not in the backup stays without a device ({}{}). It is removed with the next retention clean-up or by hand.", names.join(", "), more) } else { tf!("Telemetry of {n} devices not in the backup stays without a device ({}{}). It is removed with the next retention clean-up or by hand.", names.join(", "), more) } },
+                        Some(_) => t!("Every device with telemetry here is in the backup: the kept history stays with its devices.").into(),
+                        None if self.pre.read(cx).is_running() => t!("Looking for telemetry the backup has no device for…").into(),
+                        None => t!("Telemetry of devices the backup does not have stays without a device. It is removed with the next retention clean-up or by hand.").into(),
                     }))
                 } else {
-                    t.child(ui::outcome(theme, Tone::Warn, format!("The history on {here} is deleted after the switch. The data from before is kept beside it until you remove it.")))
+                    t.child(ui::outcome(theme, Tone::Warn, tf!("The history on {here} is deleted after the switch. The data from before is kept beside it until you remove it.")))
                 };
                 c = c.child(t);
             }
@@ -1102,24 +1111,24 @@ impl RestoreFlow {
                                 .flex_wrap()
                                 .gap_2()
                                 .items_center()
-                                .child(div().w(px(44.)).text_sm().text_color(theme.muted_foreground).child("From"))
+                                .child(div().w(px(44.)).text_sm().text_color(theme.muted_foreground).child(t!("From")))
                                 .child(div().w(px(150.)).child(Input::new(&self.from).suffix(icon("calendar").size(px(15.)).text_color(theme.muted_foreground))))
                                 .child(div().w(px(24.)).text_sm().text_color(theme.muted_foreground).child("to"))
                                 .child(div().w(px(150.)).child(Input::new(&self.to).suffix(icon("calendar").size(px(15.)).text_color(theme.muted_foreground))))
-                                .child(muted(theme, if self.range_valid(cx) { format!("{months} of {all} months · about {}", gb(bytes)) } else { "The first day must come before the last.".into() })),
+                                .child(muted(theme, if self.range_valid(cx) { tf!("{months} of {all} months · about {}", gb(bytes)) } else { t!("The first day must come before the last.").into() })),
                         )
-                        .child(muted(theme, format!("Telemetry on {here} for the same dates is replaced; other dates stay."))),
+                        .child(muted(theme, tf!("Telemetry on {here} for the same dates is replaced; other dates stay."))),
                 );
             }
             _ => {}
         }
         if !holds {
-            c = c.child(muted(theme, "This backup was made with “Configuration only”, so it holds no telemetry. Everything restores its configuration."));
+            c = c.child(muted(theme, t!("This backup was made with “Configuration only”, so it holds no telemetry. Everything restores its configuration.")));
         } else if let Some((a, b)) = span {
-            c = c.child(muted(theme, format!("The backup holds telemetry from {} to {}.", day_label(a), day_label(b - 1))));
+            c = c.child(muted(theme, tf!("The backup holds telemetry from {} to {}.", day_label(a), day_label(b - 1))));
         }
         if !self.skip.is_empty() {
-            c = c.child(ui::outcome(theme, Tone::Warn, format!("Left out: {}.", self.skip.iter().map(|p| sentient_backup_core::restore::member_label(p)).collect::<Vec<_>>().join(", "))));
+            c = c.child(ui::outcome(theme, Tone::Warn, tf!("Left out: {}.", self.skip.iter().map(|p| sentient_backup_core::restore::member_label(p)).collect::<Vec<_>>().join(", "))));
         }
         (c, self.range_valid(cx))
     }
@@ -1127,7 +1136,7 @@ impl RestoreFlow {
     fn where_view(&mut self, theme: &gpui_kit::component::Theme, cx: &mut Context<Self>) -> (Div, bool) {
         let here = self.target.instance_name();
         if self.into_live() {
-            let c = card(theme, "Where to restore", None).child(ui::radio_card(theme, "rs-place-live", format!("Into the running data of {here}"), "SENTIENT keeps running; the backup's telemetry is added to its own. Rows already there for the same device, key and time stay as they are.", true));
+            let c = card(theme, t!("Where to restore"), None).child(ui::radio_card(theme, "rs-place-live", tf!("Into the running data of {here}"), t!("SENTIENT keeps running; the backup's telemetry is added to its own. Rows already there for the same device, key and time stay as they are."), true));
             return (c, true);
         }
         let opt = |f: &Self, n: usize, title: String, desc: &str, enabled: bool, why: Option<&str>, cx: &mut Context<Self>| {
@@ -1144,12 +1153,12 @@ impl RestoreFlow {
                 })))
         };
         let server = self.target.is_server();
-        let c = card(theme, "Where to restore", None).child(
+        let c = card(theme, t!("Where to restore"), None).child(
             v_flex()
                 .gap_3()
-                .child(opt(self, 0, format!("Replace the data of {here}"), &format!("{} keeps its own PostgreSQL{}, ports and licence; only the data inside is replaced.", if server { "This server" } else { "This computer" }, if self.inspection.as_ref().is_some_and(|i| i.here.database_type.contains("ClickHouse")) { ", ClickHouse" } else { "" }), true, None, cx))
-                .child(opt(self, 1, format!("A new instance on {}", if server { here.clone() } else { "this computer".into() }), "Beside the current one, on other ports. Good to look at the backup first.", false, Some("Set up SENTIENT on that server first (Instances > Add), then restore there with Replace."), cx))
-                .child(opt(self, 2, "A new instance on another server".into(), "Pick a server; SENTIENT is set up there and the backup restored into it.", false, Some("Set up SENTIENT on that server first (Instances > Add), then restore there with Replace."), cx)),
+                .child(opt(self, 0, tf!("Replace the data of {here}"), &tf!("{} keeps its own PostgreSQL{}, ports and licence; only the data inside is replaced.", if server { t!("This server") } else { t!("This computer") }, if self.inspection.as_ref().is_some_and(|i| i.here.database_type.contains("ClickHouse")) { t!(", ClickHouse") } else { "" }), true, None, cx))
+                .child(opt(self, 1, tf!("A new instance on {}", if server { here.clone() } else { "this computer".into() }), t!("Beside the current one, on other ports. Good to look at the backup first."), false, Some(t!("Set up SENTIENT on that server first (Instances > Add), then restore there with Replace.")), cx))
+                .child(opt(self, 2, t!("A new instance on another server").into(), t!("Pick a server; SENTIENT is set up there and the backup restored into it."), false, Some(t!("Set up SENTIENT on that server first (Instances > Add), then restore there with Replace.")), cx)),
         );
         (c, self.place == 0)
     }
@@ -1159,7 +1168,7 @@ impl RestoreFlow {
 /// already checked reads as one line, and the parts still to come after
 /// the next two as "and N more".
 fn condense(parts: &[(String, u64, StepMark)]) -> Vec<(String, StepMark, Option<String>)> {
-    const T: &str = "Telemetry history, ";
+    const T: &str = n!("Telemetry history, ");
     let mut out: Vec<(String, StepMark, Option<String>)> = Vec::new();
     let mut i = 0;
     let mut todo = 0usize;
@@ -1171,7 +1180,7 @@ fn condense(parts: &[(String, u64, StepMark)]) -> Vec<(String, StepMark, Option<
                 j += 1;
             }
             if j - i >= 3 {
-                out.push((format!("{T}{} – {}", &parts[i].0[T.len()..], &parts[j - 1].0[T.len()..]), StepMark::Done, Some(format!("{} parts, SHA-256 matches", j - i))));
+                out.push((format!("{T}{} – {}", &parts[i].0[T.len()..], &parts[j - 1].0[T.len()..]), StepMark::Done, Some(tf!("{} parts, each matches its SHA-256", j - i))));
                 i = j;
                 continue;
             }
@@ -1180,11 +1189,11 @@ fn condense(parts: &[(String, u64, StepMark)]) -> Vec<(String, StepMark, Option<
             todo += 1;
             if todo > 2 {
                 let rest = parts.len() - i;
-                out.push((format!("and {rest} more part{}", if rest == 1 { "" } else { "s" }), StepMark::Todo, None));
+                out.push((if rest == 1 { tf!("and {rest} more part") } else { tf!("and {rest} more parts") }, StepMark::Todo, None));
                 break;
             }
         }
-        let sub = (*mark == StepMark::Done && i > 0).then(|| "SHA-256 matches".to_string());
+        let sub = (*mark == StepMark::Done && i > 0).then(|| t!("SHA-256 matches").to_string());
         out.push((label.clone(), *mark, sub));
         i += 1;
     }
@@ -1222,23 +1231,23 @@ impl RestoreFlow {
             })
             .collect();
         if short {
-            table(theme, &[1.3, 2.6, 0.75, 0.75, 0.75], &["Disk", "Used for", "Needs", "Free", "Short"], rows, 13.5)
+            table(theme, &[1.3, 2.6, 0.75, 0.75, 0.75], &[t!("Disk"), t!("Used for"), t!("Needs"), t!("Free"), t!("Short")], rows, 13.5)
         } else {
-            table(theme, &[1.3, 2.6, 0.8, 0.8, 0.4], &["Disk", "Used for", "Needs", "Free", ""], rows, 13.5)
+            table(theme, &[1.3, 2.6, 0.8, 0.8, 0.4], &[t!("Disk"), t!("Used for"), t!("Needs"), t!("Free"), ""], rows, 13.5)
         }
     }
 
     fn precheck_view(&mut self, theme: &gpui_kit::component::Theme, cx: &mut Context<Self>) -> (Div, bool) {
         let here = self.target.instance_name();
         if let Some(e) = self.pre_error.clone() {
-            return (blk(theme, false, "The pre-check could not run", e, &[], vec![ui::button("rs-pre-again").primary().label("Try again").on_click(cx.listener(|f, _, _, cx| f.start_precheck(cx))).into_any_element()]), false);
+            return (blk(theme, false, t!("The pre-check could not run"), e, &[], vec![ui::button("rs-pre-again").primary().label(t!("Try again")).on_click(cx.listener(|f, _, _, cx| f.start_precheck(cx))).into_any_element()]), false);
         }
         let Some(p) = self.precheck.clone() else {
             let job = self.pre.read(cx);
             let step = job.step().to_string();
             return (
-                card(theme, "Pre-check", None)
-                    .child(h_flex().gap_2().items_center().child(Icon::new(IconName::LoaderCircle).size(px(14.)).text_color(theme.primary)).child(muted(theme, if step.is_empty() { "Checking…".to_string() } else { format!("{step}…") })))
+                card(theme, t!("Pre-check"), None)
+                    .child(h_flex().gap_2().items_center().child(Icon::new(IconName::LoaderCircle).size(px(14.)).text_color(theme.primary)).child(muted(theme, if step.is_empty() { t!("Checking…").to_string() } else { format!("{step}…") })))
                     .child(ui::skeleton_block(theme, "rs-pre-sk1", relative(1.).into(), 120.))
                     .child(ui::skeleton_line(theme, "rs-pre-sk2", 280.)),
                 false,
@@ -1253,12 +1262,12 @@ impl RestoreFlow {
             out = out.child(blk(
                 theme,
                 false,
-                format!("ClickHouse on {here} is not answering"),
-                format!("The history goes into ClickHouse. {ch}"),
-                &["Start ClickHouse in Control, or Repair if it does not start.".into()],
+                tf!("ClickHouse on {here} is not answering"),
+                tf!("The history goes into ClickHouse. {ch}"),
+                &[t!("Start ClickHouse in Control, or Repair if it does not start.").into()],
                 vec![
-                    ui::button("rs-open-control").outline().icon(icon("power")).label("Open Control").on_click(cx.listener(|f, _, _, cx| f.leave(Some("control"), cx))).into_any_element(),
-                    ui::button("rs-open-repair").outline().icon(icon("wrench")).label("Repair").on_click(cx.listener(|f, _, _, cx| f.leave(Some("repair"), cx))).into_any_element(),
+                    ui::button("rs-open-control").outline().icon(icon("power")).label(t!("Open Control")).on_click(cx.listener(|f, _, _, cx| f.leave(Some("control"), cx))).into_any_element(),
+                    ui::button("rs-open-repair").outline().icon(icon("wrench")).label(t!("Repair")).on_click(cx.listener(|f, _, _, cx| f.leave(Some("repair"), cx))).into_any_element(),
                 ],
             ));
         }
@@ -1277,40 +1286,40 @@ impl RestoreFlow {
             if i.has_telemetry() && self.scope != 1 {
                 steps.push("restore a shorter range of telemetry, or".into());
             }
-            steps.push(format!("free space on {}, or", d.disk));
+            steps.push(tf!("free space on {}, or", d.disk));
             if safety_here {
                 steps.push("skip the safety backup.".into());
             } else if let Some(l) = steps.last_mut() {
                 *l = l.trim_end_matches(", or").to_string() + ".";
             }
             if safety_here {
-                acts.push(ui::button("rs-safety-dir").outline().icon(IconName::Folder).label("Safety backup on another disk").on_click(cx.listener(|f, _, window, cx| f.choose_dir(true, window, cx))).into_any_element());
+                acts.push(ui::button("rs-safety-dir").outline().icon(IconName::Folder).label(t!("Safety backup on another disk")).on_click(cx.listener(|f, _, window, cx| f.choose_dir(true, window, cx))).into_any_element());
             }
             if temp_here {
-                acts.push(ui::button("rs-temp-dir").outline().icon(IconName::Folder).label("Temporary files on another disk").on_click(cx.listener(|f, _, window, cx| f.choose_dir(false, window, cx))).into_any_element());
+                acts.push(ui::button("rs-temp-dir").outline().icon(IconName::Folder).label(t!("Temporary files on another disk")).on_click(cx.listener(|f, _, window, cx| f.choose_dir(false, window, cx))).into_any_element());
             }
             if i.has_telemetry() && self.scope != 1 {
-                acts.push(ui::button("rs-shorter").outline().icon(icon("calendar")).label("Restore a shorter date range").on_click(cx.listener(|f, _, window, cx| {
+                acts.push(ui::button("rs-shorter").outline().icon(icon("calendar")).label(t!("Restore a shorter date range")).on_click(cx.listener(|f, _, window, cx| {
                     f.set_scope(3, window, cx);
                     f.step = Step::What;
                     cx.notify();
                 })).into_any_element());
             }
             let mut acts2: Vec<AnyElement> = vec![
-                h_flex().gap_1().items_center().child(ui::button("rs-free-files").outline().icon(IconName::Folder).label("Free space in Files").on_click(cx.listener(|f, _, _, cx| f.leave(Some("files"), cx)))).child(ui::info("rs-free-files-i".into(), format!("Opens Files on {here} at the largest folders on {}.", d.disk).into())).into_any_element(),
-                ui::button("rs-move-data").outline().icon(icon("move-disk")).label("Move data to another disk").on_click(cx.listener(|f, _, window, cx| {
+                h_flex().gap_1().items_center().child(ui::button("rs-free-files").outline().icon(IconName::Folder).label(t!("Free space in Files")).on_click(cx.listener(|f, _, _, cx| f.leave(Some("files"), cx)))).child(ui::info("rs-free-files-i".into(), tf!("Opens Files on {here} at the largest folders on {}.", d.disk).into())).into_any_element(),
+                ui::button("rs-move-data").outline().icon(icon("move-disk")).label(t!("Move data to another disk")).on_click(cx.listener(|f, _, window, cx| {
                     f.target.open_move_data(window, cx);
                 })).into_any_element(),
             ];
             if safety_here {
-                acts2.push(ui::button("rs-skip-safety").ghost().label("Skip the safety backup").on_click(cx.listener(|f, _, window, cx| f.ask_skip_safety(window, cx))).into_any_element());
+                acts2.push(ui::button("rs-skip-safety").ghost().label(t!("Skip the safety backup")).on_click(cx.listener(|f, _, window, cx| f.ask_skip_safety(window, cx))).into_any_element());
             }
             out = out.child(
                 blk(
                     theme,
                     false,
-                    format!("Not enough free disk on {}", d.disk),
-                    format!("The restore needs about {} on {} with {} left free, and {} is free.{}", gb(d.need), d.disk, gb(p.min_free), d.free.map(gb).unwrap_or_default(), if others_ok { " The other disks have room." } else { "" }),
+                    tf!("Not enough free disk on {}", d.disk),
+                    tf!("The restore needs about {} on {} with {} left free, and {} is free.{}", gb(d.need), d.disk, gb(p.min_free), d.free.map(gb).unwrap_or_default(), if others_ok { t!(" The other disks have room.") } else { "" }),
                     &steps,
                     acts,
                 )
@@ -1320,51 +1329,51 @@ impl RestoreFlow {
             return (out, false);
         }
         let windows = self.target.windows();
-        let mut rows: Vec<(AnyElement, AnyElement)> = vec![(txt("Size"), txt(format!("{} file · about {} once restored", gb(i.file_bytes), gb(p.restored_bytes))))];
+        let mut rows: Vec<(AnyElement, AnyElement)> = vec![(txt(t!("Size")), txt(tf!("{} file · about {} once restored", gb(i.file_bytes), gb(p.restored_bytes))))];
         let down = if self.into_live() {
-            "SENTIENT keeps running".to_string()
+            t!("SENTIENT keeps running").to_string()
         } else if windows {
-            format!("SENTIENT is down about {}: the SENTIENT service stops and starts", mins(p.estimate.downtime_secs))
+            tf!("SENTIENT is down about {}: the SENTIENT service stops and starts", mins(p.estimate.downtime_secs))
         } else {
-            format!("SENTIENT is down about {}, at the switch", mins(p.estimate.downtime_secs))
+            tf!("SENTIENT is down about {}, at the switch", mins(p.estimate.downtime_secs))
         };
-        let c = card(theme, "Pre-check", None)
+        let c = card(theme, t!("Pre-check"), None)
             .child(kv(theme, std::mem::take(&mut rows)))
-            .child(div().text_sm().font_weight(FontWeight::MEDIUM).child("Space, per disk"))
+            .child(div().text_sm().font_weight(FontWeight::MEDIUM).child(t!("Space, per disk")))
             .child(self.disk_table(theme, &p, false))
             .child(kv(
                 theme,
                 vec![
-                    (txt("Takes about"), txt(format!("{} · {down}", mins(p.estimate.total_secs)))),
-                    (txt("After the restore"), txt(p.upgrade.clone().unwrap_or_else(|| if self.into_live() { "Nothing to upgrade: only telemetry is added".into() } else { "The same schema: nothing to upgrade".into() }))),
+                    (txt(t!("Takes about")), txt(format!("{} · {down}", mins(p.estimate.total_secs)))),
+                    (txt(t!("After the restore")), txt(p.upgrade.clone().unwrap_or_else(|| if self.into_live() { t!("Nothing to upgrade: only telemetry is added").into() } else { t!("The same schema: nothing to upgrade").into() }))),
                     (
-                        h_flex().gap_1().items_center().child("While it runs").child(ui::info("rs-watch".into(), format!("The restore stops and rolls back when free space on any of these disks falls under {}.", gb(p.min_free)).into())).into_any_element(),
-                        txt(format!("Stops cleanly under {} free on any disk", gb(p.min_free))),
+                        h_flex().gap_1().items_center().child(t!("While it runs")).child(ui::info("rs-watch".into(), tf!("The restore stops and rolls back when free space on any of these disks falls under {}.", gb(p.min_free)).into())).into_any_element(),
+                        txt(tf!("Stops cleanly under {} free on any disk", gb(p.min_free))),
                     ),
                 ],
             ))
             .when_some(p.orphans.clone().filter(|o| o.1 > 0 && self.scope == 1 && self.keep), |c, (names, n)| {
-                c.child(ui::outcome(theme, Tone::Neutral, format!("Telemetry of {n} device{} not in the backup stays without a device ({}{}). It is removed with the next retention clean-up or by hand.", if n == 1 { "" } else { "s" }, names.join(", "), if n > names.len() { ", …" } else { "" })))
+                c.child(ui::outcome(theme, Tone::Neutral, { let more = if n > names.len() { ", …" } else { "" }; if n == 1 { tf!("Telemetry of {n} device not in the backup stays without a device ({}{}). It is removed with the next retention clean-up or by hand.", names.join(", "), more) } else { tf!("Telemetry of {n} devices not in the backup stays without a device ({}{}). It is removed with the next retention clean-up or by hand.", names.join(", "), more) } }))
             })
-            .when(safety_on && self.skip_safety, |c| c.child(ui::outcome(theme, Tone::Warn, "No safety backup: you chose to restore without it.")));
+            .when(safety_on && self.skip_safety, |c| c.child(ui::outcome(theme, Tone::Warn, t!("No safety backup: you chose to restore without it."))));
         (out.child(c), true)
     }
 
     fn settings_view(&mut self, theme: &gpui_kit::component::Theme, cx: &mut Context<Self>) -> (Div, bool) {
         let Some(p) = self.precheck.clone() else { return (div(), false) };
         let here = self.target.instance_name();
-        let here_cap = if self.target.is_server() { here.clone() } else { "This instance".into() };
-        let mut c = card(theme, "Settings that differ", None);
+        let here_cap = if self.target.is_server() { here.clone() } else { t!("This instance").into() };
+        let mut c = card(theme, t!("Settings that differ"), None);
         if !p.recorded {
-            c = c.child(ui::outcome(theme, Tone::Neutral, format!("This backup was made before settings were recorded (Platform Manager 0.8.0 or earlier). Only the SENTIENT version, database type and file store paths can be compared; everything else stays as it is on {here}.")));
+            c = c.child(ui::outcome(theme, Tone::Neutral, tf!("This backup was made before settings were recorded (Platform Manager 0.8.0 or earlier). Only the SENTIENT version, database type and file store paths can be compared; everything else stays as it is on {here}.")));
         } else {
             c = c.child(
                 h_flex()
                     .gap_3()
                     .items_center()
-                    .child(muted(theme, format!("{} differ · {} are the same", p.settings.len(), p.same)))
+                    .child(muted(theme, tf!("{} differ · {} are the same", p.settings.len(), p.same)))
                     .when(p.settings.len() > 8, |r| {
-                        r.child(ui::button("rs-show-all").ghost().label(if self.show_all { "Show fewer" } else { "Show all" }).on_click(cx.listener(|f, _, _, cx| {
+                        r.child(ui::button("rs-show-all").ghost().label(if self.show_all { t!("Show fewer") } else { t!("Show all") }).on_click(cx.listener(|f, _, _, cx| {
                             f.show_all = !f.show_all;
                             cx.notify();
                         })))
@@ -1377,13 +1386,13 @@ impl RestoreFlow {
         for r in shown {
             let key = r.key.clone();
             let choice: AnyElement = match r.kind {
-                SettingKind::Fixed => muted(theme, if self.target.is_server() { "This server's" } else { "This computer's" }).into_any_element(),
-                SettingKind::Gateway => ui::button(SharedString::from(format!("rs-gw-{key}"))).ghost().label("Open Gateway after").on_click(cx.listener(|f, _, _, cx| f.leave(Some("gateway"), cx))).into_any_element(),
+                SettingKind::Fixed => muted(theme, if self.target.is_server() { t!("This server's") } else { t!("This computer's") }).into_any_element(),
+                SettingKind::Gateway => ui::button(SharedString::from(format!("rs-gw-{key}"))).ghost().label(t!("Open Gateway after")).on_click(cx.listener(|f, _, _, cx| f.leave(Some("gateway"), cx))).into_any_element(),
                 SettingKind::Locked => {
                     licence = Some(r.backup.clone());
                     let mut seg = ui::seg_track(theme);
-                    seg = seg.child(ui::seg_item(theme, SharedString::from(format!("rs-k-{key}")), "Keep current", true).text_size(px(12.5)).h(px(26.)));
-                    seg = seg.child(ui::seg_item(theme, SharedString::from(format!("rs-b-{key}")), "Use from backup", false).text_size(px(12.5)).h(px(26.)).opacity(0.45).cursor_default());
+                    seg = seg.child(ui::seg_item(theme, SharedString::from(format!("rs-k-{key}")), t!("Keep current"), true).text_size(px(12.5)).h(px(26.)));
+                    seg = seg.child(ui::seg_item(theme, SharedString::from(format!("rs-b-{key}")), t!("Use from backup"), false).text_size(px(12.5)).h(px(26.)).opacity(0.45).cursor_default());
                     seg.into_any_element()
                 }
                 SettingKind::Choice { .. } | SettingKind::DatabaseType => {
@@ -1391,7 +1400,7 @@ impl RestoreFlow {
                     let (k1, k2) = (key.clone(), key.clone());
                     let db = r.kind == SettingKind::DatabaseType;
                     let mut seg = ui::seg_track(theme);
-                    seg = seg.child(ui::seg_item(theme, SharedString::from(format!("rs-k-{key}")), "Keep current", !on).text_size(px(12.5)).h(px(26.)).on_click(cx.listener(move |f, _, _, cx| {
+                    seg = seg.child(ui::seg_item(theme, SharedString::from(format!("rs-k-{key}")), t!("Keep current"), !on).text_size(px(12.5)).h(px(26.)).on_click(cx.listener(move |f, _, _, cx| {
                         if db {
                             f.db_type_backup = false;
                         } else {
@@ -1399,7 +1408,7 @@ impl RestoreFlow {
                         }
                         cx.notify();
                     })));
-                    seg = seg.child(ui::seg_item(theme, SharedString::from(format!("rs-b-{key}")), "Use from backup", on).text_size(px(12.5)).h(px(26.)).on_click(cx.listener(move |f, _, _, cx| {
+                    seg = seg.child(ui::seg_item(theme, SharedString::from(format!("rs-b-{key}")), t!("Use from backup"), on).text_size(px(12.5)).h(px(26.)).on_click(cx.listener(move |f, _, _, cx| {
                         if db {
                             f.db_type_backup = true;
                         } else {
@@ -1415,7 +1424,7 @@ impl RestoreFlow {
                 rows.push(vec![v_flex()
                     .gap_1()
                     .child(div().font_weight(FontWeight::MEDIUM).child(r.label.clone()))
-                    .child(div().text_size(px(12.5)).child(format!("In the backup: {} · Here: {}", r.backup, r.here)))
+                    .child(div().text_size(px(12.5)).child(tf!("In the backup: {} · Here: {}", r.backup, r.here)))
                     .child(h_flex().child(choice))
                     .child(div().text_size(px(12.5)).text_color(theme.muted_foreground).child(r.why.clone()))
                     .into_any_element()]);
@@ -1424,12 +1433,12 @@ impl RestoreFlow {
             rows.push(vec![txt(r.label.clone()), div().text_size(px(12.5)).child(r.backup.clone()).into_any_element(), div().text_size(px(12.5)).child(r.here.clone()).into_any_element(), choice, div().text_size(px(12.5)).text_color(theme.muted_foreground).child(r.why.clone()).into_any_element()]);
         }
         if !p.recorded && !ui::narrow() {
-            rows.push(vec![txt("Ports, URL, TLS, environment, gateways"), muted(theme, "Not recorded").into_any_element(), txt("As now"), muted(theme, "Keep current").into_any_element(), muted(theme, "Nothing to compare with").into_any_element()]);
+            rows.push(vec![txt(t!("Ports, URL, TLS, environment, gateways")), muted(theme, t!("Not recorded")).into_any_element(), txt(t!("As now")), muted(theme, t!("Keep current")).into_any_element(), muted(theme, t!("Nothing to compare with")).into_any_element()]);
         }
         if rows.is_empty() {
-            c = c.child(ui::outcome(theme, Tone::Good, "Every recorded setting is the same as here."));
+            c = c.child(ui::outcome(theme, Tone::Good, t!("Every recorded setting is the same as here.")));
         } else {
-            c = c.child(if ui::narrow() { table(theme, &[1.0], &["Setting"], rows, 13.) } else { table(theme, &[1.0, 1.25, 1.25, 1.75, 1.35], &["Setting", "In the backup", &format!("On {here_cap}"), "Use", "Why"], rows, 13.) });
+            c = c.child(if ui::narrow() { table(theme, &[1.0], &[t!("Setting")], rows, 13.) } else { table(theme, &[1.0, 1.25, 1.25, 1.75, 1.35], &[t!("Setting"), t!("In the backup"), &tf!("On {here_cap}"), t!("Use"), t!("Why")], rows, 13.) });
         }
         let mut out = v_flex().gap(px(ui::GAP));
         let mut ok = true;
@@ -1440,15 +1449,15 @@ impl RestoreFlow {
             out = out.child(blk(
                 theme,
                 false,
-                format!("{} cannot run on {} as it is", capital(&here), i.database_type),
-                format!("You chose “Use from backup” for the database type. {} runs {}; a restore keeps the instance's type and converts the history.", capital(&here), i.here.database_type),
-                &[format!("Keep this {}'s type: the history is converted to {} (every direction works), or", if self.target.is_server() { "server" } else { "computer" }, i.here.database_type.trim_start_matches("PostgreSQL + ")), format!("change {here} to {} in Migration, then restore again.", i.database_type)],
+                tf!("{} cannot run on {} as it is", capital(&here), i.database_type),
+                tf!("You chose “Use from backup” for the database type. {} runs {}; a restore keeps the instance's type and converts the history.", capital(&here), i.here.database_type),
+                &[tf!("Keep this {}'s type: the history is converted to {} (every direction works), or", if self.target.is_server() { "server" } else { "computer" }, i.here.database_type.trim_start_matches("PostgreSQL + ")), tf!("change {here} to {} in Migration, then restore again.", i.database_type)],
                 vec![
-                    ui::button("rs-keep-type").primary().label(if self.target.is_server() { "Keep this server's type" } else { "Keep this computer's type" }).on_click(cx.listener(|f, _, _, cx| {
+                    ui::button("rs-keep-type").primary().label(if self.target.is_server() { t!("Keep this server's type") } else { t!("Keep this computer's type") }).on_click(cx.listener(|f, _, _, cx| {
                         f.db_type_backup = false;
                         cx.notify();
                     })).into_any_element(),
-                    ui::button("rs-open-migration").outline().icon(icon("arrow-left-right")).label("Open Migration").on_click(cx.listener(|f, _, _, cx| f.leave(Some("migration"), cx))).into_any_element(),
+                    ui::button("rs-open-migration").outline().icon(icon("arrow-left-right")).label(t!("Open Migration")).on_click(cx.listener(|f, _, _, cx| f.leave(Some("migration"), cx))).into_any_element(),
                 ],
             ));
         }
@@ -1459,10 +1468,10 @@ impl RestoreFlow {
             out = out.child(blk(
                 theme,
                 true,
-                format!("The licence stays with {here}"),
-                format!("The backup comes from {bound}, whose licence is bound to that machine's hardware. It is not carried over. {} keeps its own licence.", capital(&here)),
-                &[format!("After the restore, check Licence on {here}."), format!("If {here} has none yet, activate one or request a demo licence.")],
-                vec![Checkbox::new("rs-open-licence").label("Open Licence when the restore is done").checked(self.open_licence_after).on_change(cx.listener(|f, v: &bool, _, cx| {
+                tf!("The licence stays with {here}"),
+                tf!("The backup comes from {bound}, whose licence is bound to that machine's hardware. It is not carried over. {} keeps its own licence.", capital(&here)),
+                &[tf!("After the restore, check Licence on {here}."), tf!("If {here} has none yet, activate one or request a demo licence.")],
+                vec![Checkbox::new("rs-open-licence").label(t!("Open Licence when the restore is done")).checked(self.open_licence_after).on_change(cx.listener(|f, v: &bool, _, cx| {
                     f.open_licence_after = *v;
                     cx.notify();
                 })).into_any_element()],
@@ -1482,15 +1491,15 @@ impl RestoreFlow {
         let live = p.as_ref().map(|p| p.live.clone()).unwrap_or_default();
         let into_live = self.into_live();
         let scope = self.scope(cx);
-        let title = if into_live { format!("Add the backup's telemetry to {here}?") } else { format!("Replace the data of {here}?") };
+        let title = if into_live { tf!("Add the backup's telemetry to {here}?") } else { tf!("Replace the data of {here}?") };
         let replaced = match &scope {
-            Scope::Everything => format!("Devices, dashboards, users and settings ({} devices, {} dashboards, {} users), and all telemetry, from {backup}", live.devices, live.dashboards, live.users),
-            Scope::Configuration => format!("Devices, dashboards, users and settings ({} devices, {} dashboards, {} users), from {backup}; the telemetry {}", live.devices, live.dashboards, live.users, if self.keep { "stays" } else { "is cleared" }),
-            Scope::TelemetryOnly => format!("Nothing: the telemetry from {backup} is added; rows already there stay"),
-            Scope::Range { .. } => format!("The telemetry {}", scope.label().trim_start_matches("Telemetry ")),
+            Scope::Everything => tf!("Devices, dashboards, users and settings ({} devices, {} dashboards, {} users), and all telemetry, from {backup}", live.devices, live.dashboards, live.users),
+            Scope::Configuration => tf!("Devices, dashboards, users and settings ({} devices, {} dashboards, {} users), from {backup}; the telemetry {}", live.devices, live.dashboards, live.users, if self.keep { "stays" } else { "is cleared" }),
+            Scope::TelemetryOnly => tf!("Nothing: the telemetry from {backup} is added; rows already there stay"),
+            Scope::Range { .. } => tf!("The telemetry {}", scope.label().trim_start_matches("Telemetry ")),
         };
         let kept: Vec<String> = {
-            let mut v = vec!["Licence".to_string()];
+            let mut v = vec![t!("Licence").to_string()];
             if let Some(p) = &p {
                 for r in &p.settings {
                     if !self.uses_backup(&r.key, r.kind) && matches!(r.kind, SettingKind::Choice { .. }) {
@@ -1504,9 +1513,9 @@ impl RestoreFlow {
         let mut c = card(theme, title, None).child(kv(
             theme,
             vec![
-                (txt(if into_live { "Changes" } else { "Replaced" }), txt(replaced)),
-                (txt("Kept as now"), txt(if into_live { "Devices, dashboards, users, settings and the licence".to_string() } else { kept.join(", ") })),
-                (txt("Downtime"), txt(if into_live { "None: SENTIENT keeps running".to_string() } else { format!("About {}, at the switch", p.as_ref().map(|p| mins(p.estimate.downtime_secs)).unwrap_or_else(|| "1 min".into())) })),
+                (txt(if into_live { t!("Changes") } else { t!("Replaced") }), txt(replaced)),
+                (txt(t!("Kept as now")), txt(if into_live { t!("Devices, dashboards, users, settings and the licence").to_string() } else { kept.join(", ") })),
+                (txt(t!("Downtime")), txt(if into_live { t!("None: SENTIENT keeps running").to_string() } else { tf!("About {}, at the switch", p.as_ref().map(|p| mins(p.estimate.downtime_secs)).unwrap_or_else(|| t!("1 min").into())) })),
             ],
         ));
         let offered = self.delete_old || matches!(scope, Scope::Range { .. });
@@ -1515,15 +1524,15 @@ impl RestoreFlow {
                 h_flex()
                     .gap_2()
                     .items_center()
-                    .child(Checkbox::new("rs-delete-old").label("Delete the data from before once the restored data runs").checked(self.delete_old).on_change(cx.listener(|f, v: &bool, _, cx| {
+                    .child(Checkbox::new("rs-delete-old").label(t!("Delete the data from before once the restored data runs")).checked(self.delete_old).on_change(cx.listener(|f, v: &bool, _, cx| {
                         f.delete_old = *v;
                         cx.notify();
                     })))
-                    .child(ui::info("rs-delete-old-i".into(), "Without this, the data from before is kept under “Kept after earlier changes” until you remove it; it is the way back.".into())),
+                    .child(ui::info("rs-delete-old-i".into(), t!("Without this, the data from before is kept under “Kept after earlier changes” until you remove it; it is the way back.").into())),
             );
         }
         if scope == Scope::TelemetryOnly {
-            c = c.child(muted(theme, "Nothing is deleted, so no safety backup is needed."));
+            c = c.child(muted(theme, t!("Nothing is deleted, so no safety backup is needed.")));
         }
         if offered && !self.skip_safety {
             let s = p.as_ref().map(|p| format!("{} · {} · {}", p.safety.name, gb(p.safety.bytes), mins(p.safety.secs))).unwrap_or_default();
@@ -1532,12 +1541,12 @@ impl RestoreFlow {
                     .flex_wrap()
                     .gap_2()
                     .items_center()
-                    .child(Checkbox::new("rs-safety").label("Back up the current data first").checked(self.safety).on_change(cx.listener(|f, v: &bool, _, cx| {
+                    .child(Checkbox::new("rs-safety").label(t!("Back up the current data first")).checked(self.safety).on_change(cx.listener(|f, v: &bool, _, cx| {
                         f.safety = *v;
                         cx.notify();
                     })))
                     .child(muted(theme, s))
-                    .child(ui::info("rs-safety-i".into(), "Offered because data is deleted: a full backup file of what runs now, in the backup folder.".into())),
+                    .child(ui::info("rs-safety-i".into(), t!("Offered because data is deleted: a full backup file of what runs now, in the backup folder.").into())),
             );
         }
         c = c.child(
@@ -1546,7 +1555,7 @@ impl RestoreFlow {
                 .gap_3()
                 .items_center()
                 .pt(px(4.))
-                .child(h_flex().gap_1().text_sm().child("Type").child(div().font_weight(FontWeight::SEMIBOLD).child(word.clone())).child("to confirm"))
+                .child(h_flex().gap_1().text_sm().child(t!("Type")).child(div().font_weight(FontWeight::SEMIBOLD).child(word.clone())).child(t!("to confirm")))
                 .child(div().w(px(240.)).child(Input::new(&self.confirm))),
         );
         (c, ok)
@@ -1598,7 +1607,7 @@ impl RestoreFlow {
                     })
                     .ok();
                 }),
-                title: Some(format!("{} on {}", if safety { "The safety backup's folder" } else { "The folder for temporary files" }, self.target.name())),
+                title: Some(tf!("{} on {}", if safety { t!("The safety backup's folder") } else { t!("The folder for temporary files") }, self.target.name())),
             },
             window,
             cx,
@@ -1611,7 +1620,7 @@ impl RestoreFlow {
         let word = self.target.confirm_word();
         let newest = self.precheck.as_ref().and_then(|p| p.newest_backup.clone());
         let view = cx.new(|cx| SkipSafety::new(flow, word, newest, _window, cx));
-        crate::modal::open(crate::modal::Modal { title: "Restore without a safety backup?".into(), body: view.clone().into(), width: 520., icon: Some(Icon::new(IconName::TriangleAlert)), on_close: None }, cx);
+        crate::modal::open(crate::modal::Modal { title: t!("Restore without a safety backup?").into(), body: view.clone().into(), width: 520., icon: Some(Icon::new(IconName::TriangleAlert)), on_close: None }, cx);
         let footer = cx.new(|cx| SkipFooter { _o: cx.observe(&view, |_, _, cx| cx.notify()), dialog: view });
         crate::modal::set_footer(footer.into(), cx);
     }
@@ -1644,8 +1653,8 @@ impl Render for SkipSafety {
         let here = self.flow.read(cx).target.instance_name();
         v_flex()
             .gap_3()
-            .child(ui::outcome(&theme, Tone::Warn, format!("Without it, the data on {here} now can only come back from the data kept beside it, until that is removed, or from an older backup{}.", self.newest.as_ref().map(|n| format!(" (newest: {n})")).unwrap_or_default())))
-            .child(h_flex().flex_wrap().gap_3().items_center().child(h_flex().gap_1().text_sm().child("Type").child(div().font_weight(FontWeight::SEMIBOLD).child(self.word.clone())).child("to restore without it")).child(div().w(px(200.)).child(Input::new(&self.input))))
+            .child(ui::outcome(&theme, Tone::Warn, tf!("Without it, the data on {here} now can only come back from the data kept beside it, until that is removed, or from an older backup{}.", self.newest.as_ref().map(|n| tf!(" (newest: {n})")).unwrap_or_default())))
+            .child(h_flex().flex_wrap().gap_3().items_center().child(h_flex().gap_1().text_sm().child(t!("Type")).child(div().font_weight(FontWeight::SEMIBOLD).child(self.word.clone())).child(t!("to restore without it"))).child(div().w(px(200.)).child(Input::new(&self.input))))
     }
 }
 
@@ -1661,8 +1670,8 @@ impl Render for SkipFooter {
         h_flex()
             .gap(crate::ui::button_gap())
             .justify_end()
-            .child(crate::ui::probed(ui::button("rs-skip-back").outline().label("Back").on_click(|_, _, cx| crate::modal::close(cx))))
-            .child(crate::ui::probed(ui::button("rs-skip-go").danger().label("Restore without it").disabled(!ok).on_click(move |_, _, cx| {
+            .child(crate::ui::probed(ui::button("rs-skip-back").outline().label(t!("Back")).on_click(|_, _, cx| crate::modal::close(cx))))
+            .child(crate::ui::probed(ui::button("rs-skip-go").danger().label(t!("Restore without it")).disabled(!ok).on_click(move |_, _, cx| {
                 crate::modal::close(cx);
                 flow.update(cx, |f, cx| {
                     f.skip_safety = true;
@@ -1683,7 +1692,7 @@ impl RestoreFlow {
         let here = target.instance_name();
         crate::modal::alert(window, cx, move |d, _, _| {
             let (target, name) = (target.clone(), name.clone());
-            d.title(format!("Remove {name}?")).description(format!("The restored database that did not start is deleted from {here}. The data SENTIENT runs on is not touched.")).confirm().ok_text("Remove").on_ok(move |_, _, cx| {
+            d.title(tf!("Remove {name}?")).description(tf!("The restored database that did not start is deleted from {here}. The data SENTIENT runs on is not touched.")).confirm().ok_text(t!("Remove")).on_ok(move |_, _, cx| {
                 let (target, name) = (target.clone(), name.clone());
                 cx.spawn(async move |cx| {
                     let r = cx
@@ -1699,8 +1708,8 @@ impl RestoreFlow {
                         })
                         .await;
                     cx.update(|cx| match r {
-                        Ok(()) => ui::show_info("Removed", "The restored database was removed.", cx),
-                        Err(e) => ui::show_error("Not removed", e, cx),
+                        Ok(()) => ui::show_info(t!("Removed"), t!("The restored database was removed."), cx),
+                        Err(e) => ui::show_error(t!("Not removed"), e, cx),
                     });
                 })
                 .detach();
@@ -1726,11 +1735,11 @@ impl RestoreFlow {
         });
         let into_live = self.into_live();
         let title = match result {
-            Some(Result_::Done) if into_live => format!("The backup's telemetry is in {here}"),
-            Some(Result_::Done) => if self.target.is_server() { "This instance runs on the restored data".to_string() } else { "This computer runs on the restored data".into() },
-            Some(Result_::RolledBack) => "The data was not replaced".into(),
-            _ if into_live => format!("Adding telemetry to {here}"),
-            _ => format!("Replacing the data of {here}"),
+            Some(Result_::Done) if into_live => tf!("The backup's telemetry is in {here}"),
+            Some(Result_::Done) => if self.target.is_server() { t!("This instance runs on the restored data").to_string() } else { t!("This computer runs on the restored data").into() },
+            Some(Result_::RolledBack) => t!("The data was not replaced").into(),
+            _ if into_live => tf!("Adding telemetry to {here}"),
+            _ => tf!("Replacing the data of {here}"),
         };
         let t = self.target.clone();
         let mut view = crate::manager::jobview::JobView::new("rs-run", title, &self.run)
@@ -1741,10 +1750,10 @@ impl RestoreFlow {
             })));
         view = match result {
             None => view,
-            Some(Result_::Done) => view.pill("Done", Tone::Good),
-            Some(Result_::Failed) => view.pill("Failed", Tone::Bad),
-            Some(Result_::RolledBack) => view.pill("Rolled back", Tone::Warn),
-            Some(Result_::Stopped) => view.pill("Stopped", Tone::Bad),
+            Some(Result_::Done) => view.pill(t!("Done"), Tone::Good),
+            Some(Result_::Failed) => view.pill(t!("Failed"), Tone::Bad),
+            Some(Result_::RolledBack) => view.pill(t!("Rolled back"), Tone::Warn),
+            Some(Result_::Stopped) => view.pill(t!("Stopped"), Tone::Bad),
         };
         let back_btn = |id: &'static str, label: &'static str, cx: &mut Context<Self>| ui::button(id).outline().label(label).on_click(cx.listener(|f, _, _, cx| f.leave(None, cx))).into_any_element();
         let mut acts: Vec<AnyElement> = Vec::new();
@@ -1758,55 +1767,55 @@ impl RestoreFlow {
                         Target::Server(i) => format!("http://{}:{port}", i.host),
                         Target::Here(_) => format!("http://localhost:{port}"),
                     };
-                    acts.push(ui::button("rs-reset").outline().label("Reset password").on_click(cx.listener(|f, _, _, cx| f.leave(Some("settings"), cx))).into_any_element());
+                    acts.push(ui::button("rs-reset").outline().label(t!("Reset password")).on_click(cx.listener(|f, _, _, cx| f.leave(Some("settings"), cx))).into_any_element());
                     if outcome.as_ref().is_some_and(|o| o.licence_note) || self.precheck.as_ref().is_some_and(|p| p.settings.iter().any(|r| r.kind == SettingKind::Locked)) {
-                        acts.push(ui::button("rs-licence").outline().icon(icon("key-round")).label("Activate the licence").on_click(cx.listener(|f, _, _, cx| f.leave(Some("licence"), cx))).into_any_element());
+                        acts.push(ui::button("rs-licence").outline().icon(icon("key-round")).label(t!("Activate the licence")).on_click(cx.listener(|f, _, _, cx| f.leave(Some("licence"), cx))).into_any_element());
                     }
                     if self.precheck.as_ref().is_some_and(|p| p.settings.iter().any(|r| r.kind == SettingKind::Gateway)) {
-                        acts.push(ui::button("rs-gateways").outline().label("Point gateways here").on_click(cx.listener(|f, _, _, cx| f.leave(Some("gateway"), cx))).into_any_element());
+                        acts.push(ui::button("rs-gateways").outline().label(t!("Point gateways here")).on_click(cx.listener(|f, _, _, cx| f.leave(Some("gateway"), cx))).into_any_element());
                     }
-                    acts.push(ui::button("rs-open").outline().label("Open SENTIENT").on_click(move |_, _, cx| ui::open_url(&url, cx)).into_any_element());
+                    acts.push(ui::button("rs-open").outline().label(t!("Open SENTIENT")).on_click(move |_, _, cx| ui::open_url(&url, cx)).into_any_element());
                 }
                 let licence_after = self.open_licence_after && outcome.as_ref().is_some_and(|o| o.licence_note);
-                acts.push(ui::button("rs-done").primary().label("Done").on_click(cx.listener(move |f, _, _, cx| f.leave(if licence_after { Some("licence") } else { None }, cx))).into_any_element());
+                acts.push(ui::button("rs-done").primary().label(t!("Done")).on_click(cx.listener(move |f, _, _, cx| f.leave(if licence_after { Some("licence") } else { None }, cx))).into_any_element());
             }
             Some(Result_::Failed) => {
                 view = view.result(ui::outcome(theme, Tone::Bad, message.clone().unwrap_or_default()));
                 let resumable = outcome.as_ref().and_then(|o| o.failed_step.clone()).is_some_and(|s| s != rf::STEP_CHECK && s != rf::STEP_SAFETY);
-                acts.push(back_btn("rs-back-page", "Back to Backup and restore", cx));
+                acts.push(back_btn("rs-back-page", t!("Back to Backup and restore"), cx));
                 if resumable {
-                    acts.push(ui::button("rs-again").outline().label("Start again").on_click(cx.listener(|f, _, _, cx| f.start_run(false, cx))).into_any_element());
+                    acts.push(ui::button("rs-again").outline().label(t!("Start again")).on_click(cx.listener(|f, _, _, cx| f.start_run(false, cx))).into_any_element());
                     acts.push(
                         h_flex()
                             .gap_1()
                             .items_center()
-                            .child(ui::info("rs-resume-i".into(), "Goes on after the last finished step: the safety backup and the check are not repeated.".into()))
-                            .child(ui::button("rs-resume").primary().label("Resume").on_click(cx.listener(|f, _, _, cx| f.start_run(true, cx))))
+                            .child(ui::info("rs-resume-i".into(), t!("Goes on after the last finished step: the safety backup and the check are not repeated.").into()))
+                            .child(ui::button("rs-resume").primary().label(t!("Resume")).on_click(cx.listener(|f, _, _, cx| f.start_run(true, cx))))
                             .into_any_element(),
                     );
                 } else {
-                    acts.push(ui::button("rs-again").primary().label("Start again").on_click(cx.listener(|f, _, _, cx| f.start_run(false, cx))).into_any_element());
+                    acts.push(ui::button("rs-again").primary().label(t!("Start again")).on_click(cx.listener(|f, _, _, cx| f.start_run(false, cx))).into_any_element());
                 }
             }
             Some(Result_::Stopped) => {
                 view = view.result(ui::outcome(theme, Tone::Bad, message.clone().unwrap_or_default()));
-                acts.push(back_btn("rs-back-page", "Back", cx));
-                acts.push(ui::button("rs-free-files").outline().icon(IconName::Folder).label("Free space in Files").on_click(cx.listener(|f, _, _, cx| f.leave(Some("files"), cx))).into_any_element());
-                acts.push(ui::button("rs-move-data").outline().icon(icon("move-disk")).label("Move data to another disk").on_click(cx.listener(|f, _, window, cx| f.target.open_move_data(window, cx))).into_any_element());
-                acts.push(ui::button("rs-again").primary().label("Start again").on_click(cx.listener(|f, _, _, cx| f.start_run(false, cx))).into_any_element());
+                acts.push(back_btn("rs-back-page", t!("Back"), cx));
+                acts.push(ui::button("rs-free-files").outline().icon(IconName::Folder).label(t!("Free space in Files")).on_click(cx.listener(|f, _, _, cx| f.leave(Some("files"), cx))).into_any_element());
+                acts.push(ui::button("rs-move-data").outline().icon(icon("move-disk")).label(t!("Move data to another disk")).on_click(cx.listener(|f, _, window, cx| f.target.open_move_data(window, cx))).into_any_element());
+                acts.push(ui::button("rs-again").primary().label(t!("Start again")).on_click(cx.listener(|f, _, _, cx| f.start_run(false, cx))).into_any_element());
             }
             Some(Result_::RolledBack) => {
                 view = view.result(ui::outcome(
                     theme,
                     Tone::Bad,
-                    format!("{}\nThe previous data is back, and SENTIENT answers on it.", message.clone().unwrap_or_default()),
+                    tf!("{}\nThe previous data is back, and SENTIENT answers on it.", message.clone().unwrap_or_default()),
                 ));
                 let restored = outcome.as_ref().and_then(|o| o.restored_db.clone());
-                acts.push(back_btn("rs-back-page", "Back to Backup and restore", cx));
+                acts.push(back_btn("rs-back-page", t!("Back to Backup and restore"), cx));
                 if let Some(name) = restored {
-                    acts.push(ui::button("rs-remove-restored").outline().label("Remove the restored database").on_click(cx.listener(move |f, _, window, cx| f.remove_restored(name.clone(), window, cx))).into_any_element());
+                    acts.push(ui::button("rs-remove-restored").outline().label(t!("Remove the restored database")).on_click(cx.listener(move |f, _, window, cx| f.remove_restored(name.clone(), window, cx))).into_any_element());
                 }
-                acts.push(ui::button("rs-sentient-log").primary().label("Show SENTIENT's log").on_click(cx.listener(|f, _, _, cx| f.leave(Some("logs"), cx))).into_any_element());
+                acts.push(ui::button("rs-sentient-log").primary().label(t!("Show SENTIENT's log")).on_click(cx.listener(|f, _, _, cx| f.leave(Some("logs"), cx))).into_any_element());
             }
         }
         view.actions(acts).render(cx)
@@ -1818,8 +1827,8 @@ impl Render for RestoreFlow {
         let theme = cx.theme().clone();
         if self.step == Step::Run {
             let body = self.run_view(&theme, cx);
-            let summary: &'static str = if self.target.is_server() { "The backups on this server." } else { "Backups of this computer, and restores into it." };
-            return ui::page(&theme, "Backup and restore", summary).child(body);
+            let summary: &'static str = if self.target.is_server() { t!("The backups on this server.") } else { t!("Backups of this computer, and restores into it.") };
+            return ui::page(&theme, t!("Backup and restore"), summary).child(body);
         }
         let (body, can_next) = match self.step {
             Step::Check => self.check_view(&theme, cx),
@@ -1832,14 +1841,14 @@ impl Render for RestoreFlow {
         };
         let busy = self.check.read(cx).is_running() || self.pre.read(cx).is_running();
         let next: AnyElement = if self.step == Step::Confirm {
-            let label = if self.into_live() { "Add the telemetry" } else { "Replace the data" };
+            let label = if self.into_live() { t!("Add the telemetry") } else { t!("Replace the data") };
             let b = ui::button("rs-next").label(label).disabled(!can_next || busy).on_click(cx.listener(|f, _, _, cx| f.next(cx)));
             if self.into_live() { b.primary() } else { b.danger() }.into_any_element()
         } else {
-            ui::button("rs-next").primary().label("Next").disabled(!can_next || busy).on_click(cx.listener(|f, _, _, cx| f.next(cx))).into_any_element()
+            ui::button("rs-next").primary().label(t!("Next")).disabled(!can_next || busy).on_click(cx.listener(|f, _, _, cx| f.next(cx))).into_any_element()
         };
-        let back = ui::button("rs-back").outline().label("Back").on_click(cx.listener(|f, _, _, cx| f.back(cx))).into_any_element();
-        let cancel = ui::button("rs-cancel").ghost().label("Cancel").on_click(cx.listener(|f, _, _, cx| f.leave(None, cx))).into_any_element();
+        let back = ui::button("rs-back").outline().label(t!("Back")).on_click(cx.listener(|f, _, _, cx| f.back(cx))).into_any_element();
+        let cancel = ui::button("rs-cancel").ghost().label(t!("Cancel")).on_click(cx.listener(|f, _, _, cx| f.leave(None, cx))).into_any_element();
         v_flex()
             .id("page")
             .flex_1()
@@ -1849,7 +1858,7 @@ impl Render for RestoreFlow {
             .p(px(ui::PAGE_PAD))
             .gap(px(ui::GAP))
             .bg(theme.muted)
-            .child(ui::back_title(&theme, "rs-title-back", "Restore", self.sub(), false, cx.listener(|f, _, _, cx| f.back(cx))))
+            .child(ui::back_title(&theme, "rs-title-back", t!("Restore"), self.sub(), false, cx.listener(|f, _, _, cx| f.back(cx))))
             .child(stepper(&theme, self.step.index()))
             .child(body)
             .child(footer(Some(back), cancel, Some(next)))
@@ -1906,7 +1915,7 @@ pub struct RestoreFrom {
 impl RestoreFrom {
     pub fn open(target: Target, folder: PathBuf, free: Option<u64>, on_pick: OnPick, cx: &mut App) {
         let view = cx.new(|cx| RestoreFrom::new(target, folder, free, on_pick, cx));
-        crate::modal::open(crate::modal::Modal { title: "Restore from…".into(), body: view.clone().into(), width: 720., icon: Some(icon("history")), on_close: None }, cx);
+        crate::modal::open(crate::modal::Modal { title: t!("Restore from…").into(), body: view.clone().into(), width: 720., icon: Some(icon("history")), on_close: None }, cx);
         let footer = cx.new(|cx| FromFooter { _o: cx.observe(&view, |_, _, cx| cx.notify()), dialog: view });
         crate::modal::set_footer(footer.into(), cx);
     }
@@ -2021,8 +2030,8 @@ impl RestoreFrom {
     fn choose_local(&mut self, cx: &mut Context<Self>) {
         let rx = crate::chooser::open(
             cx,
-            crate::chooser::Ask { title: "Choose the backup to restore", start: None, directory: false },
-            PathPromptOptions { files: true, directories: false, multiple: false, prompt: Some("Restore this backup".into()) },
+            crate::chooser::Ask { title: t!("Choose the backup to restore"), start: None, directory: false },
+            PathPromptOptions { files: true, directories: false, multiple: false, prompt: Some(t!("Restore this backup").into()) },
         );
         let t = cx.spawn(async move |this, cx| {
             let Ok(Ok(Some(paths))) = rx.await else { return };
@@ -2117,7 +2126,7 @@ impl RestoreFrom {
             let r = cx.background_executor().spawn(async move { remote::dir_make_writable(&inst, &folder) }).await;
             this.update(cx, |d, cx| match r {
                 Ok(_) => d.start_upload(cx),
-                Err(e) => ui::show_error("Not made writable", remote::split_failure(&e).0, cx),
+                Err(e) => ui::show_error(t!("Not made writable"), remote::split_failure(&e).0, cx),
             })
             .ok();
         });
@@ -2150,11 +2159,11 @@ impl RestoreFrom {
                         }
                         d
                     });
-                    crate::modal::open(crate::modal::Modal { title: "Restore from…".into(), body: view.clone().into(), width: 720., icon: Some(icon("history")), on_close: None }, cx);
+                    crate::modal::open(crate::modal::Modal { title: t!("Restore from…").into(), body: view.clone().into(), width: 720., icon: Some(icon("history")), on_close: None }, cx);
                     let footer = cx.new(|cx| FromFooter { _o: cx.observe(&view, |_, _, cx| cx.notify()), dialog: view });
                     crate::modal::set_footer(footer.into(), cx);
                 }),
-                title: Some(format!("{} on {}", if for_upload { "Upload to a folder" } else { "Backups in another folder" }, self.target.name())),
+                title: Some(tf!("{} on {}", if for_upload { t!("Upload to a folder") } else { t!("Backups in another folder") }, self.target.name())),
             },
             window,
             cx,
@@ -2186,12 +2195,12 @@ impl RestoreFrom {
                     Ok(p) => {
                         let src = d.src.as_ref().map(|s| s.name.clone()).unwrap_or_default();
                         let how = match (&d.target, d.way) {
-                            (Target::Here(_), _) => "copied to this computer",
-                            (_, remote::CopyWay::Direct) => "server to server",
-                            _ => "through this computer",
+                            (Target::Here(_), _) => t!("copied to this computer"),
+                            (_, remote::CopyWay::Direct) => t!("server to server"),
+                            _ => t!("through this computer"),
                         };
                         let name = p.file_name().map(|n| n.to_string_lossy().trim_end_matches(".sentient-backup").to_string()).unwrap_or_default();
-                        (d.on_pick)(Source { file: p.clone(), sub: format!("{name} from {src}"), note: Some(format!("copied from {src}, {how}")) }, cx);
+                        (d.on_pick)(Source { file: p.clone(), sub: tf!("{name} from {src}"), note: Some(tf!("copied from {src}, {how}")) }, cx);
                         crate::modal::close(cx);
                         Transfer::Done(p)
                     }
@@ -2217,7 +2226,7 @@ impl RestoreFrom {
             1 => {
                 if let Transfer::Done(p) = &self.upload {
                     let name = p.file_name().map(|n| n.to_string_lossy().trim_end_matches(".sentient-backup").to_string()).unwrap_or_default();
-                    (self.on_pick)(Source { file: p.clone(), sub: format!("{name} from this computer"), note: Some("uploaded from this computer".into()) }, cx);
+                    (self.on_pick)(Source { file: p.clone(), sub: tf!("{name} from this computer"), note: Some(t!("uploaded from this computer").into()) }, cx);
                     crate::modal::close(cx);
                 }
             }
@@ -2227,13 +2236,13 @@ impl RestoreFrom {
 
     fn list_table(&self, theme: &gpui_kit::component::Theme, list: &[crate::backups::Entry], selected: Option<usize>, src: bool, cx: &mut Context<Self>) -> Div {
         let mut t = v_flex().px(px(12.)).py(px(4.)).rounded(px(10.)).border_1().border_color(theme.border).text_sm();
-        t = t.child(h_flex().h(px(30.)).text_size(px(12.5)).text_color(theme.muted_foreground).border_b_1().border_color(theme.border).child(div().flex_1().min_w_0().px(px(4.)).child("File")).child(div().w(px(120.)).flex_shrink_0().child("Made")).child(div().w(px(70.)).flex_shrink_0().child("Size")).child(div().w(px(100.)).flex_shrink_0().child("Integrity")));
+        t = t.child(h_flex().h(px(30.)).text_size(px(12.5)).text_color(theme.muted_foreground).border_b_1().border_color(theme.border).child(div().flex_1().min_w_0().px(px(4.)).child(t!("File"))).child(div().w(px(120.)).flex_shrink_0().child(t!("Made"))).child(div().w(px(70.)).flex_shrink_0().child(t!("Size"))).child(div().w(px(100.)).flex_shrink_0().child(t!("Integrity"))));
         for (i, e) in list.iter().enumerate() {
             let damaged = e.check.as_ref().is_some_and(|c| !c.ok);
             let (tone, text) = match &e.check {
-                Some(c) if c.ok => (Tone::Good, "Verified"),
-                Some(_) => (Tone::Bad, "Damaged"),
-                None => (Tone::Neutral, "Not verified"),
+                Some(c) if c.ok => (Tone::Good, t!("Verified")),
+                Some(_) => (Tone::Bad, t!("Damaged")),
+                None => (Tone::Neutral, t!("Not verified")),
             };
             let sel = selected == Some(i);
             t = t.child(
@@ -2266,7 +2275,7 @@ impl RestoreFrom {
 
     fn skeleton(&self, theme: &gpui_kit::component::Theme) -> Div {
         let mut t = v_flex().px(px(12.)).py(px(4.)).rounded(px(10.)).border_1().border_color(theme.border);
-        t = t.child(h_flex().h(px(30.)).text_size(px(12.5)).text_color(theme.muted_foreground).border_b_1().border_color(theme.border).child(div().flex_1().child("File")).child(div().w(px(120.)).child("Made")).child(div().w(px(70.)).child("Size")).child(div().w(px(100.)).child("Integrity")));
+        t = t.child(h_flex().h(px(30.)).text_size(px(12.5)).text_color(theme.muted_foreground).border_b_1().border_color(theme.border).child(div().flex_1().child(t!("File"))).child(div().w(px(120.)).child(t!("Made"))).child(div().w(px(70.)).child(t!("Size"))).child(div().w(px(100.)).child(t!("Integrity"))));
         for (n, w) in [210., 180., 196.].iter().enumerate() {
             t = t.child(
                 h_flex()
@@ -2292,7 +2301,7 @@ impl RestoreFrom {
                 let left = if rate > 0. { ((*total - (*sent).min(*total)) as f64 / rate) as u64 } else { 0 };
                 Some(
                     box_()
-                        .child(h_flex().gap_2().items_center().child(icon("upload").size(px(16.)).text_color(theme.primary)).child(div().font_weight(FontWeight::MEDIUM).child(what.to_string())).child(div().flex_1()).child(muted(theme, format!("{} of {} · {}/s · about {} left", gb(*sent), gb(*total), gb(rate as u64), mins(left))).font_features(ui::tabular())))
+                        .child(h_flex().gap_2().items_center().child(icon("upload").size(px(16.)).text_color(theme.primary)).child(div().font_weight(FontWeight::MEDIUM).child(what.to_string())).child(div().flex_1()).child(muted(theme, tf!("{} of {} · {}/s · about {} left", gb(*sent), gb(*total), gb(rate as u64), mins(left))).font_features(ui::tabular())))
                         .child(h_flex().gap_3().items_center().child(progress_bar(theme, "rf-transfer", pct, false)).child(div().text_sm().child(format!("{pct:.0}%")))),
                 )
             }
@@ -2301,8 +2310,8 @@ impl RestoreFrom {
                 let name = self.target.name();
                 Some(
                     box_()
-                        .when(*total > 0, |b| b.child(div().font_weight(FontWeight::MEDIUM).child(format!("{what} stopped at {} of {}", gb(*sent), gb(*total)))).child(h_flex().gap_3().items_center().child(progress_bar(theme, "rf-transfer", pct, true)).child(div().text_sm().child(format!("{pct:.0}%")))))
-                        .child(ui::outcome(theme, Tone::Bad, format!("{} {}", if why.to_lowercase().contains("connection") || why.contains("timed out") { format!("The connection to {name} dropped.") } else { why.clone() }, if *sent > 0 { format!("The {} already sent is kept.", gb(*sent)) } else { String::new() }))),
+                        .when(*total > 0, |b| b.child(div().font_weight(FontWeight::MEDIUM).child(tf!("{what} stopped at {} of {}", gb(*sent), gb(*total)))).child(h_flex().gap_3().items_center().child(progress_bar(theme, "rf-transfer", pct, true)).child(div().text_sm().child(format!("{pct:.0}%")))))
+                        .child(ui::outcome(theme, Tone::Bad, format!("{} {}", if why.to_lowercase().contains("connection") || why.contains("timed out") { tf!("The connection to {name} dropped.") } else { why.clone() }, if *sent > 0 { tf!("The {} already sent is kept.", gb(*sent)) } else { String::new() }))),
                 )
             }
             _ => None,
@@ -2316,71 +2325,71 @@ impl Render for RestoreFrom {
         let server = self.target.is_server();
         let mut seg = ui::seg_track(&theme);
         if server {
-            seg = seg.child(ui::seg_item_with(&theme, "rf-tab-0", icon("server"), "This server", self.tab == 0).on_click(cx.listener(|d, _, _, cx| d.set_tab(0, cx))));
-            seg = seg.child(ui::seg_item_with(&theme, "rf-tab-1", icon("laptop"), "This computer", self.tab == 1).on_click(cx.listener(|d, _, _, cx| d.set_tab(1, cx))));
+            seg = seg.child(ui::seg_item_with(&theme, "rf-tab-0", icon("server"), t!("This server"), self.tab == 0).on_click(cx.listener(|d, _, _, cx| d.set_tab(0, cx))));
+            seg = seg.child(ui::seg_item_with(&theme, "rf-tab-1", icon("laptop"), t!("This computer"), self.tab == 1).on_click(cx.listener(|d, _, _, cx| d.set_tab(1, cx))));
         } else {
-            seg = seg.child(ui::seg_item_with(&theme, "rf-tab-0", icon("laptop"), "This computer", self.tab == 0).on_click(cx.listener(|d, _, _, cx| d.set_tab(0, cx))));
+            seg = seg.child(ui::seg_item_with(&theme, "rf-tab-0", icon("laptop"), t!("This computer"), self.tab == 0).on_click(cx.listener(|d, _, _, cx| d.set_tab(0, cx))));
         }
-        seg = seg.child(ui::seg_item_with(&theme, "rf-tab-2", icon("server"), "Another instance", self.tab == 2).on_click(cx.listener(|d, _, _, cx| d.set_tab(2, cx))));
+        seg = seg.child(ui::seg_item_with(&theme, "rf-tab-2", icon("server"), t!("Another instance"), self.tab == 2).on_click(cx.listener(|d, _, _, cx| d.set_tab(2, cx))));
         let mut body = v_flex().gap_3().child(h_flex().child(seg));
         match self.tab {
             0 => {
                 body = body.child(match self.list.clone() {
                     Read::Idle | Read::Loading => self.skeleton(&theme),
                     Read::Failed(e) => ui::outcome(&theme, Tone::Bad, e),
-                    Read::Got(l) if l.is_empty() => muted(&theme, format!("No backups in {}.", self.folder.display())),
+                    Read::Got(l) if l.is_empty() => muted(&theme, tf!("No backups in {}.", self.folder.display())),
                     Read::Got(l) => self.list_table(&theme, &l, self.selected, false, cx),
                 });
-                let mut row = h_flex().flex_wrap().gap(crate::ui::button_gap()).child(crate::ui::probed(ui::button("rf-folder").ghost().icon(IconName::Folder).label(if server { "Pick another folder on the server" } else { "Pick another folder" }).on_click(cx.listener(|d, _, window, cx| d.change_folder(false, window, cx)))));
+                let mut row = h_flex().flex_wrap().gap(crate::ui::button_gap()).child(crate::ui::probed(ui::button("rf-folder").ghost().icon(IconName::Folder).label(if server { t!("Pick another folder on the server") } else { t!("Pick another folder") }).on_click(cx.listener(|d, _, window, cx| d.change_folder(false, window, cx)))));
                 if !server {
-                    row = row.child(crate::ui::probed(ui::button("rf-file").ghost().icon(IconName::File).label("Pick a file elsewhere").on_click(cx.listener(|d, _, _, cx| d.choose_local(cx)))));
+                    row = row.child(crate::ui::probed(ui::button("rf-file").ghost().icon(IconName::File).label(t!("Pick a file elsewhere")).on_click(cx.listener(|d, _, _, cx| d.choose_local(cx)))));
                 }
                 body = body.child(row);
             }
             1 => {
-                let (file, size) = self.local.clone().map(|(p, b)| (p.display().to_string(), gb(b))).unwrap_or_else(|| ("No file chosen".into(), String::new()));
+                let (file, size) = self.local.clone().map(|(p, b)| (p.display().to_string(), gb(b))).unwrap_or_else(|| (t!("No file chosen").into(), String::new()));
                 body = body
                     .child(crate::manager::backup::card_row(
                         &theme,
                         false,
-                        "File",
+                        t!("File"),
                         None,
                         h_flex().min_w_0().gap_2().items_baseline().child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().font_family(theme.mono_font_family.clone()).text_size(px(13.5)).child(file)).child(muted(&theme, size)),
-                        Some(ui::button("rf-choose").outline().icon(IconName::Folder).label("Choose").disabled(matches!(self.upload, Transfer::Running { .. })).on_click(cx.listener(|d, _, _, cx| d.choose_local(cx))).into_any_element()),
+                        Some(ui::button("rf-choose").outline().icon(IconName::Folder).label(t!("Choose")).disabled(matches!(self.upload, Transfer::Running { .. })).on_click(cx.listener(|d, _, _, cx| d.choose_local(cx))).into_any_element()),
                         false,
                     ))
                     .child(crate::manager::backup::card_row(
                         &theme,
                         false,
-                        "Upload to",
-                        Some("The server keeps the file in its backup folder, so it shows in Backups afterwards and can be restored again."),
-                        h_flex().min_w_0().gap_2().items_baseline().child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().font_family(theme.mono_font_family.clone()).text_size(px(13.5)).child(self.upload_to.clone())).children(self.upload_free.map(|f| muted(&theme, format!("{} free", gb(f))))),
-                        (self.writable == Some(false)).then(|| ui::button("rf-upload-to").outline().icon(IconName::Folder).label("Change").on_click(cx.listener(|d, _, window, cx| d.change_folder(true, window, cx))).into_any_element()),
+                        t!("Upload to"),
+                        Some(t!("The server keeps the file in its backup folder, so it shows in Backups afterwards and can be restored again.")),
+                        h_flex().min_w_0().gap_2().items_baseline().child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().font_family(theme.mono_font_family.clone()).text_size(px(13.5)).child(self.upload_to.clone())).children(self.upload_free.map(|f| muted(&theme, tf!("{} free", gb(f))))),
+                        (self.writable == Some(false)).then(|| ui::button("rf-upload-to").outline().icon(IconName::Folder).label(t!("Change")).on_click(cx.listener(|d, _, window, cx| d.change_folder(true, window, cx))).into_any_element()),
                         true,
                     ));
                 if self.writable == Some(false) {
                     body = body.child(blk(
                         &theme,
                         false,
-                        format!("SENTIENT cannot write in {}", self.upload_to),
-                        "The folder belongs to another account than the one the Platform Manager signs in with.",
-                        &["Make it writable (asks for the administrator password once), or".into(), "upload to another folder.".into()],
+                        tf!("SENTIENT cannot write in {}", self.upload_to),
+                        t!("The folder belongs to another account than the one the Platform Manager signs in with."),
+                        &[t!("Make it writable (asks for the administrator password once), or").into(), t!("upload to another folder.").into()],
                         vec![
-                            ui::button("rf-make-writable").primary().icon(icon("lock")).label("Make it writable").on_click(cx.listener(|d, _, _, cx| d.make_writable(cx))).into_any_element(),
-                            ui::button("rf-other-folder").outline().icon(IconName::Folder).label("Pick another folder").on_click(cx.listener(|d, _, window, cx| d.change_folder(true, window, cx))).into_any_element(),
+                            ui::button("rf-make-writable").primary().icon(icon("lock")).label(t!("Make it writable")).on_click(cx.listener(|d, _, _, cx| d.make_writable(cx))).into_any_element(),
+                            ui::button("rf-other-folder").outline().icon(IconName::Folder).label(t!("Pick another folder")).on_click(cx.listener(|d, _, window, cx| d.change_folder(true, window, cx))).into_any_element(),
                         ],
                     ));
                 }
-                body = body.children(self.transfer_card(&theme, &self.upload.clone(), "Uploading")).when(matches!(self.upload, Transfer::Running { .. }), |b| {
-                    b.child(muted(&theme, "Over the same SSH connection. A broken upload goes on from where it stopped."))
+                body = body.children(self.transfer_card(&theme, &self.upload.clone(), t!("Uploading"))).when(matches!(self.upload, Transfer::Running { .. }), |b| {
+                    b.child(muted(&theme, t!("Over the same SSH connection. A broken upload goes on from where it stopped.")))
                 });
                 if let Transfer::Done(p) = &self.upload {
-                    body = body.child(ui::outcome(&theme, Tone::Good, format!("Uploaded to {}. Its size matches; the check reads every part next.", p.display())));
+                    body = body.child(ui::outcome(&theme, Tone::Good, tf!("Uploaded to {}. Its size matches; the check reads every part next.", p.display())));
                 }
             }
             _ => {
                 let others: Vec<Instance> = self.instances.clone();
-                let label = self.src.as_ref().map(|s| format!("{} · {}", s.name, s.host)).unwrap_or_else(|| "No other instance".into());
+                let label = self.src.as_ref().map(|s| format!("{} · {}", s.name, s.host)).unwrap_or_else(|| t!("No other instance").into());
                 let this = cx.entity().downgrade();
                 let picker = ui::button("rf-src").outline().label(label).icon(IconName::ChevronDown).disabled(others.is_empty() || matches!(self.copy, Transfer::Running { .. })).dropdown_menu(move |menu, _, _| {
                     let mut m = menu;
@@ -2392,26 +2401,26 @@ impl Render for RestoreFrom {
                     }
                     m
                 });
-                body = body.child(crate::manager::backup::card_row(&theme, false, "Instance", None, h_flex().gap_2().items_center().child(picker).child(muted(&theme, "from Instances")), None, false));
+                body = body.child(crate::manager::backup::card_row(&theme, false, t!("Instance"), None, h_flex().gap_2().items_center().child(picker).child(muted(&theme, "from Instances")), None, false));
                 let src_name = self.src.as_ref().map(|s| s.name.clone()).unwrap_or_default();
                 match self.src_list.clone() {
                     Read::Idle => {}
-                    Read::Loading => body = body.child(self.skeleton(&theme)).child(muted(&theme, format!("Reading the backups on {src_name}…"))),
+                    Read::Loading => body = body.child(self.skeleton(&theme)).child(muted(&theme, tf!("Reading the backups on {src_name}…"))),
                     Read::Failed(e) => {
                         let host = self.src.as_ref().map(|s| format!("{}:{}", s.host, s.port)).unwrap_or_default();
                         body = body.child(blk(
                             &theme,
                             false,
-                            format!("{src_name} is not answering"),
-                            if e.contains("did not answer") || e.contains("timed out") { format!("No answer over SSH from {host} within 15 s.") } else { e },
-                            &[format!("Check that {src_name} is on and on the network."), format!("Try again, or take its backup from a USB disk with “This computer”.")],
+                            tf!("{src_name} is not answering"),
+                            if e.contains("did not answer") || e.contains("timed out") { tf!("No answer over SSH from {host} within 15 s.") } else { e },
+                            &[tf!("Check that {src_name} is on and on the network."), format!("{}", t!("Try again, or take its backup from a USB disk with “This computer”."))],
                             vec![
-                                ui::button("rf-src-again").primary().label("Try again").on_click(cx.listener(|d, _, _, cx| {
+                                ui::button("rf-src-again").primary().label(t!("Try again")).on_click(cx.listener(|d, _, _, cx| {
                                     if let Some(s) = d.src.clone() {
                                         d.pick_src(s, cx);
                                     }
                                 })).into_any_element(),
-                                ui::button("rf-instances").outline().icon(icon("server")).label("Open Instances").on_click(|_, _, cx| {
+                                ui::button("rf-instances").outline().icon(icon("server")).label(t!("Open Instances")).on_click(|_, _, cx| {
                                     crate::modal::close(cx);
                                     go("instances", cx);
                                 }).into_any_element(),
@@ -2419,34 +2428,34 @@ impl Render for RestoreFrom {
                         ));
                     }
                     Read::Got(l) => {
-                        body = body.child(if l.is_empty() { muted(&theme, format!("No backups on {src_name}.")) } else { self.list_table(&theme, &l, self.src_sel, true, cx) });
+                        body = body.child(if l.is_empty() { muted(&theme, tf!("No backups on {src_name}.")) } else { self.list_table(&theme, &l, self.src_sel, true, cx) });
                         if let Target::Server(dst) = &self.target {
-                            let help = format!("Server to server: {src_name} sends the file straight to {}; it needs {src_name} to reach {} on SSH port {}. Through this computer: down to here, then up; slower, works whenever this computer reaches both.", dst.name, dst.name, dst.port);
+                            let help = tf!("Server to server: {src_name} sends the file straight to {}; it needs {src_name} to reach {} on SSH port {}. Through this computer: down to here, then up; slower, works whenever this computer reaches both.", dst.name, dst.name, dst.port);
                             let mut seg = ui::seg_track(&theme);
-                            seg = seg.child(ui::seg_item(&theme, "rf-way-0", "Server to server", self.way == remote::CopyWay::Direct).when(self.reaches != Some(false), |s| s.on_click(cx.listener(|d, _, _, cx| {
+                            seg = seg.child(ui::seg_item(&theme, "rf-way-0", t!("Server to server"), self.way == remote::CopyWay::Direct).when(self.reaches != Some(false), |s| s.on_click(cx.listener(|d, _, _, cx| {
                                 d.way = remote::CopyWay::Direct;
                                 cx.notify();
                             }))).when(self.reaches == Some(false), |s| s.opacity(0.5)));
-                            seg = seg.child(ui::seg_item(&theme, "rf-way-1", "Through this computer", self.way == remote::CopyWay::ThroughHere).on_click(cx.listener(|d, _, _, cx| {
+                            seg = seg.child(ui::seg_item(&theme, "rf-way-1", t!("Through this computer"), self.way == remote::CopyWay::ThroughHere).on_click(cx.listener(|d, _, _, cx| {
                                 d.way = remote::CopyWay::ThroughHere;
                                 cx.notify();
                             })));
                             let reach = match self.reaches {
-                                None => "Checking whether it reaches…".to_string(),
-                                Some(true) => format!("{src_name} reaches {} ✓", dst.name),
-                                Some(false) => format!("{src_name} does not reach {}", dst.name),
+                                None => t!("Checking whether it reaches…").to_string(),
+                                Some(true) => tf!("{src_name} reaches {} ✓", dst.name),
+                                Some(false) => tf!("{src_name} does not reach {}", dst.name),
                             };
                             body = body.child(
                                 h_flex()
                                     .flex_wrap()
                                     .gap_3()
                                     .items_center()
-                                    .child(h_flex().w(px(150.)).gap_1().items_center().text_sm().text_color(theme.muted_foreground).child("Copy").child(ui::info("rf-way-i".into(), help.into())))
+                                    .child(h_flex().w(px(150.)).gap_1().items_center().text_sm().text_color(theme.muted_foreground).child(t!("Copy")).child(ui::info("rf-way-i".into(), help.into())))
                                     .child(seg)
                                     .child(muted(&theme, reach)),
                             );
                         }
-                        body = body.children(self.transfer_card(&theme, &self.copy.clone(), "Copying"));
+                        body = body.children(self.transfer_card(&theme, &self.copy.clone(), t!("Copying")));
                     }
                 }
             }
@@ -2465,15 +2474,15 @@ impl Render for FromFooter {
         let d = self.dialog.read(cx);
         let dialog = self.dialog.clone();
         let (label, enabled, cancel) = match d.tab {
-            0 => ("Check this backup", d.selected.is_some(), "Cancel"),
+            0 => (t!("Check this backup"), d.selected.is_some(), t!("Cancel")),
             1 => match &d.upload {
-                Transfer::Running { .. } => ("Check this backup", false, "Cancel upload"),
-                Transfer::Broken { .. } => ("Resume upload", true, "Cancel"),
-                Transfer::Done(_) => ("Check this backup", true, "Cancel"),
-                Transfer::Idle if d.writable == Some(false) => ("Upload", false, "Cancel"),
-                Transfer::Idle => ("Check this backup", false, "Cancel"),
+                Transfer::Running { .. } => (t!("Check this backup"), false, t!("Cancel upload")),
+                Transfer::Broken { .. } => (t!("Resume upload"), true, t!("Cancel")),
+                Transfer::Done(_) => (t!("Check this backup"), true, t!("Cancel")),
+                Transfer::Idle if d.writable == Some(false) => (t!("Upload"), false, t!("Cancel")),
+                Transfer::Idle => (t!("Check this backup"), false, t!("Cancel")),
             },
-            _ => ("Copy and check", d.src_sel.is_some() && matches!(d.src_list, Read::Got(_)) && !matches!(d.copy, Transfer::Running { .. }), "Cancel"),
+            _ => (t!("Copy and check"), d.src_sel.is_some() && matches!(d.src_list, Read::Got(_)) && !matches!(d.copy, Transfer::Running { .. }), t!("Cancel")),
         };
         let resume = d.tab == 1 && matches!(d.upload, Transfer::Broken { .. });
         h_flex()
@@ -2492,7 +2501,7 @@ impl Render for FromFooter {
 
 /// "14 Nov, 17:40" in this computer's time.
 fn when(at: &str) -> String {
-    chrono::DateTime::parse_from_rfc3339(at).map(|d| d.with_timezone(&chrono::Local).format("%-d %b, %H:%M").to_string()).unwrap_or_else(|_| at.to_string())
+    chrono::DateTime::parse_from_rfc3339(at).map(|d| crate::i18n::date(&d.with_timezone(&chrono::Local), "%-d %b, %H:%M")).unwrap_or_else(|_| at.to_string())
 }
 
 fn result_pill(theme: &gpui_kit::component::Theme, r: Result_) -> Div {
@@ -2501,21 +2510,21 @@ fn result_pill(theme: &gpui_kit::component::Theme, r: Result_) -> Div {
         Result_::RolledBack => Tone::Warn,
         _ => Tone::Bad,
     };
-    ui::pill(theme, tone, r.label()).px(px(7.)).py(px(1.)).text_size(px(12.))
+    ui::pill(theme, tone, crate::i18n::t(r.label())).px(px(7.)).py(px(1.)).text_size(px(12.))
 }
 
 /// The Restores card. `entries`: None while it is read.
 pub fn history_card(theme: &gpui_kit::component::Theme, target: &Target, entries: Option<&Result<Vec<Entry>, String>>, narrow: bool) -> Div {
-    let here = if target.is_server() { "Restores on this server, who ran them from which computer, and their logs. Kept for a year." } else { "Restores on this computer, who ran them, and their logs. Kept for a year." };
-    let mut c = ui::panel(theme).gap_0().child(h_flex().pb_1().gap_2().items_center().min_h(px(28.)).child(div().flex_1().font_weight(FontWeight::MEDIUM).child("Restores")).child(ui::info("rs-history-i".into(), here.into())));
+    let here = if target.is_server() { t!("Restores on this server, who ran them from which computer, and their logs. Kept for a year.") } else { t!("Restores on this computer, who ran them, and their logs. Kept for a year.") };
+    let mut c = ui::panel(theme).gap_0().child(h_flex().pb_1().gap_2().items_center().min_h(px(28.)).child(div().flex_1().font_weight(FontWeight::MEDIUM).child(t!("Restores"))).child(ui::info("rs-history-i".into(), here.into())));
     match entries {
         None => {
             for n in 0..2 {
                 c = c.child(h_flex().min_h(px(43.)).items_center().child(ui::skeleton_line(theme, SharedString::from(format!("rh-sk{n}")), 320.)));
             }
         }
-        Some(Err(e)) => c = c.child(div().py_2().text_sm().text_color(theme.muted_foreground).child(e.clone())),
-        Some(Ok(l)) if l.is_empty() => c = c.child(div().py_2().text_sm().text_color(theme.muted_foreground).child(if target.is_server() { "No restores on this server yet." } else { "No restores on this computer yet." })),
+        Some(Err(e)) => c = c.child(div().py_2().text_sm().text_color(theme.muted_foreground).child(crate::ui::shown(e.clone()))),
+        Some(Ok(l)) if l.is_empty() => c = c.child(div().py_2().text_sm().text_color(theme.muted_foreground).child(if target.is_server() { t!("No restores on this server yet.") } else { t!("No restores on this computer yet.") })),
         Some(Ok(l)) => {
             c = c.child(
                 h_flex()
@@ -2526,11 +2535,11 @@ pub fn history_card(theme: &gpui_kit::component::Theme, target: &Target, entries
                     .text_color(theme.muted_foreground)
                     .border_b_1()
                     .border_color(theme.border)
-                    .child(div().w(px(if narrow { 96. } else { 132. })).flex_shrink_0().child("When"))
-                    .child(div().flex_1().min_w_0().child("From backup"))
-                    .when(!narrow, |r| r.child(div().w(px(160.)).flex_shrink_0().child("By")))
-                    .child(div().w(px(110.)).flex_shrink_0().child("Result"))
-                    .child(div().w(px(56.)).flex_shrink_0().text_right().child("Log")),
+                    .child(div().w(px(if narrow { 96. } else { 132. })).flex_shrink_0().child(t!("When")))
+                    .child(div().flex_1().min_w_0().child(t!("From backup")))
+                    .when(!narrow, |r| r.child(div().w(px(160.)).flex_shrink_0().child(t!("By"))))
+                    .child(div().w(px(110.)).flex_shrink_0().child(t!("Result")))
+                    .child(div().w(px(56.)).flex_shrink_0().text_right().child(t!("Log"))),
             );
             for (i, e) in l.iter().enumerate() {
                 let (t, e2) = (target.clone(), e.clone());
@@ -2553,7 +2562,7 @@ pub fn history_card(theme: &gpui_kit::component::Theme, target: &Target, entries
                         )
                         .when(!narrow, |r| r.child(div().w(px(160.)).flex_shrink_0().text_size(px(13.)).overflow_hidden().whitespace_nowrap().text_ellipsis().child(e.by.clone())))
                         .child(h_flex().w(px(110.)).flex_shrink_0().child(result_pill(theme, e.result)))
-                        .child(h_flex().w(px(56.)).flex_shrink_0().justify_end().child(ui::button(SharedString::from(format!("rh-log-{i}"))).ghost().label("Log").on_click(move |_, _, cx| HistoryDialog::open(t.clone(), e2.clone(), cx)))),
+                        .child(h_flex().w(px(56.)).flex_shrink_0().justify_end().child(ui::button(SharedString::from(format!("rh-log-{i}"))).ghost().label(t!("Log")).on_click(move |_, _, cx| HistoryDialog::open(t.clone(), e2.clone(), cx)))),
                 );
             }
         }
@@ -2570,7 +2579,7 @@ pub struct HistoryDialog {
 
 impl HistoryDialog {
     pub fn open(target: Target, entry: Entry, cx: &mut App) {
-        let title = format!("Restore on {}", when(&entry.at));
+        let title = tf!("Restore on {}", when(&entry.at));
         let id = entry.id.clone();
         let view = cx.new(|cx| {
             let t = cx.spawn(async move |this, cx| {
@@ -2596,19 +2605,19 @@ impl Render for HistoryDialog {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
         let e = &self.entry;
-        let took = |s: u64| if s >= 60 { format!("{} min {:02} s", s / 60, s % 60) } else { format!("{s} s") };
+        let took = |s: u64| if s >= 60 { tf!("{} min {:02} s", s / 60, s % 60) } else { format!("{s} s") };
         let mut rows: Vec<(AnyElement, AnyElement)> = vec![
-            (txt("Result"), v_flex().gap_1().child(h_flex().child(result_pill(&theme, e.result))).child(div().text_sm().child(e.message.lines().next().unwrap_or("").to_string())).into_any_element()),
-            (txt("From"), h_flex().flex_wrap().gap_2().items_baseline().child(div().font_family(theme.mono_font_family.clone()).text_size(px(13.)).child(e.backup.clone())).children(e.source.clone().map(|s| muted(&theme, s))).into_any_element()),
-            (txt("What"), txt(format!("{}{}", e.scope, e.converted.as_ref().map(|c| format!("; {c}")).unwrap_or_default()))),
-            (txt("By"), txt(format!("{}{}", e.by, if e.manager.is_empty() { String::new() } else { format!(", Platform Manager {}", e.manager) }))),
-            (txt("Took"), txt(format!("{}{}", took(e.took_secs), e.down_secs.map(|d| format!(" · SENTIENT down {}", took(d))).unwrap_or_default()))),
+            (txt(t!("Result")), v_flex().gap_1().child(h_flex().child(result_pill(&theme, e.result))).child(div().text_sm().child(e.message.lines().next().unwrap_or("").to_string())).into_any_element()),
+            (txt(t!("From")), h_flex().flex_wrap().gap_2().items_baseline().child(div().font_family(theme.mono_font_family.clone()).text_size(px(13.)).child(e.backup.clone())).children(e.source.clone().map(|s| muted(&theme, s))).into_any_element()),
+            (txt(t!("What")), txt(format!("{}{}", e.scope, e.converted.as_ref().map(|c| format!("; {c}")).unwrap_or_default()))),
+            (txt(t!("By")), txt(format!("{}{}", e.by, if e.manager.is_empty() { String::new() } else { tf!(", Platform Manager {}", e.manager) }))),
+            (txt(t!("Took")), txt(format!("{}{}", took(e.took_secs), e.down_secs.map(|d| tf!(" · SENTIENT down {}", took(d))).unwrap_or_default()))),
         ];
         if let Some(s) = &e.safety {
-            rows.push((txt("Safety backup"), div().font_family(theme.mono_font_family.clone()).text_size(px(13.)).child(s.clone()).into_any_element()));
+            rows.push((txt(t!("Safety backup")), div().font_family(theme.mono_font_family.clone()).text_size(px(13.)).child(s.clone()).into_any_element()));
         }
         if let Some(a) = &e.aside {
-            rows.push((txt("Data from before"), div().font_family(theme.mono_font_family.clone()).text_size(px(13.)).child(a.clone()).into_any_element()));
+            rows.push((txt(t!("Data from before")), div().font_family(theme.mono_font_family.clone()).text_size(px(13.)).child(a.clone()).into_any_element()));
         }
         v_flex().gap_3().child(kv(&theme, rows)).child(
             div()
@@ -2622,8 +2631,8 @@ impl Render for HistoryDialog {
                 .text_size(px(12.5))
                 .children(match &self.log {
                     Read::Got(t) => t.lines().map(|l| div().child(l.to_string())).collect::<Vec<_>>(),
-                    Read::Failed(e) => vec![div().text_color(theme.muted_foreground).child(e.clone())],
-                    _ => vec![div().text_color(theme.muted_foreground).child("Reading the log…")],
+                    Read::Failed(e) => vec![div().text_color(theme.muted_foreground).child(crate::ui::shown(e.clone()))],
+                    _ => vec![div().text_color(theme.muted_foreground).child(t!("Reading the log…"))],
                 }),
         )
     }
@@ -2644,7 +2653,7 @@ impl Render for HistoryFooter {
         let name = format!("restore-{}.log", d.entry.id);
         h_flex()
             .gap(crate::ui::button_gap())
-            .child(crate::ui::probed(ui::button("rh-save").outline().label("Save log").disabled(log.is_none()).on_click(move |_, _, cx| {
+            .child(crate::ui::probed(ui::button("rh-save").outline().label(t!("Save log")).disabled(log.is_none()).on_click(move |_, _, cx| {
                 let Some(text) = log.clone() else { return };
                 let rx = cx.prompt_for_new_path(&dirs_home(), Some(&name));
                 cx.spawn(async move |_| {
@@ -2655,7 +2664,7 @@ impl Render for HistoryFooter {
                 .detach();
             })))
             .child(div().flex_1())
-            .child(crate::ui::probed(ui::button("rh-close").primary().label("Close").on_click(|_, _, cx| crate::modal::close(cx))))
+            .child(crate::ui::probed(ui::button("rh-close").primary().label(t!("Close")).on_click(|_, _, cx| crate::modal::close(cx))))
     }
 }
 
@@ -2691,7 +2700,7 @@ pub(crate) mod canned {
         if frame == "R13w" {
             return Source { file: "C:\\ProgramData\\SENTIENT\\backups\\sentient-2026-11-14_1712.sentient-backup".into(), sub: "sentient-2026-11-14_1712 from Fabrikam IIoT".into(), note: None };
         }
-        Source { file: "/var/backups/sentient/sentient-2026-11-14_1712.sentient-backup".into(), sub: "sentient-2026-11-14_1712 from Plant B".into(), note: Some("copied from Plant B, server to server".into()) }
+        Source { file: "/var/backups/sentient/sentient-2026-11-14_1712.sentient-backup".into(), sub: "sentient-2026-11-14_1712 from Plant B".into(), note: Some(t!("copied from Plant B, server to server").into()) }
     }
 
     fn months(config: bool) -> Vec<(String, u64)> {
@@ -2722,8 +2731,8 @@ pub(crate) mod canned {
         };
         let manifest: sentient_backup_core::manifest::Manifest = serde_json::from_value(serde_json::json!({
             "format_version": if frame == "B6" { 3 } else { 2 }, "tool_version": "0.8.0", "created_at": "2026-11-14T11:42:03Z",
-            "source": {"database": "sentient", "postgres_version": "18", "timescaledb_version": "2.17.2", "sentient_version": sv, "schema_version": schema, "database_type": "PostgreSQL + TimescaleDB", "host": "PLANT-B"},
-            "components": [{"id": "configuration", "name": "Configuration", "selected": true, "tables": [], "bytes": g(1.2), "rows": 0}, {"id": "telemetry_historical", "name": "Telemetry", "selected": !config, "tables": [], "bytes": if config { 0 } else { g(8.0) }, "rows": 0}],
+            "source": {"database": "sentient", "postgres_version": "18", "timescaledb_version": "2.17.2", "sentient_version": sv, "schema_version": schema, "database_type": t!("PostgreSQL + TimescaleDB"), "host": "PLANT-B"},
+            "components": [{"id": "configuration", "name": t!("Configuration"), "selected": true, "tables": [], "bytes": g(1.2), "rows": 0}, {"id": "telemetry_historical", "name": t!("Telemetry"), "selected": !config, "tables": [], "bytes": if config { 0 } else { g(8.0) }, "rows": 0}],
             "telemetry": if config { serde_json::json!({"mode": "none"}) } else { serde_json::json!({"mode": "all"}) },
             "files": files.iter().map(|(p, b)| serde_json::json!({"path": p, "bytes": b, "sha256": ""})).collect::<Vec<_>>(),
             "file_stores": [{"id": "reports", "category_id": "reports", "source_path": "/var/lib/sentient/reports", "member": "files/reports.tar.zst"}],
@@ -2748,16 +2757,16 @@ pub(crate) mod canned {
             here: rf::Here {
                 sentient_version: "4.4.0.2".into(),
                 schema_version: Some(31),
-                database_type: "PostgreSQL + ClickHouse".into(),
+                database_type: t!("PostgreSQL + ClickHouse").into(),
                 host: Some(if windows { "PLANT-B" } else { "FAB-01" }.into()),
                 windows,
                 native: windows,
                 http_port: 8080,
                 backup_folder: if windows { "C:\\ProgramData\\SENTIENT\\backups".into() } else { "/var/backups/sentient".into() },
             },
-            database_type: "PostgreSQL + TimescaleDB".into(),
-            made: "14 Nov 2026, 5:12 PM".into(),
-            holds: if config { vec!["platform data".into(), "report files and version control".into()] } else { vec!["platform data".into(), "telemetry history (all)".into(), "report files and version control".into()] },
+            database_type: t!("PostgreSQL + TimescaleDB").into(),
+            made: t!("14 Nov 2026, 5:12 PM").into(),
+            holds: if config { vec!["platform data".into(), t!("report files and version control").into()] } else { vec!["platform data".into(), t!("telemetry history (all)").into(), t!("report files and version control").into()] },
             restored_bytes: g(9.2),
             other_copy: (frame == "B5").then(|| PathBuf::from("/mnt/nas/sentient/sentient-2026-11-14_1712.sentient-backup")),
         }
@@ -2775,53 +2784,53 @@ pub(crate) mod canned {
         let windows = frame == "R13w";
         let disks = if windows {
             vec![
-                disk("C:", "System", &[("Unpacking", 3.1), ("Safety backup", 2.9)], 6.0, 41.0),
-                disk("D:", "PostgreSQL", &[("Restored database beside the live one", 4.2)], 4.2, 812.0),
-                disk("C:", "ClickHouse (WSL)", &[("Restored history inside the WSL disk", 5.0)], 5.0, 41.0),
+                disk("C:", t!("System"), &[(t!("Unpacking"), 3.1), (t!("Safety backup"), 2.9)], 6.0, 41.0),
+                disk("D:", "PostgreSQL", &[(t!("Restored database beside the live one"), 4.2)], 4.2, 812.0),
+                disk("C:", t!("ClickHouse (WSL)"), &[(t!("Restored history inside the WSL disk"), 5.0)], 5.0, 41.0),
             ]
         } else if frame == "B2" || frame == "B2s" {
             vec![
-                disk("/", "/dev/sda1", &[("Upload", 2.8), ("Unpacking", 3.1), ("Safety backup", 2.9)], 8.8, 3.9),
-                disk("/mnt/disk-a", "PostgreSQL", &[("Restored database, beside the live one", 4.2)], 4.2, 1400.0),
-                disk("/mnt/disk-b", "ClickHouse", &[("Restored history, beside the live one", 5.0)], 5.0, 3100.0),
+                disk("/", "/dev/sda1", &[(t!("Upload"), 2.8), (t!("Unpacking"), 3.1), (t!("Safety backup"), 2.9)], 8.8, 3.9),
+                disk("/mnt/disk-a", "PostgreSQL", &[(t!("Restored database, beside the live one"), 4.2)], 4.2, 1400.0),
+                disk("/mnt/disk-b", "ClickHouse", &[(t!("Restored history, beside the live one"), 5.0)], 5.0, 3100.0),
             ]
         } else {
             vec![
-                disk("/", "/dev/sda1", &[("Unpacking", 3.1), ("Safety backup", 2.9)], 6.0, 64.1),
-                disk("/mnt/disk-a", "PostgreSQL", &[("Restored database beside the live one", 4.2)], 4.2, 1400.0),
-                disk("/mnt/disk-b", "ClickHouse", &[("Restored history beside the live one", 5.0)], 5.0, 3100.0),
+                disk("/", "/dev/sda1", &[(t!("Unpacking"), 3.1), (t!("Safety backup"), 2.9)], 6.0, 64.1),
+                disk("/mnt/disk-a", "PostgreSQL", &[(t!("Restored database beside the live one"), 4.2)], 4.2, 1400.0),
+                disk("/mnt/disk-b", "ClickHouse", &[(t!("Restored history beside the live one"), 5.0)], 5.0, 3100.0),
             ]
         };
         let old = frame == "R14o";
         let mut settings = vec![
-            row("sentient_version", "SENTIENT version", "4.3.0.58", "4.4.0.2", SettingKind::Fixed, "This server's; the data is upgraded"),
-            row("database_type", "Database type", "PostgreSQL + TimescaleDB", "PostgreSQL + ClickHouse", SettingKind::DatabaseType, "Converted to this server's type. To use the backup's, change the type in Migration first"),
+            row("sentient_version", t!("SENTIENT version"), "4.3.0.58", "4.4.0.2", SettingKind::Fixed, t!("This server's; the data is upgraded")),
+            row("database_type", t!("Database type"), t!("PostgreSQL + TimescaleDB"), t!("PostgreSQL + ClickHouse"), SettingKind::DatabaseType, t!("Converted to this server's type. To use the backup's, change the type in Migration first")),
         ];
         if !old {
             settings.extend([
-                row("port:mqtt", "MQTT port", "1883", "21883", SettingKind::Choice { backup_default: false }, "Tied to this machine and its firewall"),
-                row("public_url", "Public URL", "https://plantb.local", "https://iiot.fabrikam.example", SettingKind::Choice { backup_default: false }, "Devices and links reach this server by its own name"),
-                row("tls", "TLS certificate", "plantb.local, until 3 Mar 2027", "iiot.fabrikam.example, until 9 Jan 2027", SettingKind::Choice { backup_default: false }, "A certificate belongs to the host name"),
-                row("REPORT_TZ", "Time zone (reports)", "Asia/Kolkata", "UTC", SettingKind::Choice { backup_default: true }, "A setting of the plant, not the machine"),
-                row("AUDIT_LOG_TTL_DAYS", "Telemetry retention", "365 days", "90 days", SettingKind::Choice { backup_default: true }, "Kept data would be cut to 90 days otherwise"),
-                row("licence", "Licence", "Active, bound to PLANT-B", "Active, bound to this server", SettingKind::Locked, "Bound to the hardware: not carried over"),
-                row("gateways", "Gateway connections", "3 gateways → plantb.local:1883", "—", SettingKind::Gateway, "Gateways keep their own address; point them here after"),
+                row("port:mqtt", t!("MQTT port"), "1883", "21883", SettingKind::Choice { backup_default: false }, t!("Tied to this machine and its firewall")),
+                row("public_url", t!("Public URL"), "https://plantb.local", "https://iiot.fabrikam.example", SettingKind::Choice { backup_default: false }, t!("Devices and links reach this server by its own name")),
+                row("tls", t!("TLS certificate"), t!("plantb.local, until 3 Mar 2027"), t!("iiot.fabrikam.example, until 9 Jan 2027"), SettingKind::Choice { backup_default: false }, t!("A certificate belongs to the host name")),
+                row("REPORT_TZ", t!("Time zone (reports)"), "Asia/Kolkata", "UTC", SettingKind::Choice { backup_default: true }, t!("A setting of the plant, not the machine")),
+                row("AUDIT_LOG_TTL_DAYS", t!("Telemetry retention"), t!("365 days"), t!("90 days"), SettingKind::Choice { backup_default: true }, t!("Kept data would be cut to 90 days otherwise")),
+                row("licence", t!("Licence"), t!("Active, bound to PLANT-B"), t!("Active, bound to this server"), SettingKind::Locked, t!("Bound to the hardware: not carried over")),
+                row("gateways", t!("Gateway connections"), t!("3 gateways → plantb.local:1883"), "—", SettingKind::Gateway, t!("Gateways keep their own address; point them here after")),
             ]);
         }
-        settings.push(row("files:reports", "Report files", "/var/lib/sentient/reports", "/mnt/disk-a/sentient/reports", SettingKind::Choice { backup_default: false }, "Paths of this machine"));
+        settings.push(row("files:reports", t!("Report files"), "/var/lib/sentient/reports", "/mnt/disk-a/sentient/reports", SettingKind::Choice { backup_default: false }, t!("Paths of this machine")));
         Precheck {
             disks,
             min_free: 2 << 30,
             estimate: sentient_backup_core::restore_scope::Estimate { total_secs: if windows { 21 * 60 } else { 18 * 60 }, downtime_secs: if windows { 120 } else { 60 } },
             restored_bytes: g(if windows { 9.3 } else { 9.2 }),
-            upgrade: Some("Schema upgrade 30 → 31 (SENTIENT 4.3.0.58 → 4.4.0.2)".into()),
+            upgrade: Some(t!("Schema upgrade 30 → 31 (SENTIENT 4.3.0.58 → 4.4.0.2)").into()),
             settings,
             same: 14,
             recorded: !old,
-            live: rf::Live { devices: 1284, dashboards: 96, users: 41, telemetry_bytes: g(84.0), ch_problem: (frame == "B3").then(|| "nothing answered on port 8123.".into()) },
-            orphans: Some((vec!["Press 7".into(), "Press 8".into(), "Line 2 meter".into()], 3)),
+            live: rf::Live { devices: 1284, dashboards: 96, users: 41, telemetry_bytes: g(84.0), ch_problem: (frame == "B3").then(|| t!("nothing answered on port 8123.").into()) },
+            orphans: Some((vec![t!("Press 7").into(), t!("Press 8").into(), t!("Line 2 meter").into()], 3)),
             safety: rf::Safety { name: "sentient-before-restore-2026-11-16_1102".into(), folder: "/var/backups/sentient".into(), bytes: g(2.9), secs: 240 },
-            newest_backup: Some("16 Nov, 02:00".into()),
+            newest_backup: Some(t!("16 Nov, 02:00").into()),
         }
     }
 
@@ -2833,7 +2842,7 @@ pub(crate) mod canned {
         };
         match kind {
             "restore-inspect" => {
-                sink(Progress::Step { name: "Checking the backup".into() });
+                sink(Progress::Step { name: n!("Checking the backup").into() });
                 match frame {
                     "R8" => {
                         sink(rf::data_line("unreadable", &Unreadable::Passphrase));
@@ -2844,7 +2853,7 @@ pub(crate) mod canned {
                         return Err(Unreadable::WrongPassphrase.message());
                     }
                     "B6b" => {
-                        let u = Unreadable::NotABackup("this file is not a SENTIENT backup (no manifest at its start)".into());
+                        let u = Unreadable::NotABackup(t!("this file is not a SENTIENT backup (no manifest at its start)").into());
                         sink(rf::data_line("unreadable", &u));
                         return Err(u.message());
                     }
@@ -2865,7 +2874,7 @@ pub(crate) mod canned {
                 Ok(())
             }
             "restore-precheck" => {
-                sink(Progress::Step { name: "Measuring the disks".into() });
+                sink(Progress::Step { name: n!("Measuring the disks").into() });
                 if frame == "R13p" {
                     hang();
                 }
@@ -2875,19 +2884,19 @@ pub(crate) mod canned {
             _ => {
                 let steps = [rf::STEP_SAFETY, rf::STEP_CHECK, rf::STEP_RESTORE, rf::STEP_SCHEMA, rf::STEP_SWITCH];
                 let log = |l: &str| sink(Progress::Log { line: l.into() });
-                let mut entry = Entry { id: "20261116110200".into(), at: "2026-11-16T05:32:00Z".into(), backup: "sentient-2026-11-14_1712".into(), source: Some("copied from Plant B, server to server".into()), by: "ops on OPS-LAPTOP".into(), scope: "Everything".into(), safety: Some("sentient-before-restore-2026-11-16_1102".into()), manager: "0.8.0".into(), ..Default::default() };
+                let mut entry = Entry { id: "20261116110200".into(), at: "2026-11-16T05:32:00Z".into(), backup: "sentient-2026-11-14_1712".into(), source: Some(t!("copied from Plant B, server to server").into()), by: t!("ops on OPS-LAPTOP").into(), scope: t!("Everything").into(), safety: Some("sentient-before-restore-2026-11-16_1102".into()), manager: "0.8.0".into(), ..Default::default() };
                 sink(Progress::Step { name: steps[0].into() });
                 log("/var/backups/sentient/sentient-before-restore-2026-11-16_1102.sentient-backup · 2.9 GB, checked");
                 sink(Progress::Step { name: steps[1].into() });
-                log("Every part matches its SHA-256 (26 parts).");
+                log(n!("Every part matches its SHA-256 (26 parts)."));
                 sink(Progress::Step { name: steps[2].into() });
-                for l in [">> Creating the empty database sentient_restore_202611161106", ">> Restoring database (pg_restore)", ">> Converting telemetry", "  2026-08: copied and checked", "  2026-09: copied and checked"] {
+                for l in [t!(">> Creating the empty database sentient_restore_202611161106"), ">> Restoring database (pg_restore)", t!(">> Converting telemetry"), "  2026-08: copied and checked", "  2026-09: copied and checked"] {
                     log(l);
                 }
                 match frame {
                     "R16" => {
                         sink(Progress::Percent { value: 0.46 });
-                        log("  history 190 of 412 M rows");
+                        log(n!("  history 190 of 412 M rows"));
                         hang();
                         Ok(())
                     }
@@ -2895,7 +2904,7 @@ pub(crate) mod canned {
                         let stop = frame == "X3";
                         if stop {
                             entry.result = Result_::Stopped;
-                            entry.message = "Stopped: /mnt/disk-a (PostgreSQL) fell to 1.9 GB free, under the safe level of 2 GB. Something else is writing there (sentient-postgres WAL grew 12 GB). Nothing on Fabrikam IIoT changed; the half-restored database was removed.".into();
+                            entry.message = t!("Stopped: /mnt/disk-a (PostgreSQL) fell to 1.9 GB free, under the safe level of 2 GB. Something else is writing there (sentient-postgres WAL grew 12 GB). Nothing on Fabrikam IIoT changed; the half-restored database was removed.").into();
                         } else {
                             log("pg_restore: error: could not extend file \"base/16384/2619\"");
                             log("pg_restore: error: No space left on device");
@@ -2912,13 +2921,13 @@ pub(crate) mod canned {
                         if frame == "X2" {
                             entry.result = Result_::RolledBack;
                             entry.restored_db = Some("sentient_restore_202611161106".into());
-                            entry.message = "SENTIENT did not start on the restored data. It runs on its previous data again; the restored database sentient_restore_202611161106 is unchanged, for a look.".into();
+                            entry.message = t!("SENTIENT did not start on the restored data. It runs on its previous data again; the restored database sentient_restore_202611161106 is unchanged, for a look.").into();
                             sink(rf::data_line("result", &entry));
                             return Err(entry.message);
                         }
                         entry.result = Result_::Done;
                         entry.licence_note = true;
-                        entry.message = "SENTIENT runs on the data from sentient-2026-11-14_1712. The data from before is kept as sentient_before_restore_202611161118, and as the safety backup.".into();
+                        entry.message = t!("SENTIENT runs on the data from sentient-2026-11-14_1712. The data from before is kept as sentient_before_restore_202611161118, and as the safety backup.").into();
                         sink(rf::data_line("result", &entry));
                         sink(Progress::Done { message: entry.message.clone() });
                         Ok(())
@@ -2936,8 +2945,8 @@ pub(crate) mod canned {
                 f.confirm.update(cx, |i, cx| i.set_value(w, window, cx));
             }
             "R10d" => {
-                f.from.update(cx, |i, cx| i.set_value("1 Sep 2026", window, cx));
-                f.to.update(cx, |i, cx| i.set_value("14 Nov 2026", window, cx));
+                f.from.update(cx, |i, cx| i.set_value(t!("1 Sep 2026"), window, cx));
+                f.to.update(cx, |i, cx| i.set_value(t!("14 Nov 2026"), window, cx));
             }
             "B4" => f.pass.update(cx, |i, cx| i.set_value("wrong-pass", window, cx)),
             _ => {}
@@ -2976,7 +2985,7 @@ pub(crate) mod canned {
             let job = f.run.clone();
             let plan = f.plan_of(&Request { delete_old: false, ..req });
             job.update(cx, |j, _| j.set_plan(plan));
-            let label = f.label("Restoring");
+            let label = f.label(t!("Restoring"));
             f.start(&job, "restore-run", label, Request::default(), cx);
         }
     }
@@ -2987,20 +2996,20 @@ pub(crate) mod canned {
                 id: "20261114174000".into(),
                 at: "2026-11-14T12:10:00Z".into(),
                 backup: "sentient-2026-11-14_1712".into(),
-                source: Some("copied from Plant B, server to server".into()),
-                by: "ops on OPS-LAPTOP".into(),
-                scope: "Everything".into(),
+                source: Some(t!("copied from Plant B, server to server").into()),
+                by: t!("ops on OPS-LAPTOP").into(),
+                scope: t!("Everything").into(),
                 result: Result_::Done,
-                message: "SENTIENT answered on the restored data after 48 s.".into(),
+                message: t!("SENTIENT answered on the restored data after 48 s.").into(),
                 took_secs: 1040,
                 down_secs: Some(65),
                 safety: Some("sentient-before-restore-2026-11-14_1722".into()),
                 aside: Some("sentient_before_restore_202611141740".into()),
-                converted: Some("history converted from PostgreSQL + TimescaleDB".into()),
+                converted: Some(t!("history converted from PostgreSQL + TimescaleDB").into()),
                 manager: "0.8.0".into(),
                 ..Default::default()
             },
-            Entry { id: "20261102091200".into(), at: "2026-11-02T03:42:00Z".into(), backup: "sentient-2026-11-01_0200".into(), by: "ops on PLANT-B".into(), scope: "Everything".into(), result: Result_::RolledBack, message: "SENTIENT did not start on the restored data.".into(), took_secs: 780, manager: "0.8.0".into(), ..Default::default() },
+            Entry { id: "20261102091200".into(), at: "2026-11-02T03:42:00Z".into(), backup: "sentient-2026-11-01_0200".into(), by: t!("ops on PLANT-B").into(), scope: t!("Everything").into(), result: Result_::RolledBack, message: t!("SENTIENT did not start on the restored data.").into(), took_secs: 780, manager: "0.8.0".into(), ..Default::default() },
         ]
     }
 
@@ -3030,7 +3039,7 @@ pub(crate) mod canned {
                 d.local = Some(("D:\\Backups\\plant-b-2026-11-14_1712.sentient-backup".into(), g(2.8)));
                 match frame {
                     "R5" => d.upload = Transfer::Running { sent: g(1.1), total: g(2.8), started: std::time::Instant::now() - std::time::Duration::from_secs(47) },
-                    "R5e" => d.upload = Transfer::Broken { sent: g(1.6), total: g(2.8), why: "Connection closed: no answer for 30 s".into() },
+                    "R5e" => d.upload = Transfer::Broken { sent: g(1.6), total: g(2.8), why: t!("Connection closed: no answer for 30 s").into() },
                     _ => d.writable = Some(false),
                 }
             }
@@ -3039,7 +3048,7 @@ pub(crate) mod canned {
                 d.src = d.instances.iter().find(|i| i.id != "tb3").cloned().or_else(|| d.instances.first().cloned());
                 match frame {
                     "R6l" => d.src_list = Read::Loading,
-                    "B8" => d.src_list = Read::Failed("did not answer".into()),
+                    "B8" => d.src_list = Read::Failed(t!("did not answer").into()),
                     _ => {
                         d.src_list = Read::Got(list(4).into_iter().skip(0).take(2).collect());
                         d.src_sel = Some(1);

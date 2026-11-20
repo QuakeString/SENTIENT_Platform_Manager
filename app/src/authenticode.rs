@@ -89,16 +89,16 @@ pub fn verdict(code: i32, require_signature: bool) -> Verdict {
     let why = match code {
         0 => return Verdict::Trusted,
         TRUST_E_NOSIGNATURE | TRUST_E_SUBJECT_FORM_UNKNOWN | TRUST_E_PROVIDER_UNKNOWN => {
-            let w = "it has no Authenticode signature".to_string();
+            let w = t!("it has no Authenticode signature").to_string();
             return if require_signature { Verdict::Refused(w) } else { Verdict::Unsigned(w) };
         }
-        TRUST_E_BAD_DIGEST => "its Authenticode signature does not match the file (it was changed after signing)",
-        TRUST_E_EXPLICIT_DISTRUST => "its Authenticode certificate is marked as not trusted on this computer",
-        CERT_E_REVOKED => "its Authenticode certificate was revoked",
-        CERT_E_EXPIRED => "its Authenticode certificate has expired",
-        CERT_E_UNTRUSTEDROOT | TRUST_E_SUBJECT_NOT_TRUSTED => "its Authenticode signature is not from a trusted publisher",
-        CRYPT_E_SECURITY_SETTINGS => "this computer's security settings do not allow it",
-        _ => return Verdict::Refused(format!("its Authenticode signature could not be checked (0x{:08X})", code as u32)),
+        TRUST_E_BAD_DIGEST => t!("its Authenticode signature does not match the file (it was changed after signing)"),
+        TRUST_E_EXPLICIT_DISTRUST => t!("its Authenticode certificate is marked as not trusted on this computer"),
+        CERT_E_REVOKED => t!("its Authenticode certificate was revoked"),
+        CERT_E_EXPIRED => t!("its Authenticode certificate has expired"),
+        CERT_E_UNTRUSTEDROOT | TRUST_E_SUBJECT_NOT_TRUSTED => t!("its Authenticode signature is not from a trusted publisher"),
+        CRYPT_E_SECURITY_SETTINGS => t!("this computer's security settings do not allow it"),
+        _ => return Verdict::Refused(tf!("its Authenticode signature could not be checked (0x{:08X})", code as u32)),
     };
     Verdict::Refused(why.into())
 }

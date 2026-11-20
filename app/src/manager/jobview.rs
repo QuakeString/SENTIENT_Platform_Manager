@@ -119,9 +119,9 @@ impl JobView {
         let state = job.state().clone();
         let running = matches!(state, JobState::Running);
         let (pill, tone) = self.pill.clone().unwrap_or(match &state {
-            JobState::Running | JobState::Idle => ("Running".into(), Tone::Neutral),
-            JobState::Done(_) => ("Done".into(), Tone::Good),
-            JobState::Failed(_) => ("Failed".into(), Tone::Bad),
+            JobState::Running | JobState::Idle => (t!("Running").into(), Tone::Neutral),
+            JobState::Done(_) => (t!("Done").into(), Tone::Good),
+            JobState::Failed(_) => (t!("Failed").into(), Tone::Bad),
         });
         let rows = job.rows();
         let n = rows.len();
@@ -131,19 +131,19 @@ impl JobView {
         let paused = self.paused.clone().filter(|_| matches!(state, JobState::Failed(_)));
         let nums = match &state {
             JobState::Failed(_) if paused.is_some() => match at {
-                Some(i) if n > 0 => format!("Continues at step {} of {n} after the restart · {elapsed}", i + 1),
-                _ => format!("Continues after the restart · {elapsed}"),
+                Some(i) if n > 0 => tf!("Continues at step {} of {n} after the restart · {elapsed}", i + 1),
+                _ => tf!("Continues after the restart · {elapsed}"),
             },
-            JobState::Done(_) if n > 0 => format!("All {n} steps · {elapsed}"),
-            JobState::Done(_) => format!("Finished · {elapsed}"),
+            JobState::Done(_) if n > 0 => tf!("All {n} steps · {elapsed}"),
+            JobState::Done(_) => tf!("Finished · {elapsed}"),
             JobState::Failed(_) => match at {
-                Some(i) if n > 0 => format!("Stopped at step {} of {n} · {elapsed}", i + 1),
-                _ => format!("Stopped · {elapsed}"),
+                Some(i) if n > 0 => tf!("Stopped at step {} of {n} · {elapsed}", i + 1),
+                _ => tf!("Stopped · {elapsed}"),
             },
             _ => match at {
-                Some(i) => format!("Step {} of {n} · {elapsed} · {pct:.0}%", i + 1),
-                None if n > 0 => format!("Starting · {n} steps · {elapsed}"),
-                None => format!("Starting · {elapsed}"),
+                Some(i) => tf!("Step {} of {n} · {elapsed} · {pct:.0}%", i + 1),
+                None if n > 0 => tf!("Starting · {n} steps · {elapsed}"),
+                None => tf!("Starting · {elapsed}"),
             },
         };
         let bar_color = match &state {
@@ -156,26 +156,26 @@ impl JobView {
             // Paused: the stopped step waits, it did not fail.
             if let (Some(next), RowState::Failed) = (&paused, r.state) {
                 let time = r.time().map(clock).unwrap_or_default();
-                return step_row(theme, self.id, i, RowState::Pending, r.step.name.clone(), next.to_string(), time);
+                return step_row(theme, self.id, i, RowState::Pending, shown(&r.step.name), shown(next), time);
             }
             let sub = match r.state {
                 RowState::Running => {
-                    let s = r.sub.clone().map(|s| s.to_string()).unwrap_or_else(|| r.step.detail.clone());
+                    let s = shown(r.sub.as_deref().unwrap_or(&r.step.detail));
                     match step_pct {
                         Some(p) if !s.is_empty() => format!("{s} · {p:.0}%"),
                         Some(p) => format!("{p:.0}%"),
                         None => s,
                     }
                 }
-                RowState::Failed => r.sub.clone().map(|s| s.to_string()).unwrap_or_else(|| r.step.detail.clone()),
-                _ => r.step.detail.clone(),
+                RowState::Failed => shown(r.sub.as_deref().unwrap_or(&r.step.detail)),
+                _ => shown(&r.step.detail),
             };
             let time = match r.state {
-                RowState::Skipped => "Skipped".to_string(),
+                RowState::Skipped => t!("Skipped").to_string(),
                 RowState::Pending => String::new(),
                 _ => r.time().map(clock).unwrap_or_default(),
             };
-            step_row(theme, self.id, i, r.state, r.step.name.clone(), sub, time)
+            step_row(theme, self.id, i, r.state, shown(&r.step.name), sub, time)
         }));
         let result: Option<AnyElement> = match (&state, self.result) {
             (JobState::Running | JobState::Idle, _) => None,
@@ -198,15 +198,15 @@ impl JobView {
         let mut foot: Vec<AnyElement> = Vec::new();
         if running {
             match self.cancel {
-                Cancel::Can(on) => foot.push(ui::button(SharedString::from(format!("{}-cancel", self.id))).outline().label("Cancel").on_click(move |_, w, cx| on(w, cx)).into_any_element()),
+                Cancel::Can(on) => foot.push(ui::button(SharedString::from(format!("{}-cancel", self.id))).outline().label(t!("Cancel")).on_click(move |_, w, cx| on(w, cx)).into_any_element()),
                 Cancel::Cannot(why) => foot.push(
                     div()
                         .id(SharedString::from(format!("{}-cancel-why", self.id)))
-                        .child(ui::button(SharedString::from(format!("{}-cancel", self.id))).outline().label("Cancel").disabled(true))
-                        .tooltip(crate::ui::tooltip(why))
+                        .child(ui::button(SharedString::from(format!("{}-cancel", self.id))).outline().label(t!("Cancel")).disabled(true))
+                        .tooltip(crate::ui::tooltip(crate::i18n::t(why)))
                         .into_any_element(),
                 ),
-                Cancel::Hide(on) => foot.push(ui::button(SharedString::from(format!("{}-hide", self.id))).outline().label("Hide").on_click(move |_, w, cx| on(w, cx)).into_any_element()),
+                Cancel::Hide(on) => foot.push(ui::button(SharedString::from(format!("{}-hide", self.id))).outline().label(t!("Hide")).on_click(move |_, w, cx| on(w, cx)).into_any_element()),
             }
         } else {
             foot.extend(self.actions);
@@ -218,7 +218,8 @@ impl JobView {
                     .gap(ui::button_gap())
                     .items_center()
                     .child(div().flex_1().min_w_0().font_weight(FontWeight::MEDIUM).child(self.title))
-                    .child(ui::pill(theme, tone, pill).w(px(PILL_W)).flex_shrink_0().justify_center()),
+                    // At least PILL_W, wider for a long word (Malayalam "running").
+                    .child(ui::pill(theme, tone, pill).min_w(px(PILL_W)).flex_shrink_0().justify_center()),
             )
             .child(
                 h_flex()
@@ -237,7 +238,7 @@ impl JobView {
     }
 }
 
-const NO_CANCEL: &str = "This job cannot be stopped half-way without leaving SENTIENT in between; it puts things back itself when a step fails.";
+const NO_CANCEL: &str = n!("This job cannot be stopped half-way without leaving SENTIENT in between; it puts things back itself when a step fails.");
 
 /// "1:05", "12:40", "1:02:03".
 pub fn clock(d: std::time::Duration) -> String {
@@ -294,7 +295,7 @@ fn log_card(theme: &gpui_kit::component::Theme, id: &'static str, entity: &Entit
     if follow.get() && count > 0 {
         handle.scroll_to_item(count - 1, gpui_kit::ScrollStrategy::Bottom);
     }
-    let kept_note = (job.log_total() > count).then(|| format!("The last {count} of {} lines; Save has them all", job.log_total()));
+    let kept_note = (job.log_total() > count).then(|| tf!("The last {count} of {} lines; Save has them all", job.log_total()));
     let (copy_job, save_job) = (entity.clone(), entity.clone());
     let colors = (theme.foreground, theme.primary, theme.danger, theme.muted_foreground);
     let list_job = entity.clone();
@@ -331,13 +332,13 @@ fn log_card(theme: &gpui_kit::component::Theme, id: &'static str, entity: &Entit
             h_flex()
                 .gap(ui::button_gap())
                 .items_center()
-                .child(div().flex_1().min_w_0().font_weight(FontWeight::MEDIUM).child("Log"))
+                .child(div().flex_1().min_w_0().font_weight(FontWeight::MEDIUM).child(t!("Log")))
                 .when_some(kept_note, |r, t| r.child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(12.)).text_color(theme.muted_foreground).child(t)))
-                .child(ui::probed(ui::button(SharedString::from(format!("{id}-log-copy"))).outline().label("Copy").disabled(count == 0).on_click(move |_, _, cx| {
+                .child(ui::probed(ui::button(SharedString::from(format!("{id}-log-copy"))).outline().label(t!("Copy")).disabled(count == 0).on_click(move |_, _, cx| {
                     let text = copy_job.read(cx).log_text();
                     cx.write_to_clipboard(ClipboardItem::new_string(text));
                 })))
-                .child(ui::probed(ui::button(SharedString::from(format!("{id}-log-save"))).outline().label("Save").disabled(count == 0).on_click(move |_, _, cx| save_log(&save_job, cx)))),
+                .child(ui::probed(ui::button(SharedString::from(format!("{id}-log-save"))).outline().label(t!("Save")).disabled(count == 0).on_click(move |_, _, cx| save_log(&save_job, cx)))),
         )
         .child(
             div()
@@ -353,12 +354,12 @@ fn log_card(theme: &gpui_kit::component::Theme, id: &'static str, entity: &Entit
                 .line_height(px(LINE_H))
                 .overflow_hidden()
                 .child(if count == 0 {
-                    div().p_3().text_color(theme.muted_foreground).child(if running { "Waiting for the first lines…" } else { "No log lines." }).into_any_element()
+                    div().p_3().text_color(theme.muted_foreground).child(if running { t!("Waiting for the first lines…") } else { t!("No log lines.") }).into_any_element()
                 } else {
                     list.into_any_element()
                 })
                 .when(!follow.get() && count > 0, |d| {
-                    d.child(div().absolute().right(px(14.)).bottom(px(12.)).child(ui::probed(ui::button(SharedString::from(format!("{id}-log-latest"))).primary().icon(IconName::ChevronDown).label("Latest").on_click(move |_, _, cx| {
+                    d.child(div().absolute().right(px(14.)).bottom(px(12.)).child(ui::probed(ui::button(SharedString::from(format!("{id}-log-latest"))).primary().icon(IconName::ChevronDown).label(t!("Latest")).on_click(move |_, _, cx| {
                         at_end.set(true);
                         let n = jump_job.read(cx).log().len();
                         if n > 0 {
@@ -386,7 +387,7 @@ fn save_log(job: &Entity<Job>, cx: &mut App) {
             _ => std::fs::write(&path, text),
         };
         if let Err(e) = r {
-            cx.update(|cx| ui::show_error("The log was not saved", format!("{}: {e}", path.display()), cx));
+            cx.update(|cx| ui::show_error(t!("The log was not saved"), format!("{}: {e}", path.display()), cx));
         }
     })
     .detach();
@@ -394,7 +395,7 @@ fn save_log(job: &Entity<Job>, cx: &mut App) {
 
 /// "Back to <page>".
 pub fn back_button(id: &'static str, page: &str, on: impl Fn(&mut Window, &mut App) + 'static) -> AnyElement {
-    crate::ui::button(id).outline().label(format!("Back to {page}")).on_click(move |_, window, cx| on(window, cx)).into_any_element()
+    crate::ui::button(id).outline().label(tf!("Back to {page}")).on_click(move |_, window, cx| on(window, cx)).into_any_element()
 }
 
 /// Screens and the layout test: SPM_DEBUG_JOB_LOG=<lines>[:<step>] fills
@@ -416,4 +417,10 @@ mod tests {
         assert_eq!(clock(std::time::Duration::from_secs(65)), "1:05");
         assert_eq!(clock(std::time::Duration::from_secs(3723)), "1:02:03");
     }
+}
+
+/// A step's name or line as the job wrote it (English, crate::i18n), in the
+/// language shown.
+fn shown(text: &str) -> String {
+    crate::i18n::dynamic(text).into_owned()
 }

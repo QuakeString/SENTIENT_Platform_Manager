@@ -31,7 +31,7 @@ pub fn unsupported(record: &InstallationRecord) -> Option<&'static str> {
     match record.engine {
         Engine::Docker => None,
         Engine::Native if cfg!(windows) => None,
-        Engine::Native => Some("This installation runs SENTIENT and PostgreSQL as services, not in Docker: their data folders are the system's. Moving them is not available yet."),
+        Engine::Native => Some(n!("This installation runs SENTIENT and PostgreSQL as services, not in Docker: their data folders are the system's. Moving them is not available yet.")),
     }
 }
 
@@ -45,7 +45,7 @@ fn backups_dir() -> Option<String> {
 // ---------------------------------------------------------------------------
 
 fn local_record() -> Result<InstallationRecord, String> {
-    let r = InstallationRecord::load().ok_or("No SENTIENT is installed here.")?;
+    let r = InstallationRecord::load().ok_or(n!("No SENTIENT is installed here."))?;
     if let Some(why) = unsupported(&r) {
         return Err(why.into());
     }
@@ -54,7 +54,7 @@ fn local_record() -> Result<InstallationRecord, String> {
 
 /// What the Data locations card says while SENTIENT is stopped (on Windows
 /// its WSL distro, which a read never starts).
-pub const STOPPED: &str = "SENTIENT is stopped. Where its data is kept is read when it runs.";
+pub const STOPPED: &str = n!("SENTIENT is stopped. Where its data is kept is read when it runs.");
 
 pub fn local_overview() -> Result<Overview, String> {
     let r = local_record()?;
@@ -122,11 +122,11 @@ fn save(r: &mut InstallationRecord, out: &Outcome) -> Result<(), String> {
 fn finish(out: &Outcome) -> Result<(), String> {
     match out.ended {
         move_data::Ended::Moved => Ok(()),
-        move_data::Ended::SwitchedBack => Err(format!(
-            "{} Everything is back where it was{}.",
-            out.reason.clone().unwrap_or_default(),
-            if out.down_secs > 0 { " and SENTIENT runs again" } else { "" }
-        )),
+        move_data::Ended::SwitchedBack => Err(if out.down_secs > 0 {
+            nf!("{} Everything is back where it was and SENTIENT runs again.", out.reason.clone().unwrap_or_default())
+        } else {
+            nf!("{} Everything is back where it was.", out.reason.clone().unwrap_or_default())
+        }),
         move_data::Ended::Broken => Err(out.reason.clone().unwrap_or_default()),
     }
 }
@@ -141,7 +141,7 @@ pub fn local_remove_old(path: &str, sink: ProgressFn) -> Result<(), String> {
     let left = move_data::remove_old(&sink, &r.stack, path, backups_dir().as_deref())?;
     r.stack.old_copies = left;
     crate::maintenance_ops::save_record(&r)?;
-    sink(Progress::Done { message: format!("{path} is removed.") });
+    sink(Progress::Done { message: nf!("{path} is removed.") });
     Ok(())
 }
 
@@ -198,8 +198,8 @@ pub fn parse_moves(arg: &str) -> Result<Vec<Move>, String> {
     arg.split(',')
         .filter(|s| !s.is_empty())
         .map(|s| {
-            let (k, v) = s.split_once('=').ok_or_else(|| format!("not a move: {s}"))?;
-            let store = Store::parse(k).ok_or_else(|| format!("not a store: {k}"))?;
+            let (k, v) = s.split_once('=').ok_or_else(|| nf!("not a move: {s}"))?;
+            let store = Store::parse(k).ok_or_else(|| nf!("not a store: {k}"))?;
             Ok(Move { store, to: v.to_string() })
         })
         .collect()
@@ -222,11 +222,11 @@ pub fn data_job(job: &str, args: &[String]) -> Option<i32> {
         "movedata-json" => local_overview().and_then(|o| serde_json::to_string(&o).map_err(|e| e.to_string())),
         "movedata-check" => match (args.get(1).and_then(|s| Store::parse(s)), args.get(2)) {
             (Some(store), Some(path)) => local_check(store, path).and_then(|c| serde_json::to_string(&c).map_err(|e| e.to_string())),
-            _ => Err("usage: movedata-check <pg|ch|data|backups> <folder>".into()),
+            _ => Err(n!("usage: movedata-check <pg|ch|data|backups> <folder>").into()),
         },
         "movedata-estimate" => match args.get(1) {
             Some(a) => parse_moves(a).and_then(|m| local_estimate(&m)).and_then(|e| serde_json::to_string(&e).map_err(|e| e.to_string())),
-            None => Err("usage: movedata-estimate <store=folder,…>".into()),
+            None => Err(n!("usage: movedata-estimate <store=folder,…>").into()),
         },
         "move-data-cancel" => local_cancel().map(|_| "\"ok\"".to_string()),
         _ => return None,
@@ -329,7 +329,7 @@ pub mod debug {
         let disk = move_data::disk_of(&ov.disks, path).cloned();
         let mut blocks = disk.as_ref().map(|d| move_data::disk_blocks(d, store, needed, store.label())).unwrap_or_default();
         if ov.places.iter().any(|p| p.store == store && p.path == path) {
-            blocks.push(move_data::Block { kind: move_data::BlockKind::SamePlace, title: format!("{} is already here", store.label()), why: String::new(), fixes: vec![] });
+            blocks.push(move_data::Block { kind: move_data::BlockKind::SamePlace, title: nf!("{} is already here", store.label()), why: String::new(), fixes: vec![] });
         }
         Some(Ok(Check { path: path.into(), disk, exists: true, empty: true, needed, blocks }))
     }

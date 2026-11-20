@@ -127,7 +127,7 @@ impl Session {
     /// (from a session thread) whenever there is something new to draw.
     pub fn start(spawn: &Spawn, size: GridSize, wake: impl Fn() + Send + Sync + 'static) -> Result<Session, String> {
         let pty = portable_pty::native_pty_system();
-        let pair = pty.openpty(PtySize { rows: size.rows, cols: size.cols, pixel_width: 0, pixel_height: 0 }).map_err(|e| format!("The terminal could not be opened: {e}"))?;
+        let pair = pty.openpty(PtySize { rows: size.rows, cols: size.cols, pixel_width: 0, pixel_height: 0 }).map_err(|e| nf!("The terminal could not be opened: {e}"))?;
         let mut cmd = CommandBuilder::from_argv(spawn.argv.iter().map(OsString::from).collect());
         for (k, v) in &spawn.env {
             cmd.env(k, v);
@@ -135,7 +135,7 @@ impl Session {
         if let Some(d) = &spawn.cwd {
             cmd.cwd(d);
         }
-        let mut child = pair.slave.spawn_command(cmd).map_err(|e| format!("{} could not be started: {e}", spawn.argv.first().map(String::as_str).unwrap_or("The shell")))?;
+        let mut child = pair.slave.spawn_command(cmd).map_err(|e| nf!("{} could not be started: {e}", spawn.argv.first().map(String::as_str).unwrap_or(n!("The shell"))))?;
         // Only the program keeps the terminal's other end: its end is then
         // the reader's end (Unix).
         drop(pair.slave);

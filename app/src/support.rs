@@ -38,7 +38,7 @@ pub fn create() -> Result<PathBuf, String> {
     let file = std::fs::File::create(&path).map_err(|e| format!("create {}: {e}", path.display()))?;
     let mut tar = tar::Builder::new(file);
     let record = InstallationRecord::load();
-    let versions = format!(
+    let versions = tf!(
         "Platform Manager {}\nSENTIENT {}\nOperating system {} {}\nCreated {}\n",
         crate::updates::manager_version(),
         record.as_ref().map(|r| r.sentient_version.clone()).unwrap_or_else(|| "not installed".into()),
@@ -57,6 +57,6 @@ pub fn create() -> Result<PathBuf, String> {
         let logs = r.platform().logs(2000);
         add(&mut tar, "sentient.log", crate::maintenance_ops::strip_ansi(&logs).as_bytes())?;
     }
-    tar.finish().map_err(|e| format!("finish {}: {e}", path.display()))?;
+    tar.finish().map_err(|e| nf!("finish {}: {e}", path.display()))?;
     Ok(path)
 }

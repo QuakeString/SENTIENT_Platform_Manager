@@ -70,7 +70,7 @@ pub fn load() -> Option<GatewayRecord> {
 pub fn save(g: Option<&GatewayRecord>) -> Result<(), String> {
     let path = installation();
     if let Some(mut v) = std::fs::read_to_string(&path).ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()) {
-        let obj = v.as_object_mut().ok_or("The installation record is not a JSON object.")?;
+        let obj = v.as_object_mut().ok_or(n!("The installation record is not a JSON object."))?;
         match g {
             Some(g) => {
                 obj.insert("gateway".into(), serde_json::to_value(g).map_err(|e| e.to_string())?);
@@ -102,9 +102,9 @@ pub fn save(g: Option<&GatewayRecord>) -> Result<(), String> {
 /// Manage the gateway found here (status()): record it as it is.
 pub fn adopt() -> Result<String, String> {
     let s = sentient_installer_core::gateway::status();
-    let g = GatewayRecord::of(&s).filter(|_| s.installed).ok_or("There is no Sentient Gateway on this computer.")?;
+    let g = GatewayRecord::of(&s).filter(|_| s.installed).ok_or(n!("There is no Sentient Gateway on this computer."))?;
     save(Some(&g))?;
-    Ok(format!("The Platform Manager now manages the gateway {}. Nothing about it was changed.", g.name))
+    Ok(tf!("The Platform Manager now manages the gateway {}. Nothing about it was changed.", g.name))
 }
 
 // ---------------------------------------------------------------------------
@@ -139,7 +139,7 @@ pub fn stage_secrets(s: &crate::remote::GatewaySecrets) -> Result<(), String> {
 }
 
 fn stage_secrets_at(path: &std::path::Path, s: &crate::remote::GatewaySecrets) -> Result<(), String> {
-    crate::remote::install::stage_private_at(path, s, "The access token could not be kept for the install")
+    crate::remote::install::stage_private_at(path, s, t!("The access token could not be kept for the install"))
 }
 
 /// What [`stage_secrets`] kept, removed as it is read.
@@ -148,7 +148,7 @@ pub fn take_staged_secrets() -> Result<crate::remote::GatewaySecrets, String> {
 }
 
 fn take_staged_at(path: &std::path::Path) -> Result<crate::remote::GatewaySecrets, String> {
-    crate::remote::install::take_private_at(path).ok_or_else(|| "The access token did not reach the server. Install again.".to_string())
+    crate::remote::install::take_private_at(path).ok_or_else(|| t!("The access token did not reach the server. Install again.").to_string())
 }
 
 #[cfg(test)]

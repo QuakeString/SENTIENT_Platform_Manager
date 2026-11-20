@@ -26,9 +26,9 @@ impl Source {
     pub fn label(self) -> &'static str {
         match self {
             Source::Sentient => "SENTIENT",
-            Source::Database => "Database",
+            Source::Database => t!("Database"),
             Source::ClickHouse => "ClickHouse",
-            Source::Gateway => "Gateway",
+            Source::Gateway => t!("Gateway"),
         }
     }
 
@@ -187,14 +187,14 @@ pub fn read(record: Option<&InstallationRecord>, source: Source, tail: u32, toda
         (Engine::Native, Source::Sentient) => record.platform().logs(tail),
         (Engine::Native, Source::Database) if cfg!(windows) => newest(&record.pg_dir.join("log"), ".log")
             .and_then(|p| tail_file(&p, tail))
-            .unwrap_or_else(|| "No PostgreSQL log file yet.".into()),
+            .unwrap_or_else(|| t!("No PostgreSQL log file yet.").into()),
         (Engine::Native, Source::Database) => newest(std::path::Path::new("/var/log/postgresql"), ".log")
             .and_then(|p| tail_file(&p, tail))
             .or_else(|| journal("postgresql*"))
-            .unwrap_or_else(|| "Could not read the PostgreSQL log.".into()),
+            .unwrap_or_else(|| t!("Could not read the PostgreSQL log.").into()),
         (Engine::Native, Source::ClickHouse) => tail_file(std::path::Path::new("/var/log/clickhouse-server/clickhouse-server.log"), tail)
             .or_else(|| journal("clickhouse-server"))
-            .unwrap_or_else(|| "Could not read the ClickHouse log.".into()),
+            .unwrap_or_else(|| t!("Could not read the ClickHouse log.").into()),
     }
 }
 
@@ -300,7 +300,7 @@ pub fn merge(mut sets: Vec<Vec<Line>>) -> Vec<Line> {
 pub fn zone_label() -> String {
     let off = Local::now().offset().local_minus_utc();
     let (sign, off) = if off < 0 { ('-', -off) } else { ('+', off) };
-    format!("Times in UTC{sign}{:02}:{:02}", off / 3600, (off % 3600) / 60)
+    tf!("Times in UTC{sign}{:02}:{:02}", off / 3600, (off % 3600) / 60)
 }
 
 #[cfg(test)]
