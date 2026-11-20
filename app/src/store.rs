@@ -424,11 +424,14 @@ pub fn hand_over(args: &[String]) {
     }
     // Forward failed (a stale lock): start the helper, or stage when it is
     // not this build and nothing elevated runs.
-    let stage = match plan {
-        HandOver::Stage => true,
-        HandOver::Forward => !helper_is_current() && running != Some(true),
-        HandOver::Helper => false,
-    };
+    // A helper that is gone (removed with SENTIENT, its lock left behind)
+    // is staged again.
+    let stage = !helper_exe().is_file()
+        || match plan {
+            HandOver::Stage => true,
+            HandOver::Forward => !helper_is_current() && running != Some(true),
+            HandOver::Helper => false,
+        };
     let (exe, mut argv) = if stage {
         match stage_copy() {
             Ok(staged) => (staged, vec![STAGE_ARG.to_string()]),

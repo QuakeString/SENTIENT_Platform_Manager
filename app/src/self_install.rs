@@ -360,7 +360,11 @@ mod imp {
         let script = super::remove_later_script(std::process::id(), &dir.display().to_string(), &crate::maintenance_ops::activity_log().display().to_string());
         let spawn = |flags: u32| {
             use std::os::windows::process::CommandExt;
-            Command::new("powershell.exe").args(["-NoProfile", "-NonInteractive", "-Command", &script]).creation_flags(flags).spawn()
+            // Its working folder outside the one it removes: PowerShell does
+            // not delete a folder that holds its own current location, and
+            // it would inherit this program's (the helper folder).
+            let cwd = std::env::var_os("SystemRoot").map(std::path::PathBuf::from).unwrap_or_else(std::env::temp_dir);
+            Command::new("powershell.exe").args(["-NoProfile", "-NonInteractive", "-Command", &script]).current_dir(cwd).creation_flags(flags).spawn()
         };
         const NO_WINDOW: u32 = 0x0800_0000; // CREATE_NO_WINDOW
         const BREAKAWAY: u32 = 0x0100_0000; // CREATE_BREAKAWAY_FROM_JOB

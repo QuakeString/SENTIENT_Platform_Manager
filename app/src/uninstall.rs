@@ -280,7 +280,7 @@ pub fn row_detail(r: &Row, c: &Choice, rows: &[Row]) -> String {
         return r.detail.clone();
     }
     if own_distro_goes(c, rows) {
-        "Removed with the data: a Keep volume switch is off".into()
+        "Removed with the data: the database's Keep volume switch is off".into()
     } else if effective(c, rows).has(Key::Sentient) {
         "Stays, stopped, with the kept volumes".into()
     } else {
@@ -424,7 +424,7 @@ pub fn rows(f: &Facts) -> Vec<Row> {
     if docker && f.own_distro {
         // Setup made it: it goes with the data (row_detail says which).
         let mut d = row(Key::Docker, None, OWN_DISTRO, String::new(), f.sizes.distro, false, OWN_DISTRO);
-        d.help = Some("Setup made this WSL distribution (sentient) for SENTIENT and installed Docker Engine in it. It holds the containers and their volumes: it is removed when a Keep volume switch is off, and stays, stopped, while all the data is kept. The task that starts it with Windows and its command file (docker-keepalive.cmd) go either way.".into());
+        d.help = Some("Setup made this WSL distribution (sentient) for SENTIENT and installed Docker Engine in it. It holds the containers and their volumes: it is removed when the database's Keep volume switch is off, and stays, stopped, while the database is kept. The task that starts it with Windows and its command file (docker-keepalive.cmd) go either way.".into());
         out.push(d);
     } else if docker {
         let mut d = row(Key::Docker, None, "Docker itself", "Not installed by Setup".into(), None, false, "Docker");
@@ -1495,7 +1495,7 @@ mod tests {
         // A Keep volume switch off: it goes, and the summary says so.
         c.set(Key::KeepPgData, false);
         assert!(own_distro_goes(&c, &r));
-        assert_eq!(row_detail(d, &c, &r), "Removed with the data: a Keep volume switch is off");
+        assert_eq!(row_detail(d, &c, &r), "Removed with the data: the database's Keep volume switch is off");
         let (gone, kept, _) = gone_and_kept(&c, &r);
         assert!(gone.iter().any(|g| g == OWN_DISTRO) && !kept.iter().any(|k| k == OWN_DISTRO));
         assert!(!kept.iter().any(|k| k.contains("Docker")));
