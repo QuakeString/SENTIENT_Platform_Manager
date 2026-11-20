@@ -222,8 +222,9 @@ jobs:
   # has a test identity (never submitted). The Store takes final
   # versions only: a release-candidate or nightly build is packaged with the
   # version in app/Cargo.toml (its program still reports its own), for
-  # testing. Not attached to GitHub releases: the .msixupload goes to
-  # Partner Center by hand.
+  # testing. The release carries all three: the Store .msix and its
+  # .msixupload (that one goes to Partner Center by hand) and the sideload
+  # SENTIENT-Platform-Manager-<v>-sideload.msix.
   msix-store:
     name: MSIX (Store)
     needs: [gate, agents]
@@ -305,6 +306,10 @@ jobs:
             if ($sign.SignWith) { Remove-Item -Force $sign.SignWith -ErrorAction SilentlyContinue }
           }
           Remove-Item -Force dist\sideload\*.msixupload
+          # Its own file name: the release job collects both packages into one
+          # folder, and two SENTIENT-Platform-Manager-<v>.msix collide there
+          # (the v0.9.5 upload failed on it).
+          Get-ChildItem dist\sideload\*.msix | Rename-Item -NewName { $_.BaseName + '-sideload.msix' }
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
@@ -313,7 +318,7 @@ jobs:
           path: |
             dist/store/*.msix
             dist/store/*.msixupload
-            dist/sideload/*.msix
+            dist/sideload/*-sideload.msix
 
   # The same program on Linux: SENTIENT-Setup installs the Platform Manager
   # and SENTIENT (Docker or native systemd). Built on 22.04 so it starts on

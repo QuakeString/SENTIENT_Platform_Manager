@@ -182,7 +182,7 @@ requests that change `packaging/msix/` or the packaging script) runs
 
 - `store/SENTIENT-Platform-Manager-<v>.msix` and `.msixupload`: unsigned,
   with the Partner Center identity. This is what you submit.
-- `sideload/SENTIENT-Platform-Manager-<v>.msix`: the test identity, signed
+- `sideload/SENTIENT-Platform-Manager-<v>-sideload.msix`: the test identity, signed
   with INVENIA's code-signing certificate when the repository has it
   (secrets `SPM_SIGN_PFX_BASE64` and `SPM_SIGN_PFX_PASSWORD`).
 
@@ -216,7 +216,7 @@ After the app icon changes, make the logos again with
    `powershell -ExecutionPolicy Bypass -File packaging\windows\Trust-INVENIA.ps1`
    (adds it to Trusted Root and Trusted Publishers). Alternatively:
    `Import-Certificate -FilePath packaging\windows\INVENIA-SYSTEMS-codesign.cer -CertStoreLocation Cert:\LocalMachine\TrustedPeople`.
-2. Use the CI's `sideload\...msix` (signed). If it is unsigned, sign it on
+2. Use the CI's `sideload\...-sideload.msix` (signed). If it is unsigned, sign it on
    a computer with the Windows SDK:
    ```powershell
    $env:MSIX_SIGN_PFX_PASSWORD = Read-Host "pfx password"   # not on a command line
