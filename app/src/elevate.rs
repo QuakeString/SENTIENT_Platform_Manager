@@ -7,7 +7,6 @@
 
 #[cfg(windows)]
 mod imp {
-    #[cfg(feature = "gui")]
     use std::os::windows::ffi::OsStrExt;
 
     #[link(name = "shell32")]
@@ -23,7 +22,6 @@ mod imp {
         ) -> isize;
     }
 
-    #[cfg(feature = "gui")]
     fn wide(s: &std::ffi::OsStr) -> Vec<u16> {
         s.encode_wide().chain(std::iter::once(0)).collect()
     }
@@ -48,22 +46,36 @@ mod imp {
 
     /// Start this program again as administrator (the UAC prompt) with
     /// `args`. False when it did not start (the prompt was declined).
+    /// From the Microsoft Store package the helper copy outside the
+    /// package is started instead (crate::store).
     #[cfg(feature = "gui")]
     pub fn relaunch_elevated(args: &[String]) -> bool {
+        if crate::store::flavour() == crate::store::Flavour::Packaged {
+            crate::store::hand_over(args);
+            return true;
+        }
         let Ok(exe) = std::env::current_exe() else { return false };
+        runas(&exe, args)
+    }
+
+    /// Start `exe` as administrator (the UAC prompt) with `args`, in its
+    /// own folder. False when it did not start (the prompt was declined).
+    pub fn runas(exe: &std::path::Path, args: &[String]) -> bool {
         let args: Vec<String> = args.iter().map(|a| if a.contains(' ') || a.is_empty() { format!("\"{a}\"") } else { a.clone() }).collect();
         let file = wide(exe.as_os_str());
         let params = wide(std::ffi::OsStr::new(&args.join(" ")));
         let verb = wide(std::ffi::OsStr::new("runas"));
+        let dir = exe.parent().map(|d| wide(d.as_os_str()));
+        let dir_ptr = dir.as_ref().map_or(std::ptr::null(), |d| d.as_ptr());
         // SAFETY: every pointer is a NUL-terminated UTF-16 buffer that lives
-        // until the call returns; SW_SHOWNORMAL = 1. A result above 32 is
-        // success.
-        unsafe { ShellExecuteW(0, verb.as_ptr(), file.as_ptr(), params.as_ptr(), std::ptr::null(), 1) > 32 }
+        // until the call returns (or null for no folder); SW_SHOWNORMAL = 1.
+        // A result above 32 is success.
+        unsafe { ShellExecuteW(0, verb.as_ptr(), file.as_ptr(), params.as_ptr(), dir_ptr, 1) > 32 }
     }
 }
 
 #[cfg(windows)]
-pub use imp::is_admin;
+pub use imp::{is_admin, runas};
 // Only the window asks to be elevated; the server agent does not.
 #[cfg(all(windows, feature = "gui"))]
 pub use imp::{ensure_admin, relaunch_elevated};

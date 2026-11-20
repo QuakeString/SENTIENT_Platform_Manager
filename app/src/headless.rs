@@ -42,6 +42,11 @@
 //! --job remove-kept <name>
 //! --job uninstall [--delete-data]       (everything Setup installed but the Platform Manager;
 //!                                       the data kept unless --delete-data)
+//! --job package-identity [<label>]    (Microsoft Store build: the package identity, and where
+//!                                       writes to ProgramData, HKLM and HKCU really land)
+//! --job msix-manifest --template <file> --out <file> --version <v> --identity-name <name>
+//!       --publisher <CN=...> --publisher-display-name <name>
+//!                                       (the Store package's AppxManifest.xml)
 //! --job uninstall --parts sentient,postgres,clickhouse,gateway,shortcuts,manager
 //!       [--keep-files] [--keep-pg-data] [--keep-ch-data] [--wsl-distro] [--wsl]
 //!                                       (the parts picked; pg-database / ch-database drop only
@@ -247,6 +252,23 @@ fn run_job(args: &[String]) -> i32 {
     // a job run as its own process; those check the rights themselves.
     if args.first().map(String::as_str) == Some("serve") {
         return crate::remote::serve::run();
+    }
+    // The Microsoft Store build's checks (crate::store), any account: what
+    // Windows does with this process's writes, and the package manifest.
+    if args.first().map(String::as_str) == Some("package-identity") {
+        return crate::store::probe_job(args);
+    }
+    if args.first().map(String::as_str) == Some("msix-manifest") {
+        return match crate::store::manifest_job(&args[1..]) {
+            Ok(version) => {
+                println!("{version}");
+                0
+            }
+            Err(e) => {
+                eprintln!("{e}");
+                1
+            }
+        };
     }
     if !crate::elevate::is_admin() {
         eprintln!("Run this from an elevated prompt (Run as administrator).");
@@ -495,6 +517,8 @@ fn run_job(args: &[String]) -> i32 {
             } else {
                 crate::maintenance_ops::run_remove_manager(sink)
             }
+        } else if crate::store::is_store() {
+            Err("The Microsoft Store installs this Platform Manager: there is nothing to install.".into())
         } else {
             let shortcuts = !args.iter().any(|a| a == "--no-shortcuts");
             let s = crate::self_install::Shortcuts {

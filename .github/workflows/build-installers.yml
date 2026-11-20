@@ -61,7 +61,7 @@ jobs:
             build=false
             case "$HEAD_REF" in spm/rc*) build=true ;; esac
             if [ "$build" = false ] && gh pr diff "$PR" --repo "$GITHUB_REPOSITORY" --name-only \
-                 | grep -qE '^(\.github/workflows/build-installers\.yml|packaging/(arch|linux|flatpak)/)'; then
+                 | grep -qE '^(\.github/workflows/build-installers\.yml|packaging/(arch|linux|flatpak|msix)/|scripts/package-msix\.ps1)'; then
               build=true
             fi
             echo "PR from $HEAD_REF: build=$build"
@@ -212,6 +212,108 @@ jobs:
           name: gpui-setup-windows
           if-no-files-found: error
           path: dist/*.exe
+
+  # The Microsoft Store package (MSIX) of the same program
+  # (scripts/package-msix.ps1, docs/MICROSOFT_STORE.md): always a release
+  # build. The package identity is the app's Partner Center identity
+  # (INVENIASYSTEMS.SENTIENTPlatformManager, built into the packaging
+  # script); the repository variables MSIX_IDENTITY_NAME, MSIX_PUBLISHER and
+  # MSIX_PUBLISHER_DISPLAY_NAME override it. The sideload package next to it
+  # has a test identity (never submitted). The Store takes final
+  # versions only: a release-candidate or nightly build is packaged with the
+  # version in app/Cargo.toml (its program still reports its own), for
+  # testing. Not attached to GitHub releases: the .msixupload goes to
+  # Partner Center by hand.
+  msix-store:
+    name: MSIX (Store)
+    needs: [gate, agents]
+    if: needs.gate.outputs.build == 'true'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: agent-*
+          path: agents
+          merge-multiple: true
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: app
+      - name: Build
+        working-directory: app
+        shell: bash
+        run: |
+          export SPM_LINUX_AGENT="$GITHUB_WORKSPACE/agents/sentient-platform-manager-agent-linux-x86_64"
+          export SPM_LINUX_AARCH64_AGENT="$GITHUB_WORKSPACE/agents/sentient-platform-manager-agent-linux-aarch64"
+          export SPM_WINDOWS_AGENT="$GITHUB_WORKSPACE/agents/sentient-platform-manager-agent-windows-x86_64.exe"
+          for f in "$SPM_LINUX_AGENT" "$SPM_LINUX_AARCH64_AGENT" "$SPM_WINDOWS_AGENT"; do test -s "$f" || { echo "missing agent $f"; exit 1; }; done
+          # The same version rules as gpui-windows.
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then export SPM_VERSION="${GITHUB_REF_NAME#v}"; fi
+          if [ -n "${{ needs.gate.outputs.version }}" ]; then export SPM_VERSION="${{ needs.gate.outputs.version }}"; fi
+          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
+            export SPM_COMMIT="$(echo '${{ github.event.pull_request.head.sha }}' | cut -c1-7)"
+            rc=$(echo '${{ github.head_ref }}' | sed -n 's|^spm/rc\([0-9][0-9]*\)-.*|\1|p')
+            base=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+            if [ -n "$rc" ]; then export SPM_VERSION="$base-rc$rc"; fi
+          fi
+          cargo build --release
+      # The program inside the package is Authenticode-signed like the
+      # download when the repository has the certificate (the package
+      # itself is signed by the Microsoft Store).
+      - name: Sign the program
+        shell: pwsh
+        env:
+          SPM_SIGN_PFX_BASE64: ${{ secrets.SPM_SIGN_PFX_BASE64 }}
+          SPM_SIGN_PFX_PASSWORD: ${{ secrets.SPM_SIGN_PFX_PASSWORD }}
+        run: ./scripts/sign-windows.ps1 -Path app\target\release\sentient-platform-manager.exe -Description "SENTIENT Platform Manager"
+      - name: Package
+        shell: pwsh
+        env:
+          MSIX_IDENTITY_NAME: ${{ vars.MSIX_IDENTITY_NAME }}
+          MSIX_PUBLISHER: ${{ vars.MSIX_PUBLISHER }}
+          MSIX_PUBLISHER_DISPLAY_NAME: ${{ vars.MSIX_PUBLISHER_DISPLAY_NAME }}
+        run: |
+          # The final version a v<version> tag names; otherwise (rc, nightly,
+          # a manual or PR build) the one in app/Cargo.toml.
+          $v = (Select-String -Path app\Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
+          if ($env:GITHUB_REF -match '^refs/tags/v(\d+\.\d+\.\d+)$') { $v = $Matches[1] }
+          # For Partner Center: unsigned, with the repository's identity.
+          ./scripts/package-msix.ps1 -Exe app\target\release\sentient-platform-manager.exe -Version $v -OutDir dist\store
+      # For a sideload test: the test identity (Publisher = INVENIA's
+      # code-signing certificate), signed with that certificate when the
+      # repository has it (docs/MICROSOFT_STORE.md, Sideload test).
+      - name: Package for sideloading
+        shell: pwsh
+        env:
+          SPM_SIGN_PFX_BASE64: ${{ secrets.SPM_SIGN_PFX_BASE64 }}
+          MSIX_SIGN_PFX_PASSWORD: ${{ secrets.SPM_SIGN_PFX_PASSWORD }}
+        run: |
+          $v = (Select-String -Path app\Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
+          if ($env:GITHUB_REF -match '^refs/tags/v(\d+\.\d+\.\d+)$') { $v = $Matches[1] }
+          $sign = @{}
+          if ($env:SPM_SIGN_PFX_BASE64) {
+            $pfx = Join-Path $env:RUNNER_TEMP "msix-sign.pfx"
+            [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:SPM_SIGN_PFX_BASE64))
+            $sign = @{ SignWith = $pfx }
+          } else {
+            Write-Host "::warning::No signing certificate in this repository: the sideload package is unsigned (sign it before Add-AppxPackage)."
+          }
+          try {
+            ./scripts/package-msix.ps1 -Exe app\target\release\sentient-platform-manager.exe -Version $v -OutDir dist\sideload -TestIdentity @sign
+          } finally {
+            if ($sign.SignWith) { Remove-Item -Force $sign.SignWith -ErrorAction SilentlyContinue }
+          }
+          Remove-Item -Force dist\sideload\*.msixupload
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: msix-store
+          if-no-files-found: error
+          path: |
+            dist/store/*.msix
+            dist/store/*.msixupload
+            dist/sideload/*.msix
 
   # The same program on Linux: SENTIENT-Setup installs the Platform Manager
   # and SENTIENT (Docker or native systemd). Built on 22.04 so it starts on

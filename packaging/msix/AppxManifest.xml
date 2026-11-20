@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Copyright © 2016-2026 The SENTIENT Authors
+
+  The SENTIENT Platform Manager's Microsoft Store package. A template:
+  scripts/package-msix.ps1 fills the placeholders through the program's
+  own "msix-manifest" job (app/src/store.rs), which refuses a template with
+  a value missing or a version the Store does not take. See
+  docs/MICROSOFT_STORE.md.
+
+  Capabilities: runFullTrust only, and nothing else (the Store reviews every
+  restricted capability). The program elevates with the normal UAC prompt,
+  from a copy of itself outside the package (app/src/store.rs).
+-->
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:uap3="http://schemas.microsoft.com/appx/manifest/uap/windows10/3"
+  xmlns:desktop="http://schemas.microsoft.com/appx/manifest/desktop/windows10"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap uap3 desktop rescap">
+
+  <Identity
+    Name="{{IDENTITY_NAME}}"
+    Publisher="{{PUBLISHER}}"
+    Version="{{VERSION}}"
+    ProcessorArchitecture="x64" />
+
+  <Properties>
+    <DisplayName>SENTIENT Platform Manager</DisplayName>
+    <PublisherDisplayName>{{PUBLISHER_DISPLAY_NAME}}</PublisherDisplayName>
+    <Description>Install, run, update and back up SENTIENT, the industrial IoT platform, on this computer and on your servers.</Description>
+    <Logo>Assets\StoreLogo.png</Logo>
+  </Properties>
+
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.19041.0" MaxVersionTested="10.0.26100.0" />
+  </Dependencies>
+
+  <Resources>
+    <Resource Language="en-us" />
+  </Resources>
+
+  <Applications>
+    <Application
+      Id="App"
+      Executable="sentient-platform-manager.exe"
+      EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements
+        DisplayName="SENTIENT Platform Manager"
+        Description="Install, run, update and back up SENTIENT."
+        BackgroundColor="transparent"
+        Square150x150Logo="Assets\Square150x150Logo.png"
+        Square44x44Logo="Assets\Square44x44Logo.png">
+        <uap:DefaultTile Wide310x150Logo="Assets\Wide310x150Logo.png" ShortName="SENTIENT PM" />
+      </uap:VisualElements>
+      <Extensions>
+        <!-- The program by name: sentient-platform-manager.exe in a command
+             prompt or the Run box starts the packaged app with its
+             arguments (the package-identity check, for example). -->
+        <uap3:Extension
+          Category="windows.appExecutionAlias"
+          Executable="sentient-platform-manager.exe"
+          EntryPoint="Windows.FullTrustApplication">
+          <uap3:AppExecutionAlias>
+            <desktop:ExecutionAlias Alias="sentient-platform-manager.exe" />
+          </uap3:AppExecutionAlias>
+        </uap3:Extension>
+      </Extensions>
+    </Application>
+  </Applications>
+
+  <Capabilities>
+    <rescap:Capability Name="runFullTrust"/>
+  </Capabilities>
+</Package>

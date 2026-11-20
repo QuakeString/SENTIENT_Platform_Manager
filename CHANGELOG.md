@@ -15,6 +15,19 @@ refreshes that repository's Downloads table.
 
 ## [Unreleased]
 
+### Added
+- The Platform Manager can be published in the Microsoft Store. Windows
+  then trusts it without a warning, and the Store keeps it up to date. The
+  Store app works like the download: the same pages, the same UAC prompt,
+  and Setup still continues by itself after the WSL restart. The
+  differences: its Update page says "Updates come from the Microsoft Store"
+  for the Platform Manager (SENTIENT and gateway updates work as before),
+  it has no shortcuts or Apps & features entry of its own (the Store app
+  has them), and it is uninstalled from Start or Settings > Apps.
+  Uninstalling SENTIENT in the app also removes what the app added outside
+  the Store app. The download from GitHub stays as it is. See
+  docs/MICROSOFT_STORE.md.
+
 ## [0.9.4] - 2026-11-19
 
 The gateway installs on remote Windows servers, the Platform Manager is code-signed by INVENIA SYSTEMS, Stable users get final releases, and Setup's progress, Windows ClickHouse disk use and self-update fixes.

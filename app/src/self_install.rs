@@ -59,6 +59,23 @@ pub use imp::*;
 #[cfg_attr(not(windows), allow(dead_code))]
 pub const COMPANY_WEBSITE: &str = "https://inveniasystems.com";
 
+/// The PowerShell that removes the Platform Manager's folder `dir` once
+/// process `pid` has ended (at most two minutes' wait), trying again for
+/// half a minute while Windows still holds the program, and appends the
+/// outcome to the activity log `log`.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn remove_later_script(pid: u32, dir: &str, log: &str) -> String {
+    let q = |s: &str| s.replace('\'', "''");
+    let (dir, log) = (q(dir), q(log));
+    format!(
+        "Wait-Process -Id {pid} -Timeout 120 -ErrorAction SilentlyContinue; \
+         for ($i = 0; $i -lt 30 -and (Test-Path -LiteralPath '{dir}'); $i++) {{ Start-Sleep -Seconds 1; Remove-Item -LiteralPath '{dir}' -Recurse -Force -ErrorAction SilentlyContinue }}; \
+         $t = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'; \
+         if (Test-Path -LiteralPath '{dir}') {{ $m = $t + ' Could not remove {dir}: a program still uses it. Delete the folder after a restart.' }} else {{ $m = $t + ' Removed {dir}' }}; \
+         Add-Content -LiteralPath '{log}' -Value $m -ErrorAction SilentlyContinue"
+    )
+}
+
 #[cfg(windows)]
 mod imp {
     use super::{APP_PATH_KEY, PRODUCT, START_MENU_NAME, Shortcuts};
@@ -68,7 +85,14 @@ mod imp {
     const DESKTOP: &str = r"C:\Users\Public\Desktop";
     const START_MENU: &str = r"C:\ProgramData\Microsoft\Windows\Start Menu\Programs";
 
+    /// The Platform Manager's folder: Program Files for the download; for
+    /// the Microsoft Store build the helper's folder in ProgramData
+    /// (crate::store), since the package's own folder is read-only and
+    /// changes with every Store update.
     pub fn manager_dir() -> PathBuf {
+        if crate::store::is_store() {
+            return crate::store::helper_dir();
+        }
         PathBuf::from(r"C:\Program Files").join(PRODUCT)
     }
 
@@ -93,6 +117,12 @@ mod imp {
         }
         std::fs::create_dir_all(manager_dir())
             .map_err(|e| format!("create {}: {e}", manager_dir().display()))?;
+        // The Store build's helper folder is in ProgramData, where every
+        // user may add files: only SYSTEM and the Administrators may change
+        // it before a program that services run is put there.
+        if crate::store::is_store() {
+            crate::store::lock_helper_dir(&manager_dir())?;
+        }
         // A running copy cannot be overwritten. The ClickHouse shutdown
         // guard is this program too (a LocalSystem service): taskkill ends
         // it without its stop handler, so ClickHouse keeps running, and it
@@ -115,6 +145,9 @@ mod imp {
             };
             format!("copy to {}: {e}.{hint}", target.display())
         })?;
+        if crate::store::is_store() {
+            crate::store::after_helper_installed(&target);
+        }
         Ok(target)
     }
 
@@ -195,6 +228,11 @@ mod imp {
     /// The Start menu entry under its searchable name, replacing the one an
     /// earlier Platform Manager made, and the `spm` command.
     fn start_menu_entry(manager: &Path) -> Result<(), String> {
+        // The Store package has its own Start menu entry and command
+        // (its app execution alias).
+        if crate::store::is_store() {
+            return Ok(());
+        }
         let (_, old) = super::start_menu_links(START_MENU);
         shortcut(manager, START_MENU, START_MENU_NAME, "--manager")?;
         let _ = std::fs::remove_file(old);
@@ -218,7 +256,9 @@ mod imp {
             note(Owner::Manager, [PathBuf::from(super::start_menu_links(START_MENU).0)]);
             note(Owner::Sentient, [PathBuf::from(format!(r"{START_MENU}\SENTIENT.url"))]);
         }
-        if s.desktop_manager {
+        // The Store build's desktop shortcut is the user's own (pinned
+        // from Start): one to the helper would skip the Store's updates.
+        if s.desktop_manager && !crate::store::is_store() {
             shortcut(manager, DESKTOP, PRODUCT, "--manager")?;
             note(Owner::Manager, [PathBuf::from(format!(r"{DESKTOP}\{PRODUCT}.lnk"))]);
         }
@@ -236,6 +276,9 @@ mod imp {
 
     /// Shortcuts of a Platform Manager installed without SENTIENT.
     pub fn create_manager_shortcuts(manager: &Path, s: &Shortcuts) -> Result<(), String> {
+        if crate::store::is_store() {
+            return Ok(());
+        }
         if s.start_menu {
             start_menu_entry(manager)?;
         }
@@ -250,6 +293,10 @@ mod imp {
     /// The Apps & features entry of a Platform Manager installed alone.
     /// SENTIENT's own entry replaces it once SENTIENT is installed.
     pub fn register_manager_entry(manager: &Path) {
+        // The Store package is listed in Apps & features by Windows.
+        if crate::store::is_store() {
+            return;
+        }
         let exe = manager.display().to_string();
         for (name, kind, data) in [
             ("DisplayName", "REG_SZ", PRODUCT.to_string()),
@@ -299,18 +346,73 @@ mod imp {
     }
 
     /// Delete the manager's folder once this process has exited (it may be
-    /// running from there).
+    /// running from there). A process cannot delete its own program while
+    /// it runs, so a PowerShell started now waits for it to end, then
+    /// deletes the folder (tried again for half a minute while Windows
+    /// still holds the program) and notes the outcome in the activity log.
+    /// It is started outside this program's job: the Microsoft Store
+    /// build's helper was started by the package (an elevated start can take
+    /// its parent's job), and whatever ends that job would end the
+    /// PowerShell too. Where Windows refuses that, it runs inside the job,
+    /// and the files are also marked for deletion at the next restart.
     pub fn remove_manager_later() {
-        // PowerShell rather than cmd: Rust escapes embedded quotes in a way
-        // cmd does not read, which left the folder behind. It waits for this
-        // process (which may be running from that folder) to exit first.
-        let script = format!(
-            "Wait-Process -Id {pid} -ErrorAction SilentlyContinue; Start-Sleep -Seconds 1; \
-             Remove-Item -LiteralPath '{dir}' -Recurse -Force -ErrorAction SilentlyContinue",
-            pid = std::process::id(),
-            dir = manager_dir().display().to_string().replace('\'', "''"),
-        );
-        let _ = quiet("powershell.exe").args(["-NoProfile", "-NonInteractive", "-Command", &script]).spawn();
+        let dir = manager_dir();
+        let script = super::remove_later_script(std::process::id(), &dir.display().to_string(), &crate::maintenance_ops::activity_log().display().to_string());
+        let spawn = |flags: u32| {
+            use std::os::windows::process::CommandExt;
+            // Its working folder outside the one it removes: PowerShell does
+            // not delete a folder that holds its own current location, and
+            // it would inherit this program's (the helper folder).
+            let cwd = std::env::var_os("SystemRoot").map(std::path::PathBuf::from).unwrap_or_else(std::env::temp_dir);
+            Command::new("powershell.exe").args(["-NoProfile", "-NonInteractive", "-Command", &script]).current_dir(cwd).creation_flags(flags).spawn()
+        };
+        const NO_WINDOW: u32 = 0x0800_0000; // CREATE_NO_WINDOW
+        const BREAKAWAY: u32 = 0x0100_0000; // CREATE_BREAKAWAY_FROM_JOB
+        let log = crate::maintenance_ops::log_line;
+        match spawn(NO_WINDOW | BREAKAWAY) {
+            Ok(_) => log(&format!("Removing {} once the Platform Manager has closed", dir.display())),
+            Err(_) => {
+                let inside = spawn(NO_WINDOW);
+                delete_at_restart(&dir);
+                log(&match inside {
+                    Ok(_) => format!("Removing {} once the Platform Manager has closed (also marked for the next restart)", dir.display()),
+                    Err(e) => format!("Could not start the removal of {}: {e}. It is removed at the next restart", dir.display()),
+                });
+            }
+        }
+    }
+
+    /// Mark `dir`'s files, then `dir` itself, for deletion when Windows
+    /// next starts (MoveFileEx with MOVEFILE_DELAY_UNTIL_REBOOT; needs
+    /// administrator rights). Entries for files already gone by then are
+    /// skipped by Windows.
+    fn delete_at_restart(dir: &Path) {
+        use windows_sys::Win32::Storage::FileSystem::{MOVEFILE_DELAY_UNTIL_REBOOT, MoveFileExW};
+        let mark = |p: &Path| {
+            let wide: Vec<u16> = p.as_os_str().encode_wide_nul();
+            // SAFETY: a NUL-terminated UTF-16 path that lives for the call;
+            // a null new name means "delete".
+            unsafe { MoveFileExW(wide.as_ptr(), std::ptr::null(), MOVEFILE_DELAY_UNTIL_REBOOT) };
+        };
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for e in entries.flatten() {
+                if e.file_type().is_ok_and(|t| t.is_file()) {
+                    mark(&e.path());
+                }
+            }
+        }
+        mark(dir);
+    }
+
+    trait WideNul {
+        fn encode_wide_nul(&self) -> Vec<u16>;
+    }
+
+    impl WideNul for std::ffi::OsStr {
+        fn encode_wide_nul(&self) -> Vec<u16> {
+            use std::os::windows::ffi::OsStrExt;
+            self.encode_wide().chain(std::iter::once(0)).collect()
+        }
     }
 
     /// SENTIENT in Docker in the Platform Manager's own WSL distro: it
@@ -781,5 +883,27 @@ mod manager_in_place_tests {
         use std::path::Path;
         assert!(super::same_program(Path::new("/opt/sentient-platform-manager/sentient-platform-manager"), Path::new("/opt/sentient-platform-manager/sentient-platform-manager")));
         assert!(!super::same_program(Path::new("/home/op/Downloads/SENTIENT-Setup-manager-0.9.1-linux-x86_64"), Path::new("/opt/sentient-platform-manager/sentient-platform-manager")));
+    }
+}
+
+#[cfg(test)]
+mod remove_later_tests {
+    #[test]
+    fn the_folder_goes_after_the_program_has_ended_and_the_outcome_is_logged() {
+        let s = super::remove_later_script(4242, r"C:\ProgramData\SENTIENT\Platform Manager\app", r"C:\ProgramData\SENTIENT\activity.log");
+        let wait = s.find("Wait-Process -Id 4242 -Timeout 120").unwrap();
+        let remove = s.find(r"Remove-Item -LiteralPath 'C:\ProgramData\SENTIENT\Platform Manager\app' -Recurse -Force").unwrap();
+        let log = s.find(r"Add-Content -LiteralPath 'C:\ProgramData\SENTIENT\activity.log'").unwrap();
+        assert!(wait < remove && remove < log);
+        // Tried again while Windows still holds the program.
+        assert!(s.contains("$i -lt 30"));
+        // No double quotes: they would have to survive the command line.
+        assert!(!s.contains('"'));
+    }
+
+    #[test]
+    fn a_quote_in_a_path_is_doubled() {
+        let s = super::remove_later_script(1, r"C:\O'Brien\app", r"C:\log");
+        assert!(s.contains(r"'C:\O''Brien\app'"));
     }
 }

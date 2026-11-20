@@ -185,6 +185,18 @@ pub(crate) fn output_tracked(program: &str, args: &[&str]) -> Option<(bool, Vec<
     Some((o.status.success(), o.stdout, o.stderr))
 }
 
+/// [`output_tracked`] with the exit code (None: ended without one).
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn output_tracked_code(program: &str, args: &[&str]) -> Option<(Option<i32>, Vec<u8>, Vec<u8>)> {
+    use std::process::Stdio;
+    let child = command(program).args(args).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().ok()?;
+    crate::cancel::register_pid(child.id());
+    let o = child.wait_with_output();
+    crate::cancel::clear_pid();
+    let o = o.ok()?;
+    Some((o.status.code(), o.stdout, o.stderr))
+}
+
 /// [`output`] that gives up after `limit`: the child is killed and the
 /// answer is a failure saying so. For steps an uninstall must not hang on.
 pub fn output_limited(program: &str, args: &[&str], limit: std::time::Duration) -> Option<(bool, Vec<u8>, Vec<u8>)> {

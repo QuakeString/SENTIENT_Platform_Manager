@@ -615,6 +615,24 @@ pub fn not_installed(theme: &Theme) -> Div {
     if sentient_installer_core::host::in_flatpak() {
         return flatpak_local_notice(theme);
     }
+    // An install that stopped for the WSL restart comes first.
+    match crate::installer::plan::pending_offer_now() {
+        crate::installer::plan::PendingOffer::Button | crate::installer::plan::PendingOffer::Resume => {
+            return panel(theme)
+                .child(div().font_weight(FontWeight::MEDIUM).child("The SENTIENT install has not finished"))
+                .child(div().text_sm().text_color(theme.muted_foreground).child("It stopped for the Windows restart. Setup continues where it stopped, with the choices you made."))
+                .child(button_row(vec![
+                    crate::ui::button("resume-install").primary().label("Continue the SENTIENT install").on_click(|_, window, cx| crate::standalone::resume_install(window, cx)).into_any_element(),
+                    crate::ui::button("install-sentient").outline().label("Start a new install").on_click(|_, window, cx| crate::standalone::install_sentient(window, cx)).into_any_element(),
+                ]));
+        }
+        crate::installer::plan::PendingOffer::AfterRestart => {
+            return panel(theme)
+                .child(div().font_weight(FontWeight::MEDIUM).child("Restart Windows to finish installing SENTIENT"))
+                .child(div().text_sm().text_color(theme.muted_foreground).child("WSL 2 is turned on after the restart. Setup then continues by itself after you sign in."));
+        }
+        crate::installer::plan::PendingOffer::None => {}
+    }
     // One short line; the how-to behind the (i). The buttons wrap on a
     // narrow window. Removing the Platform Manager lives in Repair.
     panel(theme)

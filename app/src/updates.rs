@@ -342,6 +342,8 @@ pub fn check_with(channel: Channel, installed: Option<String>, native: bool, for
         }
     };
     let (manager, manager_candidate) = match &all {
+        // The Microsoft Store updates the Store build: nothing to offer.
+        _ if crate::store::is_store() => (Ok(None), None),
         Err(e) => (Err(e.clone()), None),
         Ok(all) => {
             let offer = newest_manager(all, channel, manager_version());
@@ -519,12 +521,18 @@ fn mb(bytes: u64) -> String {
     format!("{:.1} MB", bytes as f64 / 1_000_000.0)
 }
 
+/// What the Store build says about its own updates.
+pub const STORE_UPDATES: &str = "Updates come from the Microsoft Store.";
+
 /// Download the Platform Manager `offer` and hand over to it: it replaces
 /// this program and starts the manager again (`--self-update`). Returns
 /// once the new program runs; the caller then quits. The file is checked
 /// against its published SHA-256 before anything is replaced; without one
 /// it is not used.
 pub fn install_manager(offer: &Offer, sink: &ProgressFn) -> Result<(), String> {
+    if crate::store::is_store() {
+        return Err(STORE_UPDATES.into());
+    }
     #[cfg(not(windows))]
     if let Some(owner) = crate::self_install::owner() {
         return Err(format!("This Platform Manager was installed with {tool}: update it with {tool} (the new package is on the release page).", tool = owner.tool()));
@@ -624,6 +632,10 @@ pub fn install_manager(offer: &Offer, sink: &ProgressFn) -> Result<(), String> {
 /// manager lives and start it there, telling it which version it replaced
 /// (`--updated-from`), so it can say so and list what it changes.
 pub fn finish_self_update() -> i32 {
+    if crate::store::is_store() {
+        eprintln!("{STORE_UPDATES}");
+        return 1;
+    }
     let args: Vec<String> = std::env::args().collect();
     let from = args.windows(2).find(|w| w[0] == "--from").map(|w| w[1].clone());
     // The previous manager quits once this has started.

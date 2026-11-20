@@ -86,6 +86,7 @@ mod secrets;
 mod secrets_key;
 mod self_install;
 mod shortcuts;
+mod store;
 #[cfg(feature = "gui")]
 mod sftp;
 mod sentient_admin;
@@ -159,6 +160,13 @@ fn main() {
     // --root-session): it runs the job's root steps sent over its pipe.
     if let Some(code) = sentient_installer_core::elevation::serve_if_requested(&args) {
         std::process::exit(code);
+    }
+    // The Microsoft Store build's staged copy, started as administrator
+    // from the package: it puts the helper in place and starts it
+    // (crate::store).
+    #[cfg(windows)]
+    if args.get(1).map(String::as_str) == Some(store::STAGE_ARG) {
+        std::process::exit(store::finish_stage(&args[2..]));
     }
     if args.get(1).map(String::as_str) == Some("--clickhouse-agent") {
         std::process::exit(agent::run(args.get(2).map(String::as_str).unwrap_or("")));
@@ -264,7 +272,25 @@ pub(crate) fn open_manager_window(options: WindowOptions, cx: &mut gpui_kit::App
 
 #[cfg(feature = "gui")]
 fn gui_main(args: Vec<String>) {
-    let mode = AppMode::detect();
+    // Started from the Microsoft Store package: the helper copy outside the
+    // package does the work (crate::store); this start only hands over.
+    #[cfg(windows)]
+    if store::flavour() == store::Flavour::Packaged {
+        store::hand_over(&args[1..]);
+        return;
+    }
+    store::clean_staging();
+    let mut mode = AppMode::detect();
+    // An install that stopped for the WSL restart and was not continued
+    // after it (the sign-in prompt was declined or timed out): a plain
+    // start of the Platform Manager (or of Setup) opens Setup on its
+    // install step and continues it, as the RunOnce entry's `--resume`
+    // would have.
+    if matches!(mode, AppMode::Manager | AppMode::Install) && installer::plan::plain_start(&args) && installer::plan::pending_offer_now() == installer::plan::PendingOffer::Resume {
+        maintenance_ops::log_line("An install stopped for the restart: continuing it");
+        installer::RESUME_AT_START.store(true, std::sync::atomic::Ordering::Relaxed);
+        mode = AppMode::Install;
+    }
     // The Platform Manager runs once per user: a later start (a menu entry,
     // a taskbar action) hands its request to the running one, before asking
     // for administrator rights again.

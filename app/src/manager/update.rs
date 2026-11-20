@@ -889,6 +889,8 @@ impl UpdatePage {
         // Platform Manager row.
         let manager_row = {
             let (sub, pill): (String, Option<(Tone, &str)>) = match (&found, &manager_offer) {
+                // The Microsoft Store build: the Store updates it.
+                _ if crate::store::is_store() => (format!("{this} installed. {}", crate::updates::STORE_UPDATES), Some((Tone::Neutral, "Microsoft Store"))),
                 (None, _) if checking => (format!("{this} installed. Checking…"), None),
                 (None, _) => (format!("{this} installed."), Some((Tone::Neutral, "Not checked"))),
                 (Some(f), _) if f.manager.is_err() => (format!("{this} installed."), Some((Tone::Neutral, "Not checked"))),

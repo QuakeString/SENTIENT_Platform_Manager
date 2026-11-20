@@ -191,6 +191,39 @@ fn ensure_kernel(sink: &ProgressFn) {
     }
 }
 
+/// The program of Microsoft's "Welcome to Windows Subsystem for Linux"
+/// window, which the WSL package opens after it is installed.
+pub const WELCOME_EXE: &str = "wslsettings.exe";
+
+/// Of `processes` (process id, program name, start in seconds since 1970),
+/// the welcome windows that opened at `since` or later: the ones the
+/// install's own WSL step caused. One the user opened earlier stays.
+pub fn welcome_windows(processes: &[(u32, String, u64)], since: u64) -> Vec<u32> {
+    processes.iter().filter(|(_, name, start)| name.eq_ignore_ascii_case(WELCOME_EXE) && *start >= since).map(|(pid, _, _)| *pid).collect()
+}
+
+/// Close the welcome window the WSL package opened during an install that
+/// began at `since` (seconds since 1970). Only that program, by its exact
+/// name; nothing else is touched.
+#[cfg(windows)]
+pub fn close_welcome_window(sink: &ProgressFn, since: u64) {
+    let mut system = sysinfo::System::new();
+    system.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
+    let list: Vec<(u32, String, u64)> = system.processes().iter().map(|(pid, p)| (pid.as_u32(), p.name().to_string_lossy().to_string(), p.start_time())).collect();
+    let found = welcome_windows(&list, since);
+    for pid in &found {
+        if let Some(p) = system.process(sysinfo::Pid::from_u32(*pid)) {
+            p.kill();
+        }
+    }
+    if !found.is_empty() {
+        sink(Progress::Log { line: "Closed Microsoft's WSL welcome window that the WSL install opened".into() });
+    }
+}
+
+#[cfg(not(windows))]
+pub fn close_welcome_window(_sink: &ProgressFn, _since: u64) {}
+
 /// Microsoft's WSL 2 kernel for the inbox WSL (Windows 10 before the WSL
 /// package runs there).
 pub const KERNEL_MSI_X64: &str = "https://wslstorestorage.blob.core.windows.net/wslblob/wsl_update_x64.msi";
@@ -304,17 +337,42 @@ fn install_signed_msi(sink: &ProgressFn, url: &str, file: &str) -> Result<(), St
     }
     sink(Progress::Step { name: format!("Installing {}", if file.contains("kernel") { "the WSL 2 kernel" } else { "the WSL package" }) });
     let path = msi.display().to_string();
-    let result = sys::output_tracked("msiexec.exe", &["/i", &path, "/quiet", "/norestart"]);
+    let result = sys::output_tracked_code("msiexec.exe", &["/i", &path, "/quiet", "/norestart"]);
     let _ = std::fs::remove_file(&msi);
     match result {
-        Some((true, _, _)) => Ok(()),
-        // 3010: installed, a restart finishes it.
-        Some((false, out, err)) => {
-            let t = format!("{}{}", sys::decode(&out), sys::decode(&err));
-            if t.contains("3010") { Ok(()) } else { Err(format!("msiexec failed {}", t.trim())) }
-        }
+        Some((code, out, err)) => msiexec_result(code, &format!("{}{}", sys::decode(&out), sys::decode(&err))),
         None => Err("could not run msiexec.exe".into()),
     }
+}
+
+/// What an `msiexec /quiet` exit code means. It prints nothing itself, so
+/// the code is the reason. 3010 and 1641: installed, a restart finishes it.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn msiexec_result(code: Option<i32>, output: &str) -> Result<(), String> {
+    let meaning = match code {
+        Some(0 | 3010 | 1641) => return Ok(()),
+        Some(1601) => "the Windows Installer service could not be reached",
+        Some(1602) => "the installation was cancelled",
+        Some(1603) => "a fatal error occurred during installation; this update may need Windows to restart first, or WSL to be turned on",
+        Some(1618) => "another installation is in progress; try again when it has finished",
+        Some(1619 | 1620) => "the installation package could not be opened",
+        Some(1625) => "a system policy does not allow this installation",
+        Some(1633) => "this installation package is not supported on this computer",
+        Some(1638) => "another version of this product is already installed",
+        Some(1639) => "the command line was not accepted",
+        Some(_) => "",
+        None => "it was stopped before it finished",
+    };
+    let mut m = match code {
+        Some(c) if meaning.is_empty() => format!("msiexec ended with code {c}"),
+        Some(c) => format!("msiexec ended with code {c}: {meaning}"),
+        None => format!("msiexec failed: {meaning}"),
+    };
+    let output = output.trim();
+    if !output.is_empty() {
+        m.push_str(&format!(" ({output})"));
+    }
+    Err(m)
 }
 
 /// What Setup knows about this computer's WSL 2, read before the engine
@@ -495,6 +553,32 @@ pub fn account_wslconfig() -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_welcome_window_opened_during_the_install_is_closed() {
+        let list = vec![
+            (10, "wslsettings.exe".to_string(), 1_000),
+            (11, "WslSettings.exe".to_string(), 2_000),
+            (12, "wsl.exe".to_string(), 2_000),
+            (13, "wslsettings.exe.bak".to_string(), 2_000),
+            (14, "wslsettings.exe".to_string(), 1_500),
+        ];
+        assert_eq!(welcome_windows(&list, 1_500), vec![11, 14]);
+        assert!(welcome_windows(&list, 3_000).is_empty());
+    }
+
+    #[test]
+    fn msiexec_says_what_its_code_means() {
+        assert_eq!(msiexec_result(Some(0), ""), Ok(()));
+        assert_eq!(msiexec_result(Some(3010), ""), Ok(()));
+        assert_eq!(msiexec_result(Some(1641), ""), Ok(()));
+        let e = msiexec_result(Some(1603), "").unwrap_err();
+        assert!(e.starts_with("msiexec ended with code 1603: a fatal error"), "{e}");
+        assert_eq!(msiexec_result(Some(1618), "").unwrap_err(), "msiexec ended with code 1618: another installation is in progress; try again when it has finished");
+        assert_eq!(msiexec_result(Some(42), "").unwrap_err(), "msiexec ended with code 42");
+        assert_eq!(msiexec_result(Some(42), " oops \n").unwrap_err(), "msiexec ended with code 42 (oops)");
+        assert!(msiexec_result(None, "").unwrap_err().contains("stopped before it finished"));
+    }
 
     #[test]
     fn wsl_that_runs_is_ready() {

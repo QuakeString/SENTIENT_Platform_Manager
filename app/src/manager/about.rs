@@ -278,13 +278,19 @@ impl Render for AboutPage {
         let last = u.last_checked();
         // Only two pills: "Up to date" or "Update available". Before a check
         // has answered in this run there is no pill and the line says so.
+        // The Microsoft Store build is updated by the Store: no check, pill,
+        // channel or schedule for it here (SENTIENT's own updates keep
+        // theirs on the Update page).
+        let store = crate::store::is_store();
         let state: Option<(Tone, &str)> = match (&u.found, u.manager()) {
+            _ if store => None,
             (_, Some(_)) => Some((Tone::Warn, "Update available")),
             (Some(f), None) if f.manager.is_ok() => Some((Tone::Good, "Up to date")),
             _ => None,
         };
         // The version alone until a check has answered, then what it found.
         let checked_line = match (&u.found, u.manager()) {
+            _ if store => format!(". {}", crate::updates::STORE_UPDATES),
             _ if checking => " · checking for updates…".to_string(),
             (_, Some(o)) => format!(" · {} available", o.version),
             (Some(f), None) if f.manager.is_ok() => " · up to date".to_string(),
@@ -314,13 +320,15 @@ impl Render for AboutPage {
                         .items_center()
                         .when_some(state, |r, (tone, text)| r.child(ui::pill(&theme, tone, text)))
                         .child(crate::ui::probed(crate::ui::button("about-notes").outline().label("What's new").on_click(cx.listener(|_, _, _, cx| cx.emit(ShowWhatsNew)))))
-                        .child(crate::ui::probed(
-                            crate::ui::button("about-check")
-                                .outline()
-                                .label(if checking { "Checking" } else { "Check for updates" })
-                                .disabled(checking)
-                                .on_click(cx.listener(|this, _, _, cx| this.updates.update(cx, |u, cx| u.check_now(cx)))),
-                        )),
+                        .when(!store, |r| {
+                            r.child(crate::ui::probed(
+                                crate::ui::button("about-check")
+                                    .outline()
+                                    .label(if checking { "Checking" } else { "Check for updates" })
+                                    .disabled(checking)
+                                    .on_click(cx.listener(|this, _, _, cx| this.updates.update(cx, |u, cx| u.check_now(cx)))),
+                            ))
+                        }),
                 ),
         );
         let channels = ui::seg_track(&theme).children(Channel::ALL.into_iter().map(|c| {
@@ -385,8 +393,10 @@ impl Render for AboutPage {
                         menu
                     }) }
             }).border_t_0())
-            .child(pref_row(&theme, "Update channel", Some("Release candidates arrive earlier and are less tested."), channels))
-            .child(pref_row(&theme, "Check for updates", None, checks))
+            .when(!store, |p| {
+                p.child(pref_row(&theme, "Update channel", Some("Release candidates arrive earlier and are less tested."), channels))
+                    .child(pref_row(&theme, "Check for updates", None, checks))
+            })
             .children(self.background_rows(&theme, cx));
         crate::ui::set_stacked(f32::from(_window.viewport_size().width) < crate::ui::ROW_STACK_W);
         let company = self.company_panel(&theme, cx);
@@ -431,7 +441,9 @@ impl Render for AboutPage {
         };
         let footer = v_flex()
             .gap_0p5()
-            .child(place("copy-installed", "Installed in", crate::self_install::manager_dir().display().to_string()))
+            // The Microsoft Store build: the app is the Store's; the copy
+            // that does the work lives in ProgramData (crate::store).
+            .child(place("copy-installed", if crate::store::is_store() { "From the Microsoft Store; helper in" } else { "Installed in" }, crate::self_install::manager_dir().display().to_string()))
             .child(place("copy-data", "Data in", crate::updates::prefs_dir().display().to_string()));
         v_flex()
             .id("about")
