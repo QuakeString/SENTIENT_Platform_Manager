@@ -171,9 +171,9 @@ pub fn update_blocker(s: &Status, version: &str, has_installer: bool, windows: b
     match s.kind() {
         "docker" if windows => Some("On Windows the Platform Manager runs the gateway as a Windows service, not in Docker: update this container the way it was started.".into()),
         "docker" if !s.managed => Some(match &s.compose_dir {
-            Some(dir) => format!("This container comes from a compose file in {dir}: set its image to {IMAGE}:{version} in that file and run docker compose up -d."),
+            Some(dir) => format!("This container comes from a compose file in {dir}: Take it over to update it here, or set its image to {IMAGE}:{version} in that file and run docker compose up -d."),
             None => format!(
-                "This container ({}) was started outside the Platform Manager: start it again with the image {IMAGE}:{version} the way it was started.",
+                "This container ({}) was started outside the Platform Manager: Take it over to update it here, or start it again with the image {IMAGE}:{version} the way it was started.",
                 s.container.as_deref().unwrap_or("?")
             ),
         }),
@@ -248,23 +248,36 @@ pub fn newest(channel: releases::Channel) -> Result<Option<Offer>, String> {
 /// when GitHub's list cannot be had at all, the newest image tag on the
 /// channel stands in (no notes). `force`: an explicit check.
 pub fn newest_with(channel: releases::Channel, docker: bool, force: bool) -> Result<Option<Offer>, String> {
-    let all = match releases::list(releases::SENTIENT_REPO, force) {
-        Ok(l) => l.value,
-        Err(e) if docker => {
-            let tags = crate::dockerhub::tags(IMAGE, force).map_err(|_| e)?;
-            return Ok(crate::dockerhub::newest(&tags.value, channel).map(|version| Offer {
-                version,
-                date: String::new(),
-                notes: String::new(),
-                page: String::new(),
-                installer: None,
-                checksum: None,
-                image_missing: false,
-            }));
-        }
+    let from_hub = |force: bool| -> Result<Option<Offer>, String> {
+        let tags = crate::dockerhub::tags(IMAGE, force)?;
+        Ok(crate::dockerhub::newest(&tags.value, channel).map(|version| Offer {
+            version,
+            date: String::new(),
+            notes: String::new(),
+            page: String::new(),
+            installer: None,
+            checksum: None,
+            image_missing: false,
+        }))
+    };
+    let (all, stale) = match releases::list(releases::SENTIENT_REPO, force) {
+        Ok(l) => (l.value, l.stale.is_some()),
+        Err(e) if docker => return from_hub(force).map_err(|_| e),
         Err(e) => return Err(e),
     };
-    let Some(mut offer) = newest_in(&all, channel) else { return Ok(None) };
+    let listed = newest_in(&all, channel);
+    // GitHub refused or could not be reached, so the list is an old one: a
+    // release published since is missing from it. A gateway in Docker takes
+    // the newest image tag when that is newer (its notes come with the
+    // next list).
+    if stale && docker {
+        if let Ok(Some(hub)) = from_hub(force) {
+            if listed.as_ref().is_none_or(|o| releases::is_newer(&hub.version, &o.version, false)) {
+                return Ok(Some(hub));
+            }
+        }
+    }
+    let Some(mut offer) = listed else { return Ok(None) };
     // Unknown (Docker Hub not reachable): not held against it.
     offer.image_missing = crate::dockerhub::tag_exists(IMAGE, &offer.version, force) == Ok(false);
     Ok(Some(offer))

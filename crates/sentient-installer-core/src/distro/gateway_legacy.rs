@@ -307,6 +307,7 @@ pub fn docker_spec(spec: &RunSpec, devices: &[super::gateway_docker::SerialDevic
         group_add,
         cap_add: Vec::new(),
         mounts: spec.mounts.iter().map(|(s, d)| (s.clone(), d.clone(), false, s.starts_with('/'))).collect(),
+        ..Default::default()
     }
 }
 

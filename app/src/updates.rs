@@ -25,6 +25,10 @@ use sentient_installer_core::signing::{self, Product};
 /// it is due.
 const DAILY: Duration = Duration::from_secs(24 * 3600);
 const TICK: Duration = Duration::from_secs(15 * 60);
+/// What a check found is used this long; a page opened later, and the
+/// ticker, look again (the release lists' own cache has the same window,
+/// so this asks GitHub at most as often as before).
+const FRESH: Duration = Duration::from_secs(30 * 60);
 
 /// This program's version: the release tag CI builds it from
 /// (`SPM_VERSION`, e.g. `0.8.0-rc6`), else the crate's.
@@ -283,12 +287,9 @@ pub struct Found {
 /// Look on the channel. Blocking: run it in the background.
 /// `installed` is SENTIENT's version here (None when it is not installed);
 /// `native` says whether this computer needs a package for its system.
-pub fn check(channel: Channel, installed: Option<String>, native: bool) -> Found {
-    check_with(channel, installed, native, false)
-}
-
-/// [`check`]; `force`: "Check for updates" was pressed, so the release list
-/// is asked for again even inside its 30 minutes (at most once a minute).
+/// `force`: "Check for updates" or a page's refresh was pressed, so the
+/// release list is asked for again even inside its 30 minutes (at most once
+/// a minute).
 pub fn check_with(channel: Channel, installed: Option<String>, native: bool, force: bool) -> Found {
     // Renders: offers without a signature, before signing began
     // ("unsigned") or after ("refused").
@@ -425,11 +426,17 @@ fn docker_offer_in(tags: &[String], channel: Channel, installed: &str) -> Option
 /// the server, which downloads them (crate::online::download there).
 #[cfg_attr(not(feature = "gui"), allow(dead_code))]
 pub fn newest_sentient(channel: Channel) -> Result<Option<String>, String> {
+    newest_sentient_with(channel, false)
+}
+
+/// [`newest_sentient`]; `force`: a refresh the person asked for (the
+/// release list read again inside its 30 minutes, at most once a minute).
+pub fn newest_sentient_with(channel: Channel, force: bool) -> Result<Option<String>, String> {
     #[cfg(debug_assertions)]
     if let Ok(v) = std::env::var("SPM_DEBUG_INSTALL_VERSION") {
         return Ok(Some(v));
     }
-    match releases::list(releases::SENTIENT_REPO, false) {
+    match releases::list(releases::SENTIENT_REPO, force) {
         Ok(l) => sentient_offer(&l.value, channel, "0", false, false).map(|o| o.map(|o| o.version)),
         Err(e) => docker_offer(channel, "0", false).map(|o| o.map(|o| o.version)).map_err(|_| e),
     }
@@ -708,7 +715,9 @@ impl UpdateState {
         let mut state = Self { prefs: Prefs::load(), found: None, checking: false, force_next: false, installed, native, _tasks: Vec::new() };
         // Due now (start-up), and every quarter of an hour whether a day passed.
         let ticker = cx.spawn(async move |this, cx| loop {
-            let due = this.update(cx, |s, _| s.prefs.due() && !s.checking).unwrap_or(false);
+            // A window left open: what was found goes stale too, so a
+            // release published since shows without a restart.
+            let due = this.update(cx, |s, _| (s.prefs.due() || (s.prefs.daily && s.found.is_some() && s.stale())) && !s.checking).unwrap_or(false);
             if due {
                 this.update(cx, |s, cx| s.check(cx)).ok();
             }
@@ -716,6 +725,12 @@ impl UpdateState {
         });
         state._tasks.push(ticker);
         state
+    }
+
+    /// Nothing found yet, or found more than [`FRESH`] ago: a page that
+    /// shows an offer checks again when it opens.
+    pub fn stale(&self) -> bool {
+        self.found.as_ref().is_none_or(|f| now().saturating_sub(f.at) >= FRESH.as_secs())
     }
 
     /// "Check for updates" pressed: the lists are asked for again, even

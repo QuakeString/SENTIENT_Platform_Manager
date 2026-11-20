@@ -33,7 +33,7 @@ MANAGER_VERSION=$(sed -n 's/^version *= *"\(.*\)"/\1/p' "$HERE/../../app/Cargo.t
 RECORDS="$OUT/records"; rm -rf "$RECORDS"; mkdir -p "$RECORDS"
 for f in "$HERE"/fixtures/record-*.json; do sed "s/@MANAGER_VERSION@/$MANAGER_VERSION/g" "$f" > "$RECORDS/$(basename "$f")"; done
 one() { # where page width scale theme [dialog env]
-  local where=$1 page=$2 w=$3 sc=$4 th=$5 dlg=${6:-} h=760
+  local where=$1 page=$2 w=$3 sc=$4 th=$5 dlg=${6:-} h=${HEIGHT:-760}
   # The dialog's env in the file name: "=" and "/" made safe.
   local tag="${dlg//=/-}"; tag="${tag//\//_}"
   local name="$where-$page-$w-x$sc-$th${dlg:+-$tag}" x="$OUT/xdg-$where-$page-$w-$sc-$th${dlg:+-$tag}"

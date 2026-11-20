@@ -111,11 +111,26 @@ pub struct LogView {
     /// This computer's Logs: what it showed is kept for the next window
     /// under this key ([`Kept`]); None for a dialog's or a server's view.
     kept_key: Option<String>,
+    /// On a page (this computer's Logs, a server's): the log box fills the
+    /// page's height, never less than [`FILL_MIN_H`]. In a dialog: [`DIALOG_H`].
+    fill: bool,
     _poll: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
 
+/// The log box in a dialog.
+const DIALOG_H: f32 = 480.;
+/// The log box on a page never gets lower than this; a window too low for
+/// it scrolls the page instead.
+const FILL_MIN_H: f32 = 240.;
+
 impl LogView {
+    /// On a page: the log box takes the page's height (see [`Self::fill`]).
+    pub fn filling(mut self) -> Self {
+        self.fill = true;
+        self
+    }
+
     /// A re-read that failed while the lines read before still show.
     pub fn stale(&self) -> Option<&str> {
         self.error.as_deref().filter(|_| !self.lines.is_empty())
@@ -157,6 +172,7 @@ impl LogView {
             paused: false,
             shown_on: None,
             kept_key: None,
+            fill: false,
             _poll: None,
             _subscriptions,
         };
@@ -606,8 +622,13 @@ impl Render for LogView {
                 .id(("log-wrap", i))
         });
         let total = count;
+        let fill = self.fill;
         v_flex()
             .gap_3()
+            // On a page: the rest of the page's height. Its smallest height
+            // is what it holds at the log box's FILL_MIN_H (the box below
+            // has that as a fixed basis and grows from it).
+            .when(fill, |v| v.flex_1())
             .child(toolbar)
             .children(self.status.clone().map(|s| div().text_sm().child(s)))
             .child(
@@ -627,7 +648,8 @@ impl Render for LogView {
                             cx.notify();
                         }
                     }))
-                    .h(px(480.))
+                    .when(fill, |p| p.h(px(FILL_MIN_H)).flex_grow(1.).flex_shrink_0())
+                    .when(!fill, |p| p.h(px(DIALOG_H)))
                     .track_scroll(&self.scroll)
                     .overflow_y_scroll()
                     .gap_0()
@@ -673,7 +695,7 @@ impl LogsPage {
 
     pub fn new(record: Option<InstallationRecord>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         // A gateway-only computer still has the gateway's log.
-        let view = (record.is_some() || logsource::gateway_here()).then(|| cx.new(|cx| LogView::local(record.clone(), window, cx)));
+        let view = (record.is_some() || logsource::gateway_here()).then(|| cx.new(|cx| LogView::local(record.clone(), window, cx).filling()));
         Self { view }
     }
 }
