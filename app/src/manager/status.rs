@@ -1181,10 +1181,11 @@ impl BrokenParts {
 fn summarize(out: &str, attach: bool) -> String {
     let ok = out.lines().filter(|l| l.starts_with("ok ")).count();
     let failed: Vec<&str> = out.lines().filter(|l| l.starts_with("failed ")).collect();
-    let verb = if attach { "restored" } else { "deleted" };
-    let mut s = tf!("{ok} part{} {verb}.", if ok == 1 { "" } else { "s" });
+    // Whole sentences per verb: a translation cannot take an English verb in.
+    let mut s = if attach { tf!("Parts restored: {ok}.") } else { tf!("Parts deleted: {ok}.") };
     if !failed.is_empty() {
-        s.push_str(&tf!(" {} could not be {verb}:\n{}", failed.len(), failed.iter().map(|l| l.trim_start_matches("failed ")).collect::<Vec<_>>().join("\n")));
+        let why = failed.iter().map(|l| l.trim_start_matches("failed ")).collect::<Vec<_>>().join("\n");
+        s.push_str(&if attach { tf!(" Could not be restored ({}):\n{why}", failed.len()) } else { tf!(" Could not be deleted ({}):\n{why}", failed.len()) });
     } else if ok == 0 && !out.trim().is_empty() {
         s = out.trim().to_string();
     }
