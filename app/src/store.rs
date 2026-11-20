@@ -250,12 +250,15 @@ pub fn check_identity_name(name: &str) -> Result<(), String> {
     if ok { Ok(()) } else { Err(format!("\"{name}\" is not a package name (3 to 50 letters, digits, dots or hyphens, as Partner Center shows it).")) }
 }
 
-/// The publisher as Partner Center gives it: a certificate subject (`CN=…`).
+/// The publisher: a certificate subject with a common name. Partner Center
+/// gives `CN=…`; a sideload test package carries its certificate's subject
+/// as Windows writes it (`C=IN, O=INVENIA SYSTEMS, CN=INVENIA SYSTEMS`).
 pub fn check_publisher(publisher: &str) -> Result<(), String> {
-    if publisher.trim_start().starts_with("CN=") && publisher.len() <= 8192 {
+    let has_cn = publisher.split(',').any(|part| part.trim_start().starts_with("CN=") && part.trim().len() > 3);
+    if has_cn && publisher.len() <= 8192 {
         Ok(())
     } else {
-        Err(format!("\"{publisher}\" is not a publisher: it starts with CN= (Partner Center, Product identity, Package/Identity/Publisher)."))
+        Err(format!("\"{publisher}\" is not a publisher: it needs a CN= part (Partner Center, Product identity, Package/Identity/Publisher)."))
     }
 }
 
@@ -851,6 +854,10 @@ mod tests {
         assert!(check_identity_name("ab").is_err());
         assert!(check_publisher("CN=1A2B3C4D-0000-1111-2222-333344445555").is_ok());
         assert!(check_publisher("INVENIA").is_err());
+        // A sideload test package: the certificate subject as Windows writes it.
+        assert!(check_publisher("C=IN, O=INVENIA SYSTEMS, CN=INVENIA SYSTEMS").is_ok());
+        assert!(check_publisher("O=INVENIA SYSTEMS, C=IN").is_err());
+        assert!(check_publisher("O=X, CN=").is_err());
     }
 
     #[test]
