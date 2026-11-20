@@ -88,7 +88,8 @@ fn pickable(all: &[releases::Release], required: Option<&[String]>) -> Vec<Versi
     releases::numbered(all)
         .into_iter()
         .filter(|r| r.has_asset("manifest.json"))
-        .filter(|r| required.is_none_or(|files| files.iter().all(|f| r.has_asset(f))))
+        // Each file under any of its names (the Windows payload's old one too).
+        .filter(|r| required.is_none_or(|files| files.iter().all(|f| sentient_installer_core::native::present_name(f, |n| r.has_asset(n)).is_some())))
         .map(|r| Version { version: r.tag_name.clone(), date: r.date(), summary: r.summary() })
         .collect()
 }
@@ -184,6 +185,20 @@ mod tests {
         assert_eq!(native, ["4.4.0.1", "4.3.0.57"]);
         let docker: Vec<String> = pickable(&all, None).into_iter().map(|v| v.version).collect();
         assert_eq!(docker, ["4.4.0.1", "4.3.0.58", "4.3.0.57"]);
+    }
+
+    /// The Windows payload under its name from 4.4.1.3 on, or its old one.
+    #[test]
+    fn a_native_picker_takes_the_windows_payload_under_either_name() {
+        let all = vec![
+            rel("4.4.1.4", false, &["manifest.json", "sentient-payload-windows-x86_64.tar", "pg.zip"]),
+            rel("4.4.1.3", false, &["manifest.json", "sentient-payload-windows-x86_64.tar", "sentient-payload.tar", "pg.zip"]),
+            rel("4.4.1.2", false, &["manifest.json", "sentient-payload.tar", "pg.zip"]),
+            rel("4.4.1.1", false, &["manifest.json", "pg.zip"]),
+        ];
+        let required = vec![sentient_installer_core::native::WINDOWS_PAYLOAD.to_string(), "pg.zip".to_string()];
+        let native: Vec<String> = pickable(&all, Some(&required)).into_iter().map(|v| v.version).collect();
+        assert_eq!(native, ["4.4.1.4", "4.4.1.3", "4.4.1.2"]);
     }
 
     #[test]

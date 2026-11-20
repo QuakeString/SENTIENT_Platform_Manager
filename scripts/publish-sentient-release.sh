@@ -13,7 +13,8 @@
 #      does not have yet, never replacing one; its manifest is extended)
 #
 # <folder> holds the release files (any of):
-#   sentient-payload.tar                          Windows x64
+#   sentient-payload-windows-x86_64.tar           Windows x64 (or sentient-payload.tar:
+#                                                 uploaded under both names)
 #   postgresql-18.6-1-windows-x64-binaries.zip    PostgreSQL for Windows
 #   timescaledb-postgresql-18-windows-amd64.zip   TimescaleDB for it
 #   vc_redist.x64.exe                             Visual C++ runtime
@@ -74,8 +75,20 @@ if [ -z "$existing" ] && $add; then
   echo "$version is not published yet; publish it first." >&2; exit 1
 fi
 
+# The Windows payload is uploaded under both names, one file: its name from
+# 4.4.1.3 on (the Platform Manager from 0.9.5 asks for it first) and the
+# old one (older Platform Managers know only that). Either in $dir will do.
+if [ -f "$dir/sentient-payload-windows-x86_64.tar" ] && [ ! -f "$dir/sentient-payload.tar" ]; then
+  ln -f "$dir/sentient-payload-windows-x86_64.tar" "$dir/sentient-payload.tar"
+elif [ -f "$dir/sentient-payload.tar" ] && [ ! -f "$dir/sentient-payload-windows-x86_64.tar" ]; then
+  ln -f "$dir/sentient-payload.tar" "$dir/sentient-payload-windows-x86_64.tar"
+fi
+if [ -f "$dir/sentient-payload.tar" ] && ! cmp -s "$dir/sentient-payload.tar" "$dir/sentient-payload-windows-x86_64.tar"; then
+  echo "sentient-payload.tar and sentient-payload-windows-x86_64.tar differ in $dir: keep one of them" >&2; exit 1
+fi
+
 files=()
-for f in sentient-payload.tar postgresql-18.6-1-windows-x64-binaries.zip timescaledb-postgresql-18-windows-amd64.zip \
+for f in sentient-payload-windows-x86_64.tar sentient-payload.tar postgresql-18.6-1-windows-x64-binaries.zip timescaledb-postgresql-18-windows-amd64.zip \
          vc_redist.x64.exe sentient-payload-linux-x86_64.tar sentient-payload-linux-aarch64.tar; do
   [ -f "$dir/$f" ] && files+=("$f")
 done
@@ -256,7 +269,7 @@ if [ -n "$body_notes" ]; then
   downloads="### Downloads"$'\n'
   for f in "${files[@]}"; do
     case "$f" in
-      sentient-payload.tar) downloads+="- Windows x64: \`$f\`, with PostgreSQL 18.6, TimescaleDB and the VC++ runtime"$'\n' ;;
+      sentient-payload-windows-x86_64.tar) downloads+="- Windows x64: \`$f\` (also as \`sentient-payload.tar\` for Platform Managers before 0.9.5), with PostgreSQL 18.6, TimescaleDB and the VC++ runtime"$'\n' ;;
       sentient-payload-linux-x86_64.tar) downloads+="- Linux x86_64: \`$f\`"$'\n' ;;
       sentient-payload-linux-aarch64.tar) downloads+="- Linux arm64: \`$f\`"$'\n' ;;
     esac
