@@ -27,6 +27,19 @@ pub fn install_sentient(window: &mut Window, cx: &mut App) {
     }
 }
 
+/// Continue the install that stopped for the WSL restart: Setup opens on
+/// its install step with the saved plan (`--resume`, as the entry that runs
+/// after sign-in does). The manager closes, as for a new install.
+pub fn resume_install(window: &mut Window, cx: &mut App) {
+    let started = std::env::current_exe()
+        .map_err(|e| e.to_string())
+        .and_then(|me| std::process::Command::new(me).arg("--resume").spawn().map_err(|e| e.to_string()));
+    match started {
+        Ok(_) => cx.quit(),
+        Err(e) => window.push_notification(format!("Could not open SENTIENT Setup: {e}"), cx),
+    }
+}
+
 /// Ask for an unpacked SENTIENT package and start its Setup (no internet).
 pub fn install_sentient_from_package(window: &mut Window, cx: &mut App) {
     let handle = window.window_handle();

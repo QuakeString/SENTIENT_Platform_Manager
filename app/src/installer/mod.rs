@@ -7,7 +7,7 @@
 mod old_pg;
 mod pages;
 mod placement;
-mod plan;
+pub(crate) mod plan;
 
 pub(crate) use plan::{Host as PlanHost, InstallPlan, InstallSecrets, Shortcuts, pinned_image, run as run_install, run_manager_only, steps_on as plan_steps_on};
 
@@ -239,10 +239,19 @@ fn secret_with(window: &mut Window, cx: &mut Context<Installer>, value: &str) ->
     cx.new(|cx| InputState::new(window, cx).masked(true).default_value(value))
 }
 
+/// Set before the window opens when a plain start of the Platform Manager
+/// found an install saved for the restart (plan::pending_offer_now): Setup
+/// then continues it, as `--resume` does.
+pub static RESUME_AT_START: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn resume_requested() -> bool {
+    RESUME_AT_START.load(std::sync::atomic::Ordering::Relaxed) || std::env::args().any(|a| a == "--resume")
+}
+
 impl Installer {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         // After a restart for WSL2: the saved plan, to continue where it stopped.
-        let resumed = std::env::args().any(|a| a == "--resume").then(plan::take_pending).flatten();
+        let resumed = resume_requested().then(plan::take_pending).flatten();
         let mut d = DeployConfig::default();
         if let Some(p) = &resumed {
             d.http_port = p.stack.http_port;

@@ -207,7 +207,11 @@ impl UninstallDialog {
     fn row(&self, theme: &gpui_kit::component::Theme, i: usize, r: &Row, cx: &mut Context<Self>) -> Stateful<Div> {
         let why = uninstall::rule(r.key, &self.choice, &self.rows);
         let enabled = why.is_none();
-        let on = enabled && self.choice.has(r.key);
+        // SENTIENT's own WSL distribution has no switch of its own: it shows
+        // what happens to it with the switches above.
+        let follows = uninstall::follows(r);
+        let on = if follows { uninstall::own_distro_goes(&self.choice, &self.rows) } else { enabled && self.choice.has(r.key) };
+        let detail = uninstall::row_detail(r, &self.choice, &self.rows);
         let key = r.key;
         let size = uninstall::size_text(r, &self.choice, &self.rows);
         let sub = r.parent.is_some();
@@ -217,7 +221,7 @@ impl UninstallDialog {
             .min_w_0()
             .gap_0p5()
             .child(dim(h_flex().gap_1().items_center().child(div().font_weight(FontWeight::MEDIUM).child(r.title.clone())).when_some(r.help.clone(), |h, help| h.child(crate::ui::info(format!("un-help-{i}").into(), help.into())))))
-            .child(dim(div().text_xs().text_color(theme.muted_foreground).child(r.detail.clone())));
+            .child(dim(div().text_xs().text_color(theme.muted_foreground).child(detail)));
         if let Some(w) = why.filter(|w| !w.is_empty()) {
             text = text.child(div().text_xs().text_color(theme.warning_foreground).child(w));
         }
@@ -236,7 +240,7 @@ impl UninstallDialog {
                 div().w(px(ROW_SWITCH_W)).flex_shrink_0().pt(px(2.)).child(
                     Switch::new(SharedString::from(format!("un-sw-{}", key.id())))
                         .checked(on)
-                        .disabled(!enabled || !matches!(self.phase, Phase::Choose))
+                        .disabled(follows || !enabled || !matches!(self.phase, Phase::Choose))
                         .on_click(cx.listener(move |d, v: &bool, _, cx| {
                             d.choice.set(key, *v);
                             cx.notify();

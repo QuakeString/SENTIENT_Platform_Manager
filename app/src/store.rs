@@ -667,12 +667,26 @@ fn probe_platform(r: &mut Vec<String>, stamp: &str) {
         match reg::set(hive, key, "MsixProbe", stamp) {
             Ok(real) => {
                 r.push("  written".into());
-                let private = real.to_uppercase().starts_with(r"\REGISTRY\A\");
-                r.push(format!("  key really at: {real}{}", if private { "  (VIRTUALISED: a private hive)" } else { "" }));
+                r.push(registry_line(&real, package_full_name().is_some()));
             }
             Err(e) => r.push(format!("  write failed: {e}")),
         }
         r.push(format!("  read back: {}", reg::get(hive, key, "MsixProbe").unwrap_or_else(|e| format!("not readable ({e})"))));
+    }
+}
+
+/// The probe's line on where a registry write went. The key's name is the
+/// one this process sees: a packaged process's writes to HKCU can land in
+/// the package's private hive while the name still reads as the user's
+/// own key, so it is not claimed to be the real place then.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn registry_line(real: &str, packaged: bool) -> String {
+    if real.to_uppercase().starts_with(r"\REGISTRY\A\") {
+        format!("  key name: {real}  (VIRTUALISED: a private hive)")
+    } else if packaged {
+        format!("  key name as this process sees it: {real}. For a packaged process this may be the package's private hive: check the key from a command prompt outside the package")
+    } else {
+        format!("  key at: {real}")
     }
 }
 
@@ -794,6 +808,16 @@ mod reg {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_probe_does_not_claim_a_packaged_write_is_the_real_key() {
+        let key = r"\REGISTRY\USER\S-1-5-21-1-1000\SOFTWARE\SENTIENT";
+        let packaged = registry_line(key, true);
+        assert!(packaged.contains("may be the package's private hive"), "{packaged}");
+        assert!(!packaged.contains("really"));
+        assert_eq!(registry_line(key, false), format!("  key at: {key}"));
+        assert!(registry_line(r"\REGISTRY\A\{guid}\SOFTWARE\SENTIENT", true).contains("VIRTUALISED"));
+    }
 
     #[test]
     fn the_package_version_has_four_numbers_and_the_last_is_zero() {

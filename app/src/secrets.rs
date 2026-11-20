@@ -151,6 +151,17 @@ pub fn get(secret: Secret) -> Option<String> {
     String::from_utf8(store::unprotect(&sealed)?).ok()
 }
 
+/// The secret is stored (its file is there; not unsealed).
+#[cfg(windows)]
+pub fn has(secret: Secret) -> bool {
+    store::dir().join(format!("{}.bin", secret.account())).is_file()
+}
+
+#[cfg(not(windows))]
+pub fn has(_: Secret) -> bool {
+    false
+}
+
 #[cfg(windows)]
 pub fn forget(secret: Secret) {
     let _ = std::fs::remove_file(store::dir().join(format!("{}.bin", secret.account())));

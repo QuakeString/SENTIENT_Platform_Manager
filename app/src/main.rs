@@ -280,7 +280,17 @@ fn gui_main(args: Vec<String>) {
         return;
     }
     store::clean_staging();
-    let mode = AppMode::detect();
+    let mut mode = AppMode::detect();
+    // An install that stopped for the WSL restart and was not continued
+    // after it (the sign-in prompt was declined or timed out): a plain
+    // start of the Platform Manager (or of Setup) opens Setup on its
+    // install step and continues it, as the RunOnce entry's `--resume`
+    // would have.
+    if matches!(mode, AppMode::Manager | AppMode::Install) && installer::plan::plain_start(&args) && installer::plan::pending_offer_now() == installer::plan::PendingOffer::Resume {
+        maintenance_ops::log_line("An install stopped for the restart: continuing it");
+        installer::RESUME_AT_START.store(true, std::sync::atomic::Ordering::Relaxed);
+        mode = AppMode::Install;
+    }
     // The Platform Manager runs once per user: a later start (a menu entry,
     // a taskbar action) hands its request to the running one, before asking
     // for administrator rights again.

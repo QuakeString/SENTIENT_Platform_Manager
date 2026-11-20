@@ -215,12 +215,25 @@ fn run_remove_store_helper(sink: ProgressFn) -> Result<(), String> {
     #[cfg(not(windows))]
     let clickhouse_kept = false;
     if crate::installation::InstallationRecord::load().is_some() || clickhouse_kept {
+        log_line("The Platform Manager's helper stays: SENTIENT's services on this computer still use it");
         sink(Progress::Done { message: "The Platform Manager's helper stays: SENTIENT's services on this computer still use it.".into() });
         return Ok(());
     }
+    log_line("Removing what the Platform Manager added outside its app");
     crate::shortcuts::remove(crate::shortcuts::Owner::Manager, &[], &sink);
     let _ = crate::background::set_autostart(false);
     crate::shortcuts::remove(crate::shortcuts::Owner::Sentient, &[], &sink);
+    // The staging folder in this account's profile (empty unless a staged
+    // copy was left), and its parent when nothing else is in it.
+    let staging = crate::store::staging_dir();
+    if staging.exists() {
+        let _ = std::fs::remove_dir_all(&staging);
+        if let Some(parent) = staging.parent() {
+            let _ = std::fs::remove_dir(parent);
+        }
+        log_line(&format!("Removed {}", staging.display()));
+    }
+    // The helper is this very program: it goes once it has closed.
     self_install::remove_manager_later();
     sink(Progress::Done { message: "Done. To uninstall the Platform Manager itself, right-click it in Start and choose Uninstall.".into() });
     Ok(())

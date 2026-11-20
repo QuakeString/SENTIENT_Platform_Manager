@@ -283,15 +283,25 @@ pub fn save_pending_progress(percent: f32) {
     let _ = std::fs::write(pending_progress_path(), format!("{percent:.1}"));
 }
 
-/// [`save_pending_progress`]'s value, once (removed when read); 0 without one.
+/// [`save_pending_progress`]'s value; 0 without one. It stays until the
+/// plan is done with ([`discard_pending`]), so a continued run that stops
+/// again starts there once more.
 pub fn take_pending_progress() -> f32 {
-    let path = pending_progress_path();
-    let v = std::fs::read_to_string(&path).ok().and_then(|s| s.trim().parse::<f32>().ok()).unwrap_or(0.);
-    let _ = std::fs::remove_file(&path);
-    v
+    std::fs::read_to_string(pending_progress_path()).ok().and_then(|s| s.trim().parse::<f32>().ok()).unwrap_or(0.)
 }
 
-/// The plan saved before a restart, if there is one; removed once read.
+/// The file a Setup continuing the saved plan writes its process id to:
+/// while it runs, the plan is not offered again; after it stopped without
+/// finishing, it is offered, but not opened by itself again.
+fn pending_started_path() -> PathBuf {
+    crate::installation::record_path().with_file_name("pending-install.started")
+}
+
+/// The plan saved before a restart, if there is one, with its passwords.
+/// It is not removed here: a run that is declined, cancelled or fails
+/// keeps it, so the install can still be continued from the Platform
+/// Manager. A finished install, or a new one started from the beginning,
+/// removes it ([`discard_pending`]).
 pub fn take_pending() -> Option<InstallPlan> {
     let path = pending_path();
     let mut plan: InstallPlan = serde_json::from_str(&std::fs::read_to_string(&path).ok()?).ok()?;
@@ -300,9 +310,110 @@ pub fn take_pending() -> Option<InstallPlan> {
     plan.pg_superuser_password = secrets.pg_admin;
     plan.admin_password = secrets.admin;
     plan.stack.ch_password = secrets.clickhouse;
-    let _ = std::fs::remove_file(&path);
-    crate::secrets::forget(Secret::PendingInstall);
+    let _ = std::fs::write(pending_started_path(), std::process::id().to_string());
     Some(plan)
+}
+
+/// Remove the saved plan, its passwords, its progress and the entry that
+/// continues it after sign-in.
+pub fn discard_pending() {
+    let had = pending_path().exists();
+    for path in [pending_path(), pending_progress_path(), pending_started_path()] {
+        let _ = std::fs::remove_file(path);
+    }
+    crate::secrets::forget(Secret::PendingInstall);
+    #[cfg(windows)]
+    if had {
+        let _ = std::process::Command::new("reg.exe")
+            .args(["delete", r"HKCU\Software\Microsoft\Windows\CurrentVersion\RunOnce", "/v", "SENTIENT Setup", "/f"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
+    #[cfg(not(windows))]
+    let _ = had;
+}
+
+/// What the Platform Manager offers for a plan saved before a restart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PendingOffer {
+    /// Nothing to continue.
+    None,
+    /// Saved, but Windows has not restarted since: the restart comes first.
+    AfterRestart,
+    /// A "Continue the SENTIENT install" button.
+    Button,
+    /// Open Setup on its install step and continue, as `--resume` does.
+    Resume,
+}
+
+/// A plan older than this is offered with a button only, never opened by
+/// itself.
+pub const RESUME_BY_ITSELF_SECS: u64 = 3 * 24 * 3600;
+
+/// What is known about a saved plan, for [`pending_offer`].
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PendingFacts {
+    /// When the plan was saved (seconds since 1970); None without one.
+    pub saved_at: Option<u64>,
+    /// Its passwords are in the secret store.
+    pub has_secrets: bool,
+    /// When Windows last started (seconds since 1970).
+    pub booted_at: u64,
+    pub now: u64,
+    /// SENTIENT is installed (its installation record is there).
+    pub installed: bool,
+    /// A Setup took the plan up already: Some(true) while it still runs,
+    /// Some(false) when it stopped without finishing.
+    pub started: Option<bool>,
+}
+
+pub fn pending_offer(f: &PendingFacts) -> PendingOffer {
+    let Some(saved_at) = f.saved_at else { return PendingOffer::None };
+    if !f.has_secrets || f.installed || f.started == Some(true) {
+        return PendingOffer::None;
+    }
+    if saved_at >= f.booted_at {
+        return PendingOffer::AfterRestart;
+    }
+    if f.started == Some(false) || f.now.saturating_sub(saved_at) > RESUME_BY_ITSELF_SECS {
+        return PendingOffer::Button;
+    }
+    PendingOffer::Resume
+}
+
+/// [`pending_offer`] for this computer now. Cheap (file dates, and one
+/// process looked up while a Setup has the plan), so a page may ask on
+/// every paint.
+pub fn pending_offer_now() -> PendingOffer {
+    let secs = |t: std::time::SystemTime| t.duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let saved_at = std::fs::metadata(pending_path()).and_then(|m| m.modified()).ok().map(secs);
+    if saved_at.is_none() {
+        return PendingOffer::None;
+    }
+    let started = std::fs::read_to_string(pending_started_path()).ok().map(|pid| {
+        pid.trim().parse::<u32>().is_ok_and(|pid| {
+            let mut sys = sysinfo::System::new();
+            let pid = sysinfo::Pid::from_u32(pid);
+            sys.refresh_processes(sysinfo::ProcessesToUpdate::Some(&[pid]), true);
+            sys.process(pid).is_some()
+        })
+    });
+    pending_offer(&PendingFacts {
+        saved_at,
+        has_secrets: crate::secrets::has(Secret::PendingInstall),
+        booted_at: sysinfo::System::boot_time(),
+        now: secs(std::time::SystemTime::now()),
+        installed: crate::installation::record_path().exists(),
+        started,
+    })
+}
+
+/// A start of the Platform Manager with no request of its own (from Start,
+/// a shortcut, or the Store package's hand-over): the one that may open
+/// Setup to continue a saved install instead.
+pub fn plain_start(args: &[String]) -> bool {
+    args.iter().skip(1).all(|a| a == "--manager")
 }
 
 /// Restart Windows in a few seconds.
@@ -560,6 +671,12 @@ pub fn manager_only_steps() -> Vec<sentient_installer_core::progress::PlanStep> 
 }
 
 pub fn run(mut plan: InstallPlan, sink: ProgressFn) -> Result<(), String> {
+    let began = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    // A new install from the beginning replaces a plan an earlier one saved
+    // for its restart (a continued plan has `wsl_restarted`).
+    if !plan.wsl_restarted && !plan.remote {
+        discard_pending();
+    }
     if plan.bundle.is_none() && plan.engine == Engine::Native {
         if let Some(version) = plan.download.clone() {
             let (_, dir) = crate::online::download(Some(&version), &sink)?;
@@ -693,6 +810,14 @@ pub fn run(mut plan: InstallPlan, sink: ProgressFn) -> Result<(), String> {
     let json = serde_json::to_string_pretty(&plan.record()).map_err(|e| e.to_string())?;
     self_install::write_record(&crate::installation::record_path(), &json)?;
 
+    if !plan.remote {
+        discard_pending();
+    }
+    // Installing the WSL package opens Microsoft's welcome window, which
+    // would stay behind Setup's Finish page.
+    if cfg!(windows) && (plan.engine == Engine::Docker || plan.stack.flavor == Flavor::Clickhouse) {
+        sentient_installer_core::wsl::close_welcome_window(&sink, began);
+    }
     sink(Progress::Done { message: format!("SENTIENT is running at {url}") });
     Ok(())
 }
@@ -700,6 +825,55 @@ pub fn run(mut plan: InstallPlan, sink: ProgressFn) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn facts() -> PendingFacts {
+        // Saved an hour before the restart, looked at a minute after it.
+        PendingFacts { saved_at: Some(10_000), has_secrets: true, booted_at: 13_600, now: 13_660, installed: false, started: None }
+    }
+
+    #[test]
+    fn a_plan_saved_before_the_restart_is_continued() {
+        assert_eq!(pending_offer(&facts()), PendingOffer::Resume);
+    }
+
+    #[test]
+    fn no_plan_or_no_passwords_or_installed_offers_nothing() {
+        assert_eq!(pending_offer(&PendingFacts { saved_at: None, ..facts() }), PendingOffer::None);
+        assert_eq!(pending_offer(&PendingFacts { has_secrets: false, ..facts() }), PendingOffer::None);
+        assert_eq!(pending_offer(&PendingFacts { installed: true, ..facts() }), PendingOffer::None);
+    }
+
+    #[test]
+    fn before_the_restart_the_restart_comes_first() {
+        // Setup that stopped may still show its restart panel.
+        assert_eq!(pending_offer(&PendingFacts { booted_at: 9_000, ..facts() }), PendingOffer::AfterRestart);
+        assert_eq!(pending_offer(&PendingFacts { booted_at: 10_000, ..facts() }), PendingOffer::AfterRestart);
+    }
+
+    #[test]
+    fn a_setup_continuing_it_now_is_left_alone() {
+        assert_eq!(pending_offer(&PendingFacts { started: Some(true), ..facts() }), PendingOffer::None);
+    }
+
+    #[test]
+    fn a_continued_run_that_stopped_or_an_old_plan_gets_a_button_only() {
+        // No loop of Setup opening by itself on every start.
+        assert_eq!(pending_offer(&PendingFacts { started: Some(false), ..facts() }), PendingOffer::Button);
+        let old = PendingFacts { now: 10_000 + RESUME_BY_ITSELF_SECS + 1, ..facts() };
+        assert_eq!(pending_offer(&old), PendingOffer::Button);
+        let edge = PendingFacts { now: 10_000 + RESUME_BY_ITSELF_SECS, ..facts() };
+        assert_eq!(pending_offer(&edge), PendingOffer::Resume);
+    }
+
+    #[test]
+    fn only_a_plain_start_continues_an_install() {
+        let a = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert!(plain_start(&a(&["spm"])));
+        assert!(plain_start(&a(&["spm", "--manager"])));
+        assert!(!plain_start(&a(&["spm", "--manager", "--background"])));
+        assert!(!plain_start(&a(&["spm", "--request", "show"])));
+        assert!(!plain_start(&a(&["spm", "--job", "package-identity"])));
+    }
 
     fn plan(engine: Engine, flavor: Flavor) -> InstallPlan {
         InstallPlan {

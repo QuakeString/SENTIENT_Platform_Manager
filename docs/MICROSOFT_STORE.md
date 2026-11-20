@@ -25,7 +25,7 @@ switch.
 | Start menu entry and `spm` command | Made by Setup | From the package: Start entry, and the command `sentient-platform-manager` |
 | Apps & features entry | Made by Setup | Listed by Windows for the package |
 | Desktop shortcut to the Platform Manager | Optional in Setup | Not made: pin it from Start |
-| Removing the Platform Manager | Its own switch in Uninstall | No switch. Uninstalling SENTIENT (Repair and uninstall > Uninstall) also removes the helper copy and the tray's sign-in task once nothing uses them. Without SENTIENT, the same page offers "Remove the helper". The app itself is uninstalled from Start (right-click, Uninstall) or Settings > Apps. |
+| Removing the Platform Manager | Its own switch in Uninstall | No switch. Uninstalling SENTIENT (Repair and uninstall > Uninstall) also removes the helper copy, the tray's sign-in task and the empty staging folder once nothing uses them. The helper is the program that is running, so its folder is deleted by a PowerShell that waits for it to close (outcome in the activity log). Without SENTIENT, the same page offers "Remove the helper". The app itself is uninstalled from Start (right-click, Uninstall) or Settings > Apps. |
 | Administrator rights | UAC prompt | UAC prompt (the same) |
 
 ### How it works
@@ -79,6 +79,15 @@ What happens when the app is started from Start:
    operator screen. The helper is outside the package, so its registry and
    file writes land in the real places.
 
+If the sign-in after the WSL restart does not continue Setup (the UAC
+prompt of the RunOnce entry was declined or timed out), the next start of
+the app from Start opens Setup on its install step and continues the saved
+install. A plan older than three days, or one whose continued run already
+stopped once, is offered with a "Continue the SENTIENT install" button on
+the first page instead of opening by itself. The saved plan and its
+passwords are removed only when the install finishes, or when a new install
+is started from the beginning.
+
 The packaged process itself starts no command prompt or PowerShell. It only
 copies a file, reads the running copy's lock file, and calls `ShellExecute`.
 The elevated helper may start them, just as the download does.
@@ -96,10 +105,15 @@ Known limits:
 - The tray started at sign-in runs the helper. After a Store update it keeps
   running the older helper until the app is next opened from Start, which
   updates the helper.
-- If the app is uninstalled from the Store while SENTIENT is still
-  installed, the helper stays (SENTIENT's services need it), and the tray
-  keeps working from it. Uninstall SENTIENT in the app first (Repair and
-  uninstall > Uninstall) to remove everything.
+- Windows gives a Store app no way to run anything when it is uninstalled.
+  Uninstalling the app from Start or Settings > Apps (or
+  `Remove-AppxPackage`) removes only the package: the helper folder
+  `%ProgramData%\SENTIENT\Platform Manager\app` and, if SENTIENT is still
+  installed, SENTIENT itself stay (SENTIENT's services need the helper, and
+  the tray keeps working from it). The clean way out is: in the app,
+  Repair and uninstall > Uninstall (this removes SENTIENT and the helper),
+  then uninstall the app. A helper left behind can be deleted by hand as
+  administrator once no SENTIENT service uses it.
 - Over-the-shoulder elevation (a standard user typing an administrator's
   credentials) works as it does for the download. The window then runs as
   that administrator.
@@ -122,8 +136,12 @@ Each run reports:
   it back, and shows its real path (`GetFinalPathNameByHandle`). A path under
   `...\Packages\...\LocalCache` means the write was redirected;
 - the same for `HKLM\SOFTWARE\SENTIENT\MsixProbe` and
-  `HKCU\SOFTWARE\SENTIENT\MsixProbe`, with the key's real name in the
-  registry (`\REGISTRY\A\...` means a private hive);
+  `HKCU\SOFTWARE\SENTIENT\MsixProbe`, with the key's name as the process
+  sees it (`\REGISTRY\A\...` means a private hive). A packaged process's
+  HKCU write can land in the package's private hive (`SystemAppData\Helium`)
+  while the name still reads as the user's own key, so for a packaged run
+  the probe only says it may be private: the helper run, or `reg query`
+  from a normal command prompt, shows whether the value is really there;
 - whether the package's private `LocalCache` and `SystemAppData\Helium`
   folders exist, and any `msix-probe.txt` copy in `LocalCache`.
 
@@ -270,9 +288,11 @@ desktop program.
 >   GitHub releases and checks each against its published SHA-256 and
 >   signature.
 > - Removal: in the app, Repair and uninstall > Uninstall removes SENTIENT
->   and everything the app installed, including its own helper copy.
->   Uninstalling the app from the Store removes only the app. If SENTIENT is
->   still installed, its services keep running.
+>   and everything the app installed, including its own helper copy in
+>   C:\ProgramData\SENTIENT\Platform Manager\app. Do this before
+>   uninstalling the app: uninstalling the app from the Store removes only
+>   the app (Windows runs nothing of the app's at that point), so with
+>   SENTIENT still installed its services and the helper they use stay.
 > - How to test: start the app, accept the UAC prompt, and choose Install
 >   SENTIENT with the default options. It needs internet access and takes
 >   several minutes. Open SENTIENT from the app, then uninstall it (Repair
