@@ -107,7 +107,7 @@ fn with_bundle_if_staged(mut cfg: NativeConfig, root: &str) -> NativeConfig {
     } else {
         PathBuf::from(root).join("payload")
     };
-    if native::required_bundle_files().iter().all(|f| payload.join(f).exists()) {
+    if native::bundle_complete(&payload) {
         println!("using offline bundle in {}", payload.display());
         cfg.source = ArtifactSource::Bundled { dir: payload };
     }

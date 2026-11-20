@@ -26,18 +26,24 @@ pub fn package_version(package: &Path) -> Option<String> {
 }
 
 /// A package folder unpacked into `state_dir/update-staging`, or a folder
-/// that is already unpacked. Windows packages hold `sentient-payload.tar`,
-/// Linux packages `sentient-payload-linux-<arch>.tar`.
+/// that is already unpacked. Windows packages hold
+/// `sentient-payload-windows-x86_64.tar` (`sentient-payload.tar` before
+/// 4.4.1.3), Linux packages `sentient-payload-linux-<arch>.tar`.
 fn staged(sink: &ProgressFn, record: &InstallationRecord, package: &Path) -> Result<(PathBuf, bool), String> {
     let server = if cfg!(windows) { "sentient-server.exe" } else { "sentient-server" };
     if package.join("bin").join(server).exists() {
         return Ok((package.to_path_buf(), false));
     }
-    let tar_name = if cfg!(windows) { "sentient-payload.tar".to_string() } else { native::linux_payload_name() };
-    let tar = package.join(&tar_name);
-    if !tar.exists() {
+    let (tar_name, tar) = if cfg!(windows) {
+        (native::WINDOWS_PAYLOAD.to_string(), native::windows_payload_in(package))
+    } else {
+        let n = native::linux_payload_name();
+        let t = package.join(&n);
+        (n, t.exists().then_some(t))
+    };
+    let Some(tar) = tar else {
         return Err(format!("{} is not a SENTIENT package (no {tar_name})", package.display()));
-    }
+    };
     let staging = record.state_dir.join("update-staging");
     let _ = std::fs::remove_dir_all(&staging);
     std::fs::create_dir_all(&staging).map_err(|e| format!("create {}: {e}", staging.display()))?;

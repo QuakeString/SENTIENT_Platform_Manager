@@ -2383,7 +2383,7 @@ fn remove_tree_retrying(dir: &Path) -> bool {
 /// check agree on one list instead of drifting apart.
 pub fn required_bundle_files() -> Vec<String> {
     if cfg!(windows) {
-        vec![PG_ZIP.into(), TSDB_ZIP.into(), "sentient-payload.tar".into()]
+        vec![PG_ZIP.into(), TSDB_ZIP.into(), WINDOWS_PAYLOAD.into()]
     } else {
         // Databases come from the distribution's packages on Linux; only the
         // platform itself has to be carried.
@@ -2391,8 +2391,41 @@ pub fn required_bundle_files() -> Vec<String> {
     }
 }
 
+/// The Windows payload (server, tools, UI, data, service wrapper), named
+/// like the Linux one from SENTIENT 4.4.1.3 on.
+pub const WINDOWS_PAYLOAD: &str = "sentient-payload-windows-x86_64.tar";
+/// Its name in releases and packages before 4.4.1.3.
+pub const WINDOWS_PAYLOAD_OLD: &str = "sentient-payload.tar";
+
+/// The names a required file may have, the current one first: the Windows
+/// payload also under its old name (releases and packages made before the
+/// rename), every other file under its one name.
+pub fn names_of(file: &str) -> Vec<&str> {
+    if file == WINDOWS_PAYLOAD || file == WINDOWS_PAYLOAD_OLD {
+        vec![WINDOWS_PAYLOAD, WINDOWS_PAYLOAD_OLD]
+    } else {
+        vec![file]
+    }
+}
+
+/// Which name of `file` (see [`names_of`]) `has` says is there, the current
+/// one preferred.
+pub fn present_name<'a>(file: &'a str, has: impl Fn(&str) -> bool) -> Option<&'a str> {
+    names_of(file).into_iter().find(|n| has(n))
+}
+
+/// Whether `dir` holds every file of an offline bundle (under any of its names).
+pub fn bundle_complete(dir: &Path) -> bool {
+    required_bundle_files().iter().all(|f| present_name(f, |n| dir.join(n).exists()).is_some())
+}
+
+/// The Windows payload in `dir`, under its current or its old name.
+pub fn windows_payload_in(dir: &Path) -> Option<PathBuf> {
+    present_name(WINDOWS_PAYLOAD, |n| dir.join(n).exists()).map(|n| dir.join(n))
+}
+
 /// `sentient-payload-linux-<arch>.tar` — the Linux counterpart of
-/// `sentient-payload.tar`, arch-tagged because a Pi and a PC need different
+/// [`WINDOWS_PAYLOAD`], arch-tagged because a Pi and a PC need different
 /// binaries and one bundle directory may hold both.
 pub fn linux_payload_name() -> String {
     format!("sentient-payload-linux-{}.tar", std::env::consts::ARCH)
@@ -2413,8 +2446,7 @@ pub fn bundled_payload_dir() -> Option<PathBuf> {
         candidates.push(PathBuf::from("/usr/share/sentient-platform-manager/payload"));
         candidates.push(PathBuf::from("/opt/sentient-platform-manager/payload"));
     }
-    let required = required_bundle_files();
-    candidates.into_iter().find(|dir| required.iter().all(|f| dir.join(f).exists()))
+    candidates.into_iter().find(|dir| bundle_complete(dir))
 }
 
 /// Unpack the SENTIENT payload (server, installer, UI, data, service wrapper)
@@ -2435,10 +2467,7 @@ fn stage_payload(sink: &ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
                 .into(),
         );
     };
-    let tar = dir.join("sentient-payload.tar");
-    if !tar.exists() {
-        return Err(format!("the offline bundle is missing {}", tar.display()));
-    }
+    let tar = windows_payload_in(dir).ok_or_else(|| format!("the offline bundle is missing {}", dir.join(WINDOWS_PAYLOAD).display()))?;
     step(sink, "Unpacking the SENTIENT program files");
     std::fs::create_dir_all(&cfg.install_dir)
         .map_err(|e| format!("create {}: {e}", cfg.install_dir.display()))?;
@@ -2464,7 +2493,7 @@ pub fn verify_bundle(src: &ArtifactSource) -> Result<(), String> {
     };
     let missing: Vec<String> = required_bundle_files()
         .into_iter()
-        .filter(|f| !dir.join(f).exists())
+        .filter(|f| present_name(f, |n| dir.join(n).exists()).is_none())
         .collect();
     if missing.is_empty() {
         Ok(())
@@ -2563,5 +2592,35 @@ mod firewall_tests {
         assert!(!check.contains("New-NetFirewallRule") && !check.contains("Remove-NetFirewallRule"));
         assert!(write.starts_with("Remove-NetFirewallRule -Group 'SENTIENT'") && write.ends_with("'added' }"));
         assert!(write.contains("-Protocol UDP -LocalPort 5683"));
+    }
+}
+
+#[cfg(test)]
+mod payload_name_tests {
+    use super::*;
+
+    #[test]
+    fn the_windows_payload_has_two_names_the_new_one_first() {
+        assert_eq!(names_of(WINDOWS_PAYLOAD), vec![WINDOWS_PAYLOAD, WINDOWS_PAYLOAD_OLD]);
+        assert_eq!(names_of(WINDOWS_PAYLOAD_OLD), vec![WINDOWS_PAYLOAD, WINDOWS_PAYLOAD_OLD]);
+        assert_eq!(names_of(PG_ZIP), vec![PG_ZIP]);
+        // Both there: the new one; only the old one (a release or package
+        // from before 4.4.1.3): that one; neither: none.
+        assert_eq!(present_name(WINDOWS_PAYLOAD, |_| true), Some(WINDOWS_PAYLOAD));
+        assert_eq!(present_name(WINDOWS_PAYLOAD, |n| n == WINDOWS_PAYLOAD_OLD), Some(WINDOWS_PAYLOAD_OLD));
+        assert_eq!(present_name(WINDOWS_PAYLOAD, |_| false), None);
+    }
+
+    #[test]
+    fn a_bundle_folder_takes_the_payload_under_either_name() {
+        let dir = std::env::temp_dir().join(format!("spm-payload-name-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        assert_eq!(windows_payload_in(&dir), None);
+        std::fs::write(dir.join(WINDOWS_PAYLOAD_OLD), b"x").unwrap();
+        assert_eq!(windows_payload_in(&dir), Some(dir.join(WINDOWS_PAYLOAD_OLD)));
+        std::fs::write(dir.join(WINDOWS_PAYLOAD), b"x").unwrap();
+        assert_eq!(windows_payload_in(&dir), Some(dir.join(WINDOWS_PAYLOAD)));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -232,7 +232,10 @@ impl Manifest {
         let required = crate::native::required_bundle_files();
         let mut out = Vec::new();
         for name in &required {
-            match self.artifacts.iter().find(|a| &a.file == name) {
+            // The current name first; a release from before the Windows
+            // payload's rename has only the old one (crate::native::names_of).
+            let found = crate::native::names_of(name).into_iter().find_map(|n| self.artifacts.iter().find(|a| a.file == n));
+            match found {
                 Some(a) => out.push(a),
                 None => return Err(format!("SENTIENT {} has no {name} for this computer.", self.version)),
             }
@@ -276,5 +279,20 @@ mod tests {
         let without = parse(r#"{"product":"SENTIENT","version":"4.4.0.3","artifacts":[]}"#).unwrap();
         assert_eq!(without.min_glibc, None);
         assert_eq!(without.min_glibc(), Some(GlibcVersion { major: 2, minor: 43 }));
+    }
+
+    /// Windows: the payload under its name from 4.4.1.3 on, else the old one.
+    #[cfg(windows)]
+    #[test]
+    fn a_windows_install_takes_the_payload_under_either_name() {
+        let a = |f: &str| format!(r#"{{"file":"{f}","url":"https://example.test/{f}","sha256":"00","size":1}}"#);
+        let pg = [a(crate::native::PG_ZIP), a(crate::native::TSDB_ZIP)].join(",");
+        let both = parse(&format!(r#"{{"product":"SENTIENT","version":"4.4.1.3","artifacts":[{pg},{},{}]}}"#, a("sentient-payload.tar"), a("sentient-payload-windows-x86_64.tar"))).unwrap();
+        assert!(both.wanted().unwrap().iter().any(|x| x.file == "sentient-payload-windows-x86_64.tar"));
+        assert!(!both.wanted().unwrap().iter().any(|x| x.file == "sentient-payload.tar"));
+        let old = parse(&format!(r#"{{"product":"SENTIENT","version":"4.4.1.2","artifacts":[{pg},{}]}}"#, a("sentient-payload.tar"))).unwrap();
+        assert!(old.wanted().unwrap().iter().any(|x| x.file == "sentient-payload.tar"));
+        let none = parse(&format!(r#"{{"product":"SENTIENT","version":"4.4.1.1","artifacts":[{pg}]}}"#)).unwrap();
+        assert!(none.wanted().is_err());
     }
 }

@@ -15,6 +15,10 @@ refreshes that repository's Downloads table.
 
 ## [Unreleased]
 
+## [0.9.5] - 2026-11-20
+
+Gateways started from a compose file can be taken over, new releases show without a restart, the Logs page fills the window, and the Windows payload has its own name.
+
 ### Fixed
 - The "New" mark on Files shows for one day from the first time it
   appears, then not again. It stayed there for good before.
@@ -44,6 +48,14 @@ refreshes that repository's Downloads table.
   on the Platform Manager updates it and changes its settings. "Manage it
   here" only recorded such a container: updates and settings stayed with
   its compose file, and the button was gone after it.
+
+### Changed
+- The Windows SENTIENT payload is `sentient-payload-windows-x86_64.tar`
+  from SENTIENT 4.4.1.3 on, named like the Linux one. The Platform Manager
+  looks for that name first and takes `sentient-payload.tar` when a
+  release, an offline package or a package folder has only the old name,
+  so every earlier release still installs. Releases carry the payload
+  under both names for Platform Managers before 0.9.5.
 
 ### Added
 - The Platform Manager can be published in the Microsoft Store. Windows

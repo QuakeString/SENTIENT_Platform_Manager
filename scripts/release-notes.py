@@ -178,7 +178,10 @@ def downloads_from(product, version, assets, docker_image):
     names = [a["name"] for a in assets]
     lines = ["### Downloads"]
     if product == "sentient":
-        if "sentient-payload.tar" in names:
+        if "sentient-payload-windows-x86_64.tar" in names:
+            also = " (also as `sentient-payload.tar` for Platform Managers before 0.9.5)" if "sentient-payload.tar" in names else ""
+            lines.append(f"- Windows x64: `sentient-payload-windows-x86_64.tar`{also}, with PostgreSQL 18.6, TimescaleDB and the VC++ runtime")
+        elif "sentient-payload.tar" in names:
             lines.append("- Windows x64: `sentient-payload.tar`, with PostgreSQL 18.6, TimescaleDB and the VC++ runtime")
         for n, label in (("sentient-payload-linux-x86_64.tar", "Linux x86_64"), ("sentient-payload-linux-aarch64.tar", "Linux arm64")):
             if n in names:

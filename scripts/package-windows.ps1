@@ -10,7 +10,9 @@
 #     payload\
 #       postgresql-18.6-1-windows-x64-binaries.zip
 #       timescaledb-postgresql-18-windows-amd64.zip
-#       sentient-payload.tar         the SENTIENT server, UI and data
+#       sentient-payload-windows-x86_64.tar   the SENTIENT server, UI and data
+#                                    (sentient-payload.tar in releases before
+#                                    4.4.1.3: either is taken from -PayloadDir)
 #       vc_redist.x64.exe            the Visual C++ runtime PostgreSQL and the
 #                                    SENTIENT server need (a fresh Windows
 #                                    has none); downloaded here if missing
@@ -39,14 +41,19 @@ $ErrorActionPreference = "Stop"
 
 $required = @(
     "postgresql-18.6-1-windows-x64-binaries.zip",
-    "timescaledb-postgresql-18-windows-amd64.zip",
-    "sentient-payload.tar"
+    "timescaledb-postgresql-18-windows-amd64.zip"
 )
 foreach ($f in $required) {
     if (-not (Test-Path (Join-Path $PayloadDir $f))) {
         throw "Missing $f in $PayloadDir"
     }
 }
+# The SENTIENT payload: its name from 4.4.1.3 on, else the older one. The
+# package always carries the new name (this Platform Manager reads both).
+$payloadName = "sentient-payload-windows-x86_64.tar"
+$payloadSrc = Join-Path $PayloadDir $payloadName
+if (-not (Test-Path $payloadSrc)) { $payloadSrc = Join-Path $PayloadDir "sentient-payload.tar" }
+if (-not (Test-Path $payloadSrc)) { throw "Missing $payloadName (or sentient-payload.tar) in $PayloadDir" }
 
 # The Visual C++ runtime goes into every package, so an offline install on a
 # fresh Windows has it.
@@ -86,6 +93,7 @@ Copy-Item "app\assets\licence.txt" (Join-Path $dir "EULA.txt")
 foreach ($f in $required) {
     Copy-Item (Join-Path $PayloadDir $f) (Join-Path $dir "payload")
 }
+Copy-Item $payloadSrc (Join-Path $dir "payload\$payloadName")
 Set-Content -Path (Join-Path $dir "payload\VERSION") -Value $SentientVersion -Encoding ASCII
 $notes = Join-Path $PayloadDir "NOTES.md"
 if (Test-Path $notes) { Copy-Item $notes (Join-Path $dir "payload") }
