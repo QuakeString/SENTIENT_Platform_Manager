@@ -184,6 +184,9 @@ pub(crate) fn uninstall_done(keep_data: bool) -> &'static str {
 /// Remove a Platform Manager installed without SENTIENT: shortcuts, its Apps
 /// & features entry and the program itself (once this process exits).
 pub(crate) fn run_remove_manager(sink: ProgressFn) -> Result<(), String> {
+    if crate::store::is_store() {
+        return run_remove_store_helper(sink);
+    }
     step(&sink, "Removing the Platform Manager");
     self_install::remove_shortcuts();
     // Its menu entry, icons and tray autostart.
@@ -197,6 +200,29 @@ pub(crate) fn run_remove_manager(sink: ProgressFn) -> Result<(), String> {
     self_install::remove_manager_entry();
     self_install::remove_manager_later();
     sink(Progress::Done { message: "The Platform Manager is removed.".into() });
+    Ok(())
+}
+
+/// The Microsoft Store build: what the Platform Manager put outside its
+/// package (the helper copy, the tray's sign-in task, its shortcuts). The
+/// app itself is the Store's to uninstall. The helper stays while anything
+/// still starts it: SENTIENT, or a ClickHouse kept with its data (its
+/// shutdown service runs the helper).
+fn run_remove_store_helper(sink: ProgressFn) -> Result<(), String> {
+    step(&sink, "Removing what the Platform Manager added outside its app");
+    #[cfg(windows)]
+    let clickhouse_kept = sentient_installer_core::clickhouse_wsl::is_installed();
+    #[cfg(not(windows))]
+    let clickhouse_kept = false;
+    if crate::installation::InstallationRecord::load().is_some() || clickhouse_kept {
+        sink(Progress::Done { message: "The Platform Manager's helper stays: SENTIENT's services on this computer still use it.".into() });
+        return Ok(());
+    }
+    crate::shortcuts::remove(crate::shortcuts::Owner::Manager, &[], &sink);
+    let _ = crate::background::set_autostart(false);
+    crate::shortcuts::remove(crate::shortcuts::Owner::Sentient, &[], &sink);
+    self_install::remove_manager_later();
+    sink(Progress::Done { message: "Done. To uninstall the Platform Manager itself, right-click it in Start and choose Uninstall.".into() });
     Ok(())
 }
 

@@ -431,7 +431,9 @@ impl Render for AboutPage {
         };
         let footer = v_flex()
             .gap_0p5()
-            .child(place("copy-installed", "Installed in", crate::self_install::manager_dir().display().to_string()))
+            // The Microsoft Store build: the app is the Store's; the copy
+            // that does the work lives in ProgramData (crate::store).
+            .child(place("copy-installed", if crate::store::is_store() { "From the Microsoft Store; helper in" } else { "Installed in" }, crate::self_install::manager_dir().display().to_string()))
             .child(place("copy-data", "Data in", crate::updates::prefs_dir().display().to_string()));
         v_flex()
             .id("about")

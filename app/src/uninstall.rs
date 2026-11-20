@@ -174,6 +174,10 @@ pub struct Facts {
     pub sizes: Sizes,
     /// What the rows name.
     pub names: Names,
+    /// The Microsoft Store build (crate::store): the app itself is
+    /// uninstalled from Start or Settings > Apps, so it has no row.
+    #[serde(default)]
+    pub store: bool,
 }
 
 /// Bytes on disk, where known.
@@ -386,8 +390,10 @@ pub fn rows(f: &Facts) -> Vec<Row> {
     } else {
         out.push(row(Key::Shortcuts, None, "Shortcuts", if f.windows { "Start menu and desktop".into() } else { "Menu entry and desktop icon".into() }, None, true, "shortcuts"));
     }
-    let manager_detail = if f.windows { "Tray icon and program; removed last" } else { "Removed last" };
-    out.push(row(Key::Manager, None, "Platform Manager", manager_detail.into(), f.sizes.manager, false, "Platform Manager"));
+    if !f.store {
+        let manager_detail = if f.windows { "Tray icon and program; removed last" } else { "Removed last" };
+        out.push(row(Key::Manager, None, "Platform Manager", manager_detail.into(), f.sizes.manager, false, "Platform Manager"));
+    }
     out
 }
 
@@ -651,6 +657,7 @@ pub fn facts_quick(record: &InstallationRecord) -> Facts {
         other_distros: if ch_in_wsl { sentient_installer_core::wsl::other_distros() } else { Vec::new() },
         sizes: Sizes::default(),
         names,
+        store: crate::store::is_store(),
     }
 }
 
@@ -1265,6 +1272,7 @@ pub fn fixture(name: &str) -> Option<Facts> {
         gateway: false,
         other_distros: Vec::new(),
         sizes: Sizes { sentient: mb(420), files: mb(5100), pg_program: mb(160), pg_data: mb(38200), ch_program: mb(610), ch_data: mb(94100), distro: mb(1900), manager: mb(48) },
+        store: false,
         names: Names {
             install_dir: "/opt/sentient".into(),
             files: format!("/var/lib/sentient, {LINUX_BACKUPS}"),
@@ -1446,6 +1454,20 @@ mod tests {
         let ext = rows(&fixture("lx-ext").unwrap());
         assert_eq!(pg_action(&effective(&wipe, &ext)), Some(DbRemoval::StopUsing { keep_data: false }));
         assert!(from_args(&["--parts".into(), "sentient,bogus".into()]).unwrap_err().contains("unknown part bogus"));
+    }
+
+    #[test]
+    fn the_store_build_has_no_platform_manager_row() {
+        let mut f = fixture("win-pg").unwrap();
+        f.store = true;
+        let back: Facts = serde_json::from_str(&serde_json::to_string(&f).unwrap()).unwrap();
+        assert!(back.store);
+        assert!(rows(&back).iter().all(|r| r.key != Key::Manager));
+        // A server's facts from an older agent: no store field, a row.
+        let mut v = serde_json::to_value(fixture("win-pg").unwrap()).unwrap();
+        v.as_object_mut().unwrap().remove("store");
+        let old: Facts = serde_json::from_value(v).unwrap();
+        assert!(!old.store && rows(&old).iter().any(|r| r.key == Key::Manager));
     }
 
     #[test]

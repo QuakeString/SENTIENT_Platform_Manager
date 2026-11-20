@@ -248,6 +248,11 @@ fn save_pending(plan: &InstallPlan) -> Result<(), String> {
         .map_err(|e| format!("write {}: {e}", path.display()))?;
     #[cfg(windows)]
     {
+        // This program's own path. In the Microsoft Store build that is the
+        // helper copy in ProgramData (crate::store), never the package's
+        // program: the elevated window always runs from the helper, outside
+        // the package, so this entry reaches the real registry and names a
+        // path that stays valid across Store updates.
         let exe = std::env::current_exe().map_err(|e| e.to_string())?;
         let value = format!("\"{}\" --resume", exe.display());
         let ok = std::process::Command::new("reg.exe")

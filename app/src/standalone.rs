@@ -57,9 +57,14 @@ pub fn install_sentient_from_package(window: &mut Window, cx: &mut App) {
 /// Confirm, then remove the Platform Manager and close it.
 pub fn remove_manager(window: &mut Window, cx: &mut App) {
     crate::modal::alert(window, cx, |dialog, _, _| {
+        let (title, text) = if crate::store::is_store() {
+            ("Remove the Platform Manager's helper?", "Its administrator copy and its sign-in task are removed, and it closes. The app stays in Start until you uninstall it there.")
+        } else {
+            ("Remove the Platform Manager?", "Its shortcuts and the program are removed from this computer. SENTIENT is not installed, so nothing else changes.")
+        };
         dialog
-            .title("Remove the Platform Manager?")
-            .description("Its shortcuts and the program are removed from this computer. SENTIENT is not installed, so nothing else changes.")
+            .title(title)
+            .description(text)
             .confirm()
             .ok_text("Remove")
             .on_ok(|_, _, cx| {

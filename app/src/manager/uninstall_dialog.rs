@@ -174,7 +174,11 @@ impl UninstallDialog {
     }
 
     fn after(&self) -> After {
-        After { remove_manager: self.ran.has(Key::Manager) && !self.opts.remote, forget_instance: self.opts.remote && self.forget && self.ran.has(Key::Sentient), restart: self.ran.has(Key::Wsl) }
+        // The Microsoft Store build has no Platform Manager row: once
+        // SENTIENT is gone, what it put outside its package goes too (the
+        // app itself is uninstalled from Start or Settings > Apps).
+        let manager = self.ran.has(Key::Manager) || (crate::store::is_store() && self.ran.has(Key::Sentient));
+        After { remove_manager: manager && !self.opts.remote, forget_instance: self.opts.remote && self.forget && self.ran.has(Key::Sentient), restart: self.ran.has(Key::Wsl) }
     }
 }
 
@@ -406,7 +410,7 @@ impl UninstallDialog {
             list = push(list, line("un-res-wsl".into(), "!", bad_fg, bad_bg, "WSL is off after Windows restarts.".into()));
         }
         let after = self.after();
-        let label: SharedString = if after.remove_manager {
+        let label: SharedString = if after.remove_manager && !crate::store::is_store() {
             "Close and remove Platform Manager".into()
         } else if after.restart {
             "Restart Windows".into()

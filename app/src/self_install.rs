@@ -68,7 +68,14 @@ mod imp {
     const DESKTOP: &str = r"C:\Users\Public\Desktop";
     const START_MENU: &str = r"C:\ProgramData\Microsoft\Windows\Start Menu\Programs";
 
+    /// The Platform Manager's folder: Program Files for the download; for
+    /// the Microsoft Store build the helper's folder in ProgramData
+    /// (crate::store), since the package's own folder is read-only and
+    /// changes with every Store update.
     pub fn manager_dir() -> PathBuf {
+        if crate::store::is_store() {
+            return crate::store::helper_dir();
+        }
         PathBuf::from(r"C:\Program Files").join(PRODUCT)
     }
 
@@ -93,6 +100,12 @@ mod imp {
         }
         std::fs::create_dir_all(manager_dir())
             .map_err(|e| format!("create {}: {e}", manager_dir().display()))?;
+        // The Store build's helper folder is in ProgramData, where every
+        // user may add files: only SYSTEM and the Administrators may change
+        // it before a program that services run is put there.
+        if crate::store::is_store() {
+            crate::store::lock_helper_dir(&manager_dir())?;
+        }
         // A running copy cannot be overwritten. The ClickHouse shutdown
         // guard is this program too (a LocalSystem service): taskkill ends
         // it without its stop handler, so ClickHouse keeps running, and it
@@ -115,6 +128,9 @@ mod imp {
             };
             format!("copy to {}: {e}.{hint}", target.display())
         })?;
+        if crate::store::is_store() {
+            crate::store::after_helper_installed(&target);
+        }
         Ok(target)
     }
 
@@ -195,6 +211,11 @@ mod imp {
     /// The Start menu entry under its searchable name, replacing the one an
     /// earlier Platform Manager made, and the `spm` command.
     fn start_menu_entry(manager: &Path) -> Result<(), String> {
+        // The Store package has its own Start menu entry and command
+        // (its app execution alias).
+        if crate::store::is_store() {
+            return Ok(());
+        }
         let (_, old) = super::start_menu_links(START_MENU);
         shortcut(manager, START_MENU, START_MENU_NAME, "--manager")?;
         let _ = std::fs::remove_file(old);
@@ -218,7 +239,9 @@ mod imp {
             note(Owner::Manager, [PathBuf::from(super::start_menu_links(START_MENU).0)]);
             note(Owner::Sentient, [PathBuf::from(format!(r"{START_MENU}\SENTIENT.url"))]);
         }
-        if s.desktop_manager {
+        // The Store build's desktop shortcut is the user's own (pinned
+        // from Start): one to the helper would skip the Store's updates.
+        if s.desktop_manager && !crate::store::is_store() {
             shortcut(manager, DESKTOP, PRODUCT, "--manager")?;
             note(Owner::Manager, [PathBuf::from(format!(r"{DESKTOP}\{PRODUCT}.lnk"))]);
         }
@@ -236,6 +259,9 @@ mod imp {
 
     /// Shortcuts of a Platform Manager installed without SENTIENT.
     pub fn create_manager_shortcuts(manager: &Path, s: &Shortcuts) -> Result<(), String> {
+        if crate::store::is_store() {
+            return Ok(());
+        }
         if s.start_menu {
             start_menu_entry(manager)?;
         }
@@ -250,6 +276,10 @@ mod imp {
     /// The Apps & features entry of a Platform Manager installed alone.
     /// SENTIENT's own entry replaces it once SENTIENT is installed.
     pub fn register_manager_entry(manager: &Path) {
+        // The Store package is listed in Apps & features by Windows.
+        if crate::store::is_store() {
+            return;
+        }
         let exe = manager.display().to_string();
         for (name, kind, data) in [
             ("DisplayName", "REG_SZ", PRODUCT.to_string()),
