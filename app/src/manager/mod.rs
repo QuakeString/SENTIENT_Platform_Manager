@@ -196,6 +196,9 @@ pub struct Manager {
     page: Page,
     /// The sub-flow open over a page, if any (see [`SubFlow`]).
     sub: Option<SubFlow>,
+    /// Files' "New" mark shows (one day from its first showing,
+    /// crate::new_marks), read once when the window opens.
+    files_new_mark: bool,
     record: Option<InstallationRecord>,
     /// Docker: the version this computer's container runs (the record may
     /// hold its image tag, "latest"), for the top bar.
@@ -430,6 +433,7 @@ impl Manager {
         let mut manager = Self {
             page,
             sub: None,
+            files_new_mark: crate::new_marks::show("files"),
             record,
             running_version: None,
             status: None,
@@ -1098,7 +1102,7 @@ impl Manager {
         // monitors' bars show; below, only the switcher and the values.
         let wide = width > 900.;
         let warn_fill: Hsla = rgb(0xf59e0b).into();
-        let warn_text: Hsla = rgb(0xfcd34d).into();
+        let warn_text = ui::warn_text(light_bar);
         // Monitor bars: the instance's colour mixed with the text colour on a
         // faint track of the text colour.
         let meter_fill: Hsla = fg.blend(ic.opacity(0.65));

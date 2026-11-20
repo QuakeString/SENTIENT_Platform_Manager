@@ -117,9 +117,9 @@ impl UpdatePage {
             }
             cx.notify();
         });
-        // Opening the screen looks, unless a check already answered.
+        // Opening the screen looks, unless a check answered in the last 30 minutes.
         updates.update(cx, |u, cx| {
-            if u.found.is_none() {
+            if u.stale() {
                 u.check(cx);
             }
         });

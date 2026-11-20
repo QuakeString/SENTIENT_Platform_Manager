@@ -1055,7 +1055,7 @@ impl FilesPage {
         }));
 
         // C6: read only, and the way out on a server.
-        let amber: Hsla = if theme.background.l < 0.5 { rgb(0xfcd34d).into() } else { rgb(0x9a3412).into() };
+        let amber = crate::ui::warn_text(theme.background.l >= 0.5);
         let banner = read_only.then(|| {
             h_flex()
                 .gap_3()

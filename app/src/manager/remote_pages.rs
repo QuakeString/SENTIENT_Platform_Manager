@@ -457,6 +457,10 @@ pub struct RemotePages {
     pending_migrate: Option<String>,
     /// Readings under way (fetch).
     in_flight: usize,
+    /// The page's refresh button was pressed: the next reload asks for the
+    /// release list again even inside its 30 minutes (fetch_cache, at most
+    /// once a minute), so a release published just now shows.
+    force_next: bool,
     /// The last reading's generation (fetch), and each slot's newest
     /// answer applied: an older answer never overwrites a newer one.
     gen: u64,
@@ -630,6 +634,7 @@ impl RemotePages {
             shown_job: None,
             pending_migrate: None,
             in_flight: 0,
+            force_next: false,
             gen: 0,
             applied: Default::default(),
             stale: Default::default(),
@@ -980,6 +985,13 @@ impl RemotePages {
     }
 
     pub(crate) fn reload(&mut self, cx: &mut Context<Self>) {
+        let force = std::mem::take(&mut self.force_next);
+        if force {
+            // The newest SENTIENT, gateway and Platform Manager releases,
+            // read again for every page that offers one (shared with this
+            // computer's pages).
+            self.updates.update(cx, |u, cx| u.check_now(cx));
+        }
         // Only what this reading fails to refresh is said to be stale.
         self.stale.clear();
         if let Some(l) = self.locations.clone() {
@@ -1002,7 +1014,7 @@ impl RemotePages {
                 if !sentient_there {
                     self.fetch(cx, move || remote::gateway(&i4), |p| &mut p.gateway);
                     let channel = crate::updates::Prefs::load().channel;
-                    self.fetch(cx, move || crate::updates::newest_sentient(channel), |p| &mut p.newest);
+                    self.fetch(cx, move || crate::updates::newest_sentient_with(channel, force), |p| &mut p.newest);
                 }
                 self.fetch(cx, move || remote::status(&inst), |p| &mut p.status);
                 let inst = self.inst.clone();
@@ -1018,7 +1030,7 @@ impl RemotePages {
                 let i3 = inst.clone();
                 self.fetch(cx, move || remote::gateway(&i3), |p| &mut p.gateway);
                 self.updates.update(cx, |u, cx| {
-                    if u.found.is_none() {
+                    if !force && u.stale() {
                         u.check(cx);
                     }
                 });
@@ -1053,7 +1065,7 @@ impl RemotePages {
                         }
                         let installed = remote::status(&inst)?.comparable_version();
                         let channel = crate::updates::Prefs::load().channel;
-                        crate::updates::check(channel, Some(installed), native).sentient
+                        crate::updates::check_with(channel, Some(installed), native, force).sentient
                     },
                     |p| &mut p.offer,
                 );
@@ -1086,7 +1098,7 @@ impl RemotePages {
             Kind::Gateway => {
                 // The newest gateway release, for "Update to <v>".
                 self.updates.update(cx, |u, cx| {
-                    if u.found.is_none() {
+                    if !force && u.stale() {
                         u.check(cx);
                     }
                 });
@@ -1858,8 +1870,9 @@ impl RemotePages {
     /// The same Logs view as this computer's, reading through the agent.
     fn logs_page(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
         let inst = self.inst.clone();
-        let view = self.log_view.get_or_insert_with(|| cx.new(|cx| crate::manager::logs::LogView::remote(inst, window, cx))).clone();
-        v_flex().child(view)
+        let view = self.log_view.get_or_insert_with(|| cx.new(|cx| crate::manager::logs::LogView::remote(inst, window, cx).filling())).clone();
+        // The log box fills the page's height (LogView::filling).
+        v_flex().flex_1().child(view)
     }
 
     /// What is known of the server's licence now: a sign-in in this run,
@@ -2072,7 +2085,12 @@ impl RemotePages {
                             .outline()
                             .label(if checking { "Checking" } else { "Check for updates" })
                             .disabled(checking)
-                            .on_click(cx.listener(|this, _, _, cx| this.reload(cx))),
+                            // Forced, like this computer's: the release lists
+                            // are read again and every page's offers with them.
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.force_next = true;
+                                this.reload(cx);
+                            })),
                     ),
             )
             // The offers are from an old release list (GitHub refused): said quietly.
@@ -3006,6 +3024,9 @@ impl RemotePages {
         let target = crate::manager::gateway::RemoveTarget::of_remote(&get, self.inst.name.clone());
         let runs_as = if kind.is_empty() { "Not known".to_string() } else { crate::manager::gateway::runs_as(&kind, &target.name, managed, recorded) };
         let outside = !managed && !recorded && kind != "windows-service" && !kind.is_empty();
+        // A container started outside the Platform Manager (recorded or not),
+        // on a Linux server: taken over, it becomes the agent's own.
+        let take_over = kind == "docker" && !managed && !remote::is_windows(&self.inst);
         let compose = get("compose");
         let volumes = get("volumes");
         // A row only when it has a value.
@@ -3072,7 +3093,34 @@ impl RemotePages {
                 .justify_end()
                 .items_center()
                 .child(crate::ui::probed(crate::ui::button("r-gw-remove").danger().label("Remove the Gateway").disabled(busy).on_click(cx.listener(move |this, _, _, cx| this.open_gateway_remove(target.clone(), cx)))))
-                .when(outside, |r| {
+                .when(take_over, |r| {
+                    let (name, dir) = (get("container"), Some(compose.clone()).filter(|c| !c.is_empty()));
+                    r.child(crate::ui::probed(
+                        h_flex()
+                            .gap_1()
+                            .items_center()
+                            .child(crate::ui::button("r-gw-takeover").outline().label("Take it over").disabled(busy).on_click(cx.listener(move |_, _, _, cx| {
+                                let me = cx.entity().downgrade();
+                                crate::manager::gateway::open_take_over_dialog(
+                                    name.clone(),
+                                    dir.clone(),
+                                    std::rc::Rc::new({
+                                        let name = name.clone();
+                                        move |comment, cx: &mut App| {
+                                            let mut args = vec!["gateway-take-over".to_string(), "--container".to_string(), name.clone()];
+                                            if !comment {
+                                                args.push("--warn-only".into());
+                                            }
+                                            me.update(cx, |p, cx| p.run_job("Taking over the gateway", args, cx)).ok();
+                                        }
+                                    }),
+                                    cx,
+                                );
+                            })))
+                            .child(ui::info("r-gw-takeover-help".into(), crate::manager::gateway::TAKE_OVER_HELP.into())),
+                    ))
+                })
+                .when(outside && !take_over, |r| {
                     r.child(crate::ui::probed(
                         h_flex().gap_1().items_center().child(crate::ui::button("r-gw-adopt").outline().label("Manage it here").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.run_job("Recording the gateway", vec!["gateway-adopt".into()], cx)))).child(ui::info(
                             "r-gw-adopt-help".into(),
@@ -3572,7 +3620,11 @@ impl Render for RemotePages {
         // switcher with REMOTE); a job shows in the progress strip.
         let me = cx.entity().downgrade();
         let reload = crate::ui::refresh_button("remote-reload", self.in_flight > 0, window, move |_, cx| {
-            me.update(cx, |this, cx| this.reload(cx)).ok();
+            me.update(cx, |this, cx| {
+                this.force_next = true;
+                this.reload(cx);
+            })
+            .ok();
         });
         let reload = h_flex().gap_3().items_center().min_h(px(32.)).children(self.stale_note(&theme, cx)).child(crate::ui::probed(reload));
         // Platform settings scroll inside their card (its Apply bar stays at

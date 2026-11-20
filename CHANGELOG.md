@@ -15,6 +15,36 @@ refreshes that repository's Downloads table.
 
 ## [Unreleased]
 
+### Fixed
+- The "New" mark on Files shows for one day from the first time it
+  appears, then not again. It stayed there for good before.
+- Logs: the log box fills the window's height, here and on a server, and
+  the page scrolls only when the window is too low for it. It had a fixed
+  height before, with empty space under it on a tall window.
+- New releases show without a restart. What a check found was kept until
+  the next daily check while the window stayed open, so a gateway, SENTIENT
+  or Platform Manager release published meanwhile was not offered, however
+  often a page was opened or refreshed. It is now looked for again when a
+  page opens more than 30 minutes after the last check, every 30 minutes
+  while the window is open (with daily checks on), and at once with a
+  server page's refresh button or its Check for updates (at most once a
+  minute). A server's Check for updates read the server again but not the
+  release list before.
+- Gateway updates when GitHub limits requests: the release list is then an
+  old one, so a gateway in Docker is also offered the newest image tag on
+  Docker Hub when that is newer.
+- A gateway container started outside the Platform Manager (by a compose
+  file or by hand) can be taken over: "Take it over" on the Gateway page,
+  here and on a Linux server. It is recreated as the Platform Manager's
+  sentient-gateway with the same image, settings, volumes, network (and
+  its compose service name there), ports and extra hosts; its data stays.
+  Its compose service is commented out (the file as it was is kept as
+  .spm-bak), or left as it is with a note on what to remove. If the new
+  container does not start, the old one is put back as it was. From then
+  on the Platform Manager updates it and changes its settings. "Manage it
+  here" only recorded such a container: updates and settings stayed with
+  its compose file, and the button was gone after it.
+
 ### Added
 - The Platform Manager can be published in the Microsoft Store. Windows
   then trusts it without a warning, and the Store keeps it up to date. The

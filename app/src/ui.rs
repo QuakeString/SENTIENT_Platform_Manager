@@ -379,6 +379,12 @@ pub enum Tone {
     Neutral,
 }
 
+/// Warning-coloured text that stays readable on its background: a light
+/// amber on dark surfaces, a dark amber on light ones (4.5:1 or better).
+pub fn warn_text(on_light: bool) -> Hsla {
+    if on_light { rgb(0x9a3412).into() } else { rgb(0xfcd34d).into() }
+}
+
 /// A rounded status label. Colour is never the only signal: the text says it.
 pub fn pill(theme: &Theme, tone: Tone, text: impl Into<SharedString>) -> Div {
     let (bg, fg) = match tone {

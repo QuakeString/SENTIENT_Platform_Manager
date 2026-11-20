@@ -125,7 +125,7 @@ impl GatewayPage {
             cx.background_executor().timer(REFRESH).await;
         });
         updates.update(cx, |u, cx| {
-            if u.found.is_none() {
+            if u.stale() {
                 u.check(cx);
             }
         });
@@ -386,6 +386,48 @@ impl GatewayPage {
         });
     }
 
+    /// "Take it over" (a container started outside the Platform Manager).
+    fn take_over(&mut self, name: String, comment: bool, cx: &mut Context<Self>) {
+        self.action = Some("takeover");
+        // Its record (installation.json) is root's on Linux.
+        let as_root = cfg!(target_os = "linux") && !crate::rootjob::is_root() && self.record.is_some();
+        self.job.update(cx, |job, cx| {
+            job.start(
+                move |sink| {
+                    if as_root {
+                        let mut args = vec!["gateway-take-over".to_string(), "--container".to_string(), name.clone()];
+                        if !comment {
+                            args.push("--warn-only".into());
+                        }
+                        crate::rootjob::run(&args, &sink).map(|_| ())
+                    } else {
+                        use sentient_installer_core::distro::gateway_docker::{take_over, ComposeChoice};
+                        let msg = take_over(&sink, if comment { ComposeChoice::CommentOut } else { ComposeChoice::WarnOnly }, Some(&name))?;
+                        let _ = crate::gateway_record::save(None);
+                        sink(sentient_installer_core::progress::Progress::Done { message: msg });
+                        Ok(())
+                    }
+                },
+                cx,
+            )
+        });
+    }
+
+    fn open_take_over(&mut self, cx: &mut Context<Self>) {
+        let Some(status) = self.status.clone() else { return };
+        let this = cx.entity().downgrade();
+        let name = status.container.clone().unwrap_or_default();
+        let n2 = name.clone();
+        open_take_over_dialog(
+            name,
+            status.compose_dir.clone(),
+            std::rc::Rc::new(move |comment, cx: &mut App| {
+                this.update(cx, |p, cx| p.take_over(n2.clone(), comment, cx)).ok();
+            }),
+            cx,
+        );
+    }
+
     fn open_remove(&mut self, cx: &mut Context<Self>) {
         let Some(status) = self.status.clone() else { return };
         let this = cx.entity().downgrade();
@@ -550,6 +592,71 @@ impl Render for RemoveDialog {
     }
 }
 
+/// "Take it over": a gateway container started outside the Platform Manager
+/// (`name`, from the compose project in `compose_dir` when there is one)
+/// becomes its own sentient-gateway. `on_ok` gets whether to comment out
+/// its compose service (else the job only warns).
+pub(crate) fn open_take_over_dialog(name: String, compose_dir: Option<String>, on_ok: std::rc::Rc<dyn Fn(bool, &mut App)>, cx: &mut App) {
+    let view = cx.new(|_| TakeOverDialog { name, compose_dir, comment: true, on_ok });
+    crate::modal::open(crate::modal::Modal { title: "Take over the gateway?".into(), body: view.into(), width: 540., icon: None, on_close: None }, cx);
+}
+
+struct TakeOverDialog {
+    name: String,
+    compose_dir: Option<String>,
+    comment: bool,
+    on_ok: std::rc::Rc<dyn Fn(bool, &mut App)>,
+}
+
+impl Render for TakeOverDialog {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        use gpui_kit::component::switch::Switch;
+        let theme = cx.theme().clone();
+        let comment = self.comment;
+        let on_ok = self.on_ok.clone();
+        let name = self.name.clone();
+        v_flex()
+            .gap_4()
+            .child(div().text_sm().text_color(theme.muted_foreground).child(format!(
+                "The container {name} is replaced by the Platform Manager's sentient-gateway, with the same image, settings, volumes, network and ports. Its configuration and buffered data stay in its volumes. From then on the Platform Manager updates it and changes its settings."
+            )))
+            .child(div().text_sm().text_color(theme.muted_foreground).child(format!("The gateway stops for a few seconds. If the new container does not start, {name} is put back as it was.")))
+            .when_some(self.compose_dir.clone(), |b, dir| {
+                b.child(
+                    h_flex()
+                        .gap_3()
+                        .items_center()
+                        .child(
+                            h_flex()
+                                .flex_1()
+                                .min_w_0()
+                                .gap_1()
+                                .items_center()
+                                .child(div().text_sm().child("Comment out its service in the compose file"))
+                                .child(ui::info(
+                                    "gw-takeover-compose".into(),
+                                    format!("The compose file in {dir} still starts {name}: docker compose up there would start a second gateway on the same volumes. Commented out, it no longer does; the file as it was is kept beside it (.spm-bak). Off: the file is not changed and the job says what to remove.").into(),
+                                )),
+                        )
+                        .child(Switch::new("gw-takeover-comment").checked(comment).on_click(cx.listener(|d, v: &bool, _, cx| {
+                            d.comment = *v;
+                            cx.notify();
+                        }))),
+                )
+            })
+            .child(
+                h_flex()
+                    .gap(crate::ui::button_gap())
+                    .justify_end()
+                    .child(crate::ui::probed(crate::ui::button("gw-takeover-cancel").outline().label("Cancel").on_click(|_, _, cx| crate::modal::close(cx))))
+                    .child(crate::ui::probed(crate::ui::button("gw-takeover-ok").primary().label("Take it over").on_click(move |_, _, cx| {
+                        crate::modal::close(cx);
+                        on_ok(comment, cx);
+                    }))),
+            )
+    }
+}
+
 /// How the gateway runs, for "Runs as": a container also says who manages it.
 pub(crate) fn runs_as(kind: &str, name: &str, managed: bool, recorded: bool) -> String {
     match kind {
@@ -566,6 +673,15 @@ pub(crate) fn runs_as(kind: &str, name: &str, managed: bool, recorded: bool) -> 
 impl Render for GatewayPage {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.form.apply_clear(window, cx);
+        // Screens: the Take it over dialog open (SPM_DEBUG_GATEWAY_TAKEOVER,
+        // on a canned gateway started outside, e.g. SPM_DEBUG_GATEWAY=compose).
+        #[cfg(debug_assertions)]
+        {
+            static SHOWN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+            if std::env::var_os("SPM_DEBUG_GATEWAY_TAKEOVER").is_some() && self.status.is_some() && !SHOWN.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                self.open_take_over(cx);
+            }
+        }
         let theme = cx.theme().clone();
         let page = ui::page(
             &theme,
@@ -597,6 +713,9 @@ impl Render for GatewayPage {
         let unreadable = status.config_unreadable;
         // Someone else's gateway: a compose container, or a unit by hand.
         let outside = !status.managed && !recorded && status.kind() != "windows-service";
+        // A container started outside the Platform Manager (recorded or
+        // not): taken over, it becomes its own (Linux only).
+        let take_over = !cfg!(windows) && status.kind() == "docker" && !status.managed;
         let controllable = status.kind() != "process";
         let outcome = match (self.action, job.state()) {
             (Some("adopt" | "remove" | "read" | "update"), JobState::Done(m)) => Some((Tone::Good, m.clone())),
@@ -708,7 +827,15 @@ impl Render for GatewayPage {
                                         .child(ui::info("gw-read-help".into(), UNREADABLE_HELP.into())),
                                 ))
                             })
-                            .when(outside, |r| {
+                            .when(take_over, |r| {
+                                r.child(crate::ui::probed(
+                                    h_flex().gap_1().items_center().child(crate::ui::button("gw-takeover").outline().label("Take it over").disabled(busy).on_click(cx.listener(|p, _, _, cx| p.open_take_over(cx)))).child(ui::info(
+                                        "gw-takeover-help".into(),
+                                        TAKE_OVER_HELP.into(),
+                                    )),
+                                ))
+                            })
+                            .when(outside && !take_over, |r| {
                                 r.child(crate::ui::probed(
                                     h_flex().gap_1().items_center().child(crate::ui::button("gw-adopt").outline().label("Manage it here").disabled(busy).on_click(cx.listener(|p, _, _, cx| p.adopt(cx)))).child(ui::info(
                                         "gw-adopt-help".into(),
@@ -873,6 +1000,9 @@ pub(crate) fn clears_form(clearing: bool, state: &JobState) -> bool {
 pub(crate) fn job_clears_form(args: &[String]) -> bool {
     matches!(args.first().map(String::as_str), Some("gateway-remove" | "gateway-install"))
 }
+
+/// The (i) beside "Take it over".
+pub(crate) const TAKE_OVER_HELP: &str = "This container was started outside the Platform Manager (by a compose file or by hand), so updates and settings go through the way it was started. Taken over, it runs as the Platform Manager's sentient-gateway with the same settings and data, and the Platform Manager updates it and changes its settings.";
 
 /// The (i) on a server's token: where it goes.
 pub(crate) const REMOTE_TOKEN_HELP: &str = "It travels to the server over the encrypted SSH connection and is written there to a file only root can read. It is not kept on this computer.";

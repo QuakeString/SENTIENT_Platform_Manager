@@ -66,7 +66,7 @@ use crate::installation::InstallationRecord;
 const USAGE: &str = "usage: --job install <plan.json> [--staged] | install-secrets (one JSON line on stdin) | install-facts-json [<port>:<name>,…] | diagnose-fix <fix json> | install-manager [--no-shortcuts] | remove-manager | migrate <stock|timescaledb|clickhouse> | resume-migration | migrate-preflight | movedata-json | movedata-check <store> <folder> | movedata-estimate <store=folder,…> | move-data <store=folder,…> | move-data-remove-old <folder> | move-data-cancel | \
 update [<package folder> | --latest | --version <release>] [--accept-breaking] | rollback | rollback-info | backup <file> | restore <file> <database> [<key file>] | \
 use-restored <database> | restore-inspect <backup> [--passphrase-file <file> | --passphrase-stdin] | restore-precheck <request.json> [--passphrase-file <file>] | restore-run <request.json> [--passphrase-file <file> | --passphrase-stdin] | restore-history-json | restore-log <id> | restore-cancel | restore-remove-db <name> | backup-list <folder> | find-existing | add-if-one [--pg-admin-password-stdin] | add-existing [<n> | --native] [--pg-admin-password-stdin] | take-over-compose [--compose <file>] [--db-password-file <file>] [--ch-password-file <file>] | takeover-plan [--compose <file>] | takeover-check-password [--clickhouse] --db-password-file <file> | open-at-signin <kiosk|window|off> | auto-signin <account|off> | repair | control <start|stop|restart> [--stop-shared-pg] | service <start|stop|restart> <name> | uninstall [--delete-data] | uninstall --parts <sentient,postgres,pg-database,clickhouse,ch-database,gateway,shortcuts,wsl-distro,wsl,manager> [--keep-files] [--keep-pg-data] [--keep-ch-data] [--wsl-distro] [--wsl] | uninstall-facts-json | apply-settings <file.json> | apply-changes | scheduled-backup | backup-schedule | backup-auto <off|HH:MM> <keep> <everything|last90|configuration> | backup-verify <backup> | backup-delete <backup> | backup-folder <folder> <move|leave> | dir-list <folder> | dir-mkdir <folder> <name> | dir-make-writable <folder> [<uid>] | licence-api --request-stdin | --request-file <file> | admin <sentient-admin args> | replace <backup> [--delete-old] [--passphrase-stdin] | status-json | monitor-json | stats-live [system|services|db] | stats-sample | stats-history <seconds> | stats-install | server-info-json | server-boot-json | server-power <reboot|poweroff> | docker-restart | system-updates | services-json | dbstatus-json | backups-json | settings-json | logs [<lines>] | kept | remove-kept <name> | agent-info | agents | serve | pg-others-json | \
-gateway-status | gateway-install-secrets (one JSON line on stdin) | gateway-install <host> <port> [--version <release>] [--staged] | gateway-update [<version>] | gateway-control <start|stop|restart> | gateway-remove [--delete-data] [--remove-image] | gateway-adopt | gateway-settings-json | gateway-apply <plan.json> | gateway-ui-password (the password on stdin) | gateway-test
+gateway-status | gateway-install-secrets (one JSON line on stdin) | gateway-install <host> <port> [--version <release>] [--staged] | gateway-update [<version>] | gateway-control <start|stop|restart> | gateway-remove [--delete-data] [--remove-image] | gateway-adopt | gateway-take-over [--warn-only] [--container <name>] | gateway-settings-json | gateway-apply <plan.json> | gateway-ui-password (the password on stdin) | gateway-test
 
 Administrator password (native Linux): a job typed in a terminal may ask for it, once for the
 whole job. Started without a terminal (a script, a timer, a service), a job never asks: a step
@@ -426,6 +426,24 @@ fn run_job(args: &[String]) -> i32 {
                 })
             }
             "gateway-adopt" => crate::gateway_record::adopt().map(|msg| sink(sentient_installer_core::progress::Progress::Done { message: msg })),
+            // A gateway container started outside the Platform Manager (a
+            // compose project's) becomes its own sentient-gateway with the
+            // same settings and data; its compose service is commented out
+            // unless --warn-only.
+            "gateway-take-over" => {
+                use sentient_installer_core::distro::gateway_docker::{take_over, ComposeChoice};
+                let choice = if args.iter().any(|a| a == "--warn-only") { ComposeChoice::WarnOnly } else { ComposeChoice::CommentOut };
+                let name = args.iter().position(|a| a == "--container").and_then(|i| args.get(i + 1)).cloned();
+                take_over(&sink, choice, name.as_deref()).map(|msg| {
+                    // Managed now by its name: a record of the old container is stale.
+                    if crate::gateway_record::load().is_some() {
+                        if let Err(e) = crate::gateway_record::save(None) {
+                            sink(sentient_installer_core::progress::Progress::Log { line: format!("The gateway's old record was not cleared: {e}") });
+                        }
+                    }
+                    sink(sentient_installer_core::progress::Progress::Done { message: msg });
+                })
+            }
             // The secrets of a remote "Install the gateway" (crate::manager::
             // remote_pages): one JSON line on standard input, kept in a file
             // only this account reads until the install job takes them

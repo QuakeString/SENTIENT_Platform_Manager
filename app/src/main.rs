@@ -74,6 +74,7 @@ mod movedata;
 #[cfg(windows)]
 mod movedata_win;
 mod mode;
+mod new_marks;
 mod notes;
 mod online;
 mod open_client;

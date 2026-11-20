@@ -523,10 +523,11 @@ impl Manager {
                 .when(!rail, |r| r.child(div().relative().whitespace_nowrap().opacity(names).child(title.clone()).child(ui::layout_probe(if on { "menu-label-on" } else { "menu-label" }))))
                 .when(rail, move |r| r.tooltip(crate::ui::tooltip(title.clone())))
         };
+        // "New" on Files for one day from its first showing (crate::new_marks).
+        let files_new = self.files_new_mark;
         let items = Page::menu(self.open_gateway_only()).into_iter().map(|page| {
             row(page.id(), page.icon(), page.title().into(), page == current)
-                // Files is new in this release (the mockup's pill).
-                .when(page == Page::Files && !rail, |r| {
+                .when(page == Page::Files && files_new && !rail, |r| {
                     r.child(div().flex_1()).child(div().px(px(7.)).rounded_full().bg(theme.muted).text_size(px(11.)).text_color(theme.muted_foreground).child("New"))
                 })
                 .on_click(cx.listener(move |this, _, window, cx| {

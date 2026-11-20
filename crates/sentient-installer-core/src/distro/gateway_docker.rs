@@ -588,6 +588,13 @@ pub struct Spec {
     pub cap_add: Vec<String>,
     /// (volume name or host path, in the container, read-only, a bind).
     pub mounts: Vec<(String, String, bool, bool)>,
+    /// Published ports as `docker run -p` takes them: `[ip:]host:container/proto`.
+    pub ports: Vec<String>,
+    /// `host:ip` entries (`docker run --add-host`), e.g. host.docker.internal:host-gateway.
+    pub extra_hosts: Vec<String>,
+    /// Other names on its network (a compose service's name, kept when the
+    /// container is taken over).
+    pub aliases: Vec<String>,
 }
 
 /// One container's `docker inspect` (an array of one).
@@ -619,8 +626,43 @@ pub fn parse_spec(json: &str) -> Option<Spec> {
                 .collect()
         })
         .unwrap_or_default();
+    let mut ports: Vec<String> = Vec::new();
+    if let Some(b) = host.get("PortBindings").and_then(|b| b.as_object()) {
+        for (inside, list) in b {
+            for e in list.as_array().into_iter().flatten() {
+                let hp = e.get("HostPort").and_then(|x| x.as_str()).unwrap_or_default();
+                let ip = e.get("HostIp").and_then(|x| x.as_str()).unwrap_or_default();
+                if hp.is_empty() {
+                    ports.push(inside.clone());
+                } else if ip.is_empty() {
+                    ports.push(format!("{hp}:{inside}"));
+                } else {
+                    ports.push(format!("{ip}:{hp}:{inside}"));
+                }
+            }
+        }
+    }
+    ports.sort();
+    let name = c.get("Name")?.as_str()?.trim_start_matches('/').to_string();
+    // Names given on its own network (a taken-over compose service's), not
+    // its own name or id, which Docker lists there too.
+    let network = host.get("NetworkMode").and_then(|x| x.as_str()).unwrap_or_default();
+    let id = c.get("Id").and_then(|x| x.as_str()).unwrap_or_default();
+    let mut aliases: Vec<String> = c
+        .get("NetworkSettings")
+        .and_then(|n| n.get("Networks"))
+        .and_then(|n| n.get(network))
+        .map(|n| strs(n.get("Aliases")))
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|a| *a != name && !(a.len() >= 12 && id.starts_with(a.as_str())))
+        .collect();
+    aliases.dedup();
     Some(Spec {
-        name: c.get("Name")?.as_str()?.trim_start_matches('/').to_string(),
+        ports,
+        extra_hosts: strs(host.get("ExtraHosts")),
+        aliases,
+        name,
         image: c.get("Config").and_then(|x| x.get("Image")).and_then(|x| x.as_str()).unwrap_or_default().to_string(),
         env: strs(c.get("Config").and_then(|x| x.get("Env"))),
         restart: host.get("RestartPolicy").and_then(|r| r.get("Name")).and_then(|x| x.as_str()).unwrap_or_default().to_string(),
@@ -642,6 +684,22 @@ pub fn run_args(spec: &Spec, env_file: &str) -> Vec<String> {
     if !spec.network.is_empty() && spec.network != "default" {
         a.extend(["--network".into(), spec.network.clone()]);
     }
+    // Names on a network of its own only: the host and default bridge
+    // networks take none.
+    if !matches!(spec.network.as_str(), "" | "default" | "bridge" | "host" | "none") {
+        for n in &spec.aliases {
+            a.extend(["--network-alias".into(), n.clone()]);
+        }
+    }
+    // A host-network container publishes nothing.
+    if spec.network != "host" {
+        for p in &spec.ports {
+            a.extend(["-p".into(), p.clone()]);
+        }
+    }
+    for h in &spec.extra_hosts {
+        a.extend(["--add-host".into(), h.clone()]);
+    }
     for (src, dest, ro, _) in &spec.mounts {
         a.extend(["-v".into(), format!("{src}:{dest}{}", if *ro { ":ro" } else { "" })]);
     }
@@ -656,6 +714,233 @@ pub fn run_args(spec: &Spec, env_file: &str) -> Vec<String> {
     }
     a.extend(["--env-file".into(), env_file.to_string(), spec.image.clone()]);
     a
+}
+
+/// What becomes of the compose file a taken-over container came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ComposeChoice {
+    /// Its service is commented out (a copy of the file is kept beside it),
+    /// so `docker compose up` there no longer starts a second gateway.
+    CommentOut,
+    /// The file stays as it is; the job log says what to change.
+    WarnOnly,
+}
+
+/// The compose service, its files and project, from a container's labels.
+fn compose_of(name: &str) -> (Option<String>, Vec<String>, Option<String>) {
+    let f = "{{index .Config.Labels \"com.docker.compose.service\"}}\t{{index .Config.Labels \"com.docker.compose.project.config_files\"}}\t{{index .Config.Labels \"com.docker.compose.project\"}}";
+    let Some((true, out)) = docker(&["inspect", "--format", f, name]) else { return (None, Vec::new(), None) };
+    let mut it = out.trim().split('\t').map(str::trim);
+    let some = |s: Option<&str>| s.filter(|s| !s.is_empty() && *s != "<no value>").map(str::to_string);
+    let service = some(it.next());
+    let files = some(it.next()).map(|f| f.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect()).unwrap_or_default();
+    (service, files, some(it.next()))
+}
+
+/// `yaml` with the compose service `service` commented out (a note line
+/// above it), or None when the file has no such service under `services:`.
+/// Text only: the file's other lines, comments and order stay.
+pub fn comment_out_service(yaml: &str, service: &str, note: &str) -> Option<String> {
+    let lines: Vec<&str> = yaml.lines().collect();
+    let indent = |l: &str| l.len() - l.trim_start().len();
+    let blank = |l: &str| l.trim().is_empty() || l.trim_start().starts_with('#');
+    let services = lines.iter().position(|l| indent(l) == 0 && l.trim_end().trim_end_matches(|c: char| c.is_whitespace()).starts_with("services:"))?;
+    // The service's key line: the first indent inside services: is the
+    // services' own.
+    let mut svc_indent = None;
+    let mut start = None;
+    for (i, l) in lines.iter().enumerate().skip(services + 1) {
+        if blank(l) {
+            continue;
+        }
+        let n = indent(l);
+        if n == 0 {
+            break;
+        }
+        let level = *svc_indent.get_or_insert(n);
+        if n != level {
+            continue;
+        }
+        let key = l.trim().split('#').next().unwrap_or_default().trim_end();
+        let key = key.trim_end_matches(':').trim().trim_matches(|c| c == '"' || c == '\'');
+        if key == service && l.trim().split('#').next().unwrap_or_default().trim_end().ends_with(':') {
+            start = Some(i);
+            break;
+        }
+    }
+    let start = start?;
+    let level = indent(lines[start]);
+    // To the next line at or above the service's indent (blank lines and
+    // comments after its last line stay outside the block).
+    let mut end = start + 1;
+    let mut last = start;
+    while end < lines.len() {
+        let l = lines[end];
+        if !blank(l) {
+            if indent(l) <= level {
+                break;
+            }
+            last = end;
+        }
+        end += 1;
+    }
+    let mut out: Vec<String> = Vec::with_capacity(lines.len() + 1);
+    out.extend(lines[..start].iter().map(|l| l.to_string()));
+    out.push(format!("{}# {note}", " ".repeat(level)));
+    for l in &lines[start..=last] {
+        out.push(if l.trim().is_empty() { l.to_string() } else { format!("{}# {}", " ".repeat(level), &l[level.min(indent(l))..]) });
+    }
+    out.extend(lines[last + 1..].iter().map(|l| l.to_string()));
+    let mut text = out.join("\n");
+    if yaml.ends_with('\n') {
+        text.push('\n');
+    }
+    Some(text)
+}
+
+/// "Take it over": the gateway container started outside the Platform
+/// Manager (a compose project's, or by hand) becomes the Platform Manager's
+/// own `sentient-gateway`, with everything it runs with: image, environment,
+/// volumes and host folders, network (and its compose service name there),
+/// published ports, extra hosts, devices, restart policy and capabilities.
+/// Its data stays in its volumes; nothing is deleted. The old container is
+/// kept, stopped, until the new one runs, and started again when it does
+/// not. Its compose service is then commented out (`choice`), so the
+/// project does not start a second gateway on the same volumes. `name`: the
+/// container the person confirmed (else the gateway container found).
+pub fn take_over(sink: &ProgressFn, choice: ComposeChoice, name: Option<&str>) -> Result<String, String> {
+    #[cfg(windows)]
+    {
+        let _ = (sink, choice, name);
+        Err("On Windows the Platform Manager manages the gateway as a Windows service, not in Docker.".into())
+    }
+    #[cfg(not(windows))]
+    {
+        let (c, managed) = match name {
+            Some(n) => {
+                let c = containers().into_iter().find(|c| c.name == n).ok_or_else(|| format!("There is no container {n}."))?;
+                if !c.is_ours() {
+                    return Err(format!("{n} is not a Sentient Gateway container."));
+                }
+                let managed = c.name == CONTAINER;
+                (c, managed)
+            }
+            None => find_container().ok_or("There is no gateway container to take over.")?,
+        };
+        if managed {
+            return Ok(format!("The gateway already runs as {CONTAINER}, managed here."));
+        }
+        if docker(&["inspect", "--format", "{{.Name}}", CONTAINER]).is_some_and(|(ok, _)| ok) {
+            return Err(format!("A container named {CONTAINER} is there already: remove it first."));
+        }
+        let old = c.name.clone();
+        sink(Progress::Step { name: format!("Reading {old}") });
+        let current = inspect_spec(&old).ok_or_else(|| format!("The container {old} could not be read."))?;
+        let (service, files, project) = compose_of(&old);
+        let mut spec = Spec { name: CONTAINER.to_string(), ..current.clone() };
+        if let Some(s) = &service {
+            spec.aliases.push(s.clone());
+        }
+        sink(Progress::Log { line: format!("Image {}", spec.image) });
+        if !spec.network.is_empty() {
+            sink(Progress::Log { line: format!("Network {}", spec.network) });
+        }
+        for m in &spec.mounts {
+            sink(Progress::Log { line: format!("{} {} → {}", if m.3 { "Folder" } else { "Volume" }, m.0, m.1) });
+        }
+        for p in &spec.ports {
+            sink(Progress::Log { line: format!("Port {p}") });
+        }
+        let env_file = write_env_file(&spec.env)?;
+        let file = env_file.display().to_string();
+        let kept = format!("{old}-spm-takeover");
+        let result = (|| {
+            sink(Progress::Step { name: format!("Stopping {old}") });
+            let _ = docker(&["rm", "-f", &kept]);
+            if !matches!(docker(&["stop", "-t", "25", &old]), Some((true, _))) {
+                return Err(format!("docker stop {old} failed: nothing was changed."));
+            }
+            // Kept under another name until the new one runs: put back as
+            // it was when it does not.
+            if !matches!(docker(&["rename", &old, &kept]), Some((true, _))) {
+                let _ = docker(&["start", &old]);
+                return Err(format!("docker rename {old} failed; {old} was started again as it was."));
+            }
+            let put_back = |why: String| -> Result<(), String> {
+                sink(Progress::Log { line: format!("{old} is put back and started again.") });
+                let _ = docker(&["rm", "-f", CONTAINER]);
+                let _ = docker(&["rename", &kept, &old]);
+                let _ = docker(&["start", &old]);
+                Err(why)
+            };
+            sink(Progress::Step { name: format!("Starting {CONTAINER}") });
+            let args = run_args(&spec, &file);
+            let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+            match docker_all(&refs) {
+                Some((true, _)) => {}
+                Some((false, out)) => {
+                    for l in out.lines().filter(|l| !l.trim().is_empty()).take(6) {
+                        sink(Progress::Log { line: strip_ansi(l) });
+                    }
+                    return put_back(format!("{CONTAINER} could not be started with {old}'s settings (the log says why); {old} runs again, unchanged."));
+                }
+                None => return put_back("Docker could not be run; the old container runs again, unchanged.".into()),
+            }
+            let up = (0..30).any(|_| {
+                std::thread::sleep(std::time::Duration::from_secs(1));
+                container_running(CONTAINER)
+            }) && {
+                std::thread::sleep(std::time::Duration::from_secs(4));
+                container_running(CONTAINER)
+            };
+            if !up {
+                sink(Progress::Log { line: format!("{CONTAINER} did not stay up; its last lines:") });
+                if let Some((_, out)) = docker_all(&["logs", "--tail", "15", CONTAINER]) {
+                    for l in out.lines() {
+                        sink(Progress::Log { line: strip_ansi(l) });
+                    }
+                }
+                return put_back(format!("{CONTAINER} did not stay up (its last lines are in the log); {old} runs again, unchanged."));
+            }
+            // Its volumes stay (no -v).
+            let _ = docker(&["rm", &kept]);
+            Ok(())
+        })();
+        let _ = std::fs::remove_file(&env_file);
+        result?;
+        // The compose file, so `docker compose up` there does not start a
+        // second gateway on the same volumes.
+        let mut note = String::new();
+        if let (Some(svc), Some(f)) = (&service, files.first()) {
+            let p = project.as_deref().unwrap_or("its project");
+            match choice {
+                ComposeChoice::WarnOnly => {
+                    note = format!(" Its compose file {f} still has the service {svc}: remove it there, or docker compose up in {p} starts a second gateway on the same volumes.");
+                    sink(Progress::Log { line: note.trim().to_string() });
+                }
+                ComposeChoice::CommentOut => {
+                    sink(Progress::Step { name: format!("Commenting out {svc} in {f}") });
+                    let stamp = chrono::Local::now().format("%Y-%m-%d %H:%M");
+                    let line = format!("Taken over by the SENTIENT Platform Manager on {stamp}: it runs as the container {CONTAINER} now.");
+                    let done = std::fs::read_to_string(f).map_err(|e| e.to_string()).and_then(|t| {
+                        let new = comment_out_service(&t, svc, &line).ok_or_else(|| format!("no service {svc} in it"))?;
+                        let bak = format!("{f}.spm-bak");
+                        std::fs::copy(f, &bak).map_err(|e| format!("copy to {bak}: {e}"))?;
+                        std::fs::write(f, new).map_err(|e| e.to_string())?;
+                        Ok(bak)
+                    });
+                    match done {
+                        Ok(bak) => sink(Progress::Log { line: format!("{svc} is commented out in {f}; the file as it was is {bak}.") }),
+                        Err(e) => {
+                            note = format!(" Its compose file {f} could not be changed ({e}): remove the service {svc} there, or docker compose up in {p} starts a second gateway on the same volumes.");
+                            sink(Progress::Log { line: note.trim().to_string() });
+                        }
+                    }
+                }
+            }
+        }
+        Ok(format!("The gateway runs as {CONTAINER} now, managed here, with {old}'s settings and data.{note}"))
+    }
 }
 
 /// `docker inspect <name>` read as a Spec.
@@ -1069,6 +1354,55 @@ mod tests {
         let lines = env_lines("10.0.0.5", 1883, "Xk7pQ2mW9rTzL4vB8nYd").unwrap();
         assert_eq!(lines, vec!["host=10.0.0.5", "port=1883", "accessToken=Xk7pQ2mW9rTzL4vB8nYd"]);
         assert!(env_lines("h", 1883, "a\nb=c").is_err());
+    }
+
+    const COMPOSE: &str = "version: '3.4'\nservices:\n  # The gateway\n  st-gateway:\n    image: quakestring/sentient-gateway-rs:latest\n    container_name: st-gateway\n\n    ports:\n        - \"5000:5000\" # REST\n#        - \"1052:1052\"\n    volumes:\n      - st-gw-config:/sentient_gateway/config\n\n  other:\n    image: nginx\n\nvolumes:\n  st-gw-config:\n    name: st-gw-config\n";
+
+    #[test]
+    fn a_taken_over_service_is_commented_out() {
+        let out = comment_out_service(COMPOSE, "st-gateway", "Taken over.").unwrap();
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines[3], "  # Taken over.");
+        assert_eq!(lines[4], "  # st-gateway:");
+        assert_eq!(lines[5], "  #   image: quakestring/sentient-gateway-rs:latest");
+        assert_eq!(lines[8], "  #   ports:");
+        assert_eq!(lines[9], "  #       - \"5000:5000\" # REST");
+        assert_eq!(lines[10], "  # #        - \"1052:1052\"");
+        assert_eq!(lines[11], "  #   volumes:");
+        assert_eq!(lines[12], "  #     - st-gw-config:/sentient_gateway/config");
+        assert_eq!(lines[13], "");
+        // The other service, the volumes and the comment above stay.
+        assert!(out.contains("\n  other:\n    image: nginx\n"), "{out}");
+        assert!(out.contains("\nvolumes:\n  st-gw-config:\n    name: st-gw-config\n"), "{out}");
+        assert!(out.contains("\n  # The gateway\n"), "{out}");
+        assert!(out.ends_with('\n'));
+        // Every line of the service, and nothing else, is commented.
+        let svc: Vec<&str> = out.lines().skip(3).take(10).collect();
+        assert!(svc.iter().all(|l| l.trim().is_empty() || l.trim_start().starts_with('#')), "{svc:?}");
+        assert!(comment_out_service(COMPOSE, "missing", "x").is_none());
+        // Only a service's key, not a key inside one.
+        assert!(comment_out_service(COMPOSE, "ports", "x").is_none());
+        let other = comment_out_service(COMPOSE, "other", "x").unwrap();
+        assert!(other.contains("\n  # other:\n  #   image: nginx\n\nvolumes:"), "{other}");
+    }
+
+    #[test]
+    fn ports_hosts_and_aliases_are_kept() {
+        let json = r#"[{"Name":"/st-gateway","Config":{"Image":"quakestring/sentient-gateway-rs:latest","Env":["host=h"]},"HostConfig":{"NetworkMode":"dfal_default","RestartPolicy":{"Name":"always"},"PortBindings":{"5000/tcp":[{"HostIp":"","HostPort":"5000"}],"502/tcp":[{"HostIp":"127.0.0.1","HostPort":"5020"}]},"ExtraHosts":["host.docker.internal:host-gateway"]},"Mounts":[]}]"#;
+        let mut spec = parse_spec(json).unwrap();
+        assert!(spec.aliases.is_empty());
+        let with = json.replace(r#""Mounts":[]"#, r#""Mounts":[],"Id":"0123456789abcdef","NetworkSettings":{"Networks":{"dfal_default":{"Aliases":["st-gateway","0123456789ab","gw"]}}}"#);
+        assert_eq!(parse_spec(&with).unwrap().aliases, vec!["gw".to_string()]);
+        assert_eq!(spec.ports, vec!["127.0.0.1:5020:502/tcp".to_string(), "5000:5000/tcp".to_string()]);
+        assert_eq!(spec.extra_hosts, vec!["host.docker.internal:host-gateway".to_string()]);
+        spec.aliases.push("st-gateway".into());
+        spec.name = CONTAINER.into();
+        let args = run_args(&spec, "/x.env").join(" ");
+        assert!(args.contains("--network dfal_default --network-alias st-gateway -p 127.0.0.1:5020:502/tcp -p 5000:5000/tcp --add-host host.docker.internal:host-gateway"), "{args}");
+        // On the host network: no ports, no aliases.
+        spec.network = "host".into();
+        let args = run_args(&spec, "/x.env").join(" ");
+        assert!(!args.contains(" -p ") && !args.contains("--network-alias"), "{args}");
     }
 
     #[test]
