@@ -153,7 +153,7 @@ Actions variables `MSIX_IDENTITY_NAME`, `MSIX_PUBLISHER` and
 
 `-TestIdentity` builds a test identity instead
 (`INVENIASYSTEMS.SENTIENTPlatformManager.Test`,
-`CN=INVENIA SYSTEMS, O=INVENIA SYSTEMS, C=IN`) for sideloading with
+`C=IN, O=INVENIA SYSTEMS, CN=INVENIA SYSTEMS`, the certificate's subject in the order Windows compares it) for sideloading with
 INVENIA's own certificate. It is never submitted.
 
 ## Building

@@ -27,9 +27,9 @@
 # Parameters or the environment variables MSIX_IDENTITY_NAME, MSIX_PUBLISHER
 # and MSIX_PUBLISHER_DISPLAY_NAME override them. -TestIdentity packages a
 # test identity instead (INVENIASYSTEMS.SENTIENTPlatformManager.Test,
-# CN=INVENIA SYSTEMS, O=INVENIA SYSTEMS, C=IN: the subject of INVENIA's own
-# code-signing certificate, so a sideload test package signs with it); it is
-# never submitted.
+# C=IN, O=INVENIA SYSTEMS, CN=INVENIA SYSTEMS: the subject of INVENIA's own
+# code-signing certificate exactly as Windows writes it, which the
+# Publisher must equal for the package to install; it is never submitted.
 #
 # Signing for a sideload test: -SignWith <file.pfx>; its password from the
 # environment variable MSIX_SIGN_PFX_PASSWORD (never on the command line).
@@ -58,7 +58,7 @@ $Root = Split-Path -Parent $PSScriptRoot
 $StoreName = "INVENIASYSTEMS.SENTIENTPlatformManager"
 $StorePublisher = "CN=8CCEC686-FD1B-4801-ABEE-6B4CE6A2E92C"
 $TestName = "INVENIASYSTEMS.SENTIENTPlatformManager.Test"
-$TestPublisher = "CN=INVENIA SYSTEMS, O=INVENIA SYSTEMS, C=IN"
+$TestPublisher = "C=IN, O=INVENIA SYSTEMS, CN=INVENIA SYSTEMS"
 
 if (-not (Test-Path $Exe)) { throw "The program $Exe is not there: build it first (cargo build --release in app)." }
 $Exe = (Resolve-Path $Exe).Path
