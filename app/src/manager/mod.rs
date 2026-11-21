@@ -656,6 +656,11 @@ impl Manager {
             if std::env::var_os("SPM_DEBUG_LICENCES_DIALOG").is_some() {
                 about::open_licences(cx);
             }
+            // The Backup details dialog on canned facts (new|old|part|long|encrypted).
+            if let Ok(kind) = std::env::var("SPM_DEBUG_BACKUP_DETAILS") {
+                let restore: Option<std::rc::Rc<dyn Fn(&mut Window, &mut App)>> = (kind != "part").then(|| -> std::rc::Rc<dyn Fn(&mut Window, &mut App)> { std::rc::Rc::new(|_, _| {}) });
+                crate::manager::backup::open_details_dialog(std::sync::Arc::new(move || Ok(crate::backups::canned_details(&kind))), Some(std::sync::Arc::new(|| Ok(()))), restore, cx);
+            }
             if std::env::var_os("SPM_DEBUG_LOG_DIALOG").is_some() {
                 let view = cx.new(|cx| logs::LogView::file(crate::jobs::activity_log(), _window, cx));
                 crate::modal::open(crate::modal::Modal { title: "Platform Manager log".into(), body: view.into(), width: 1000., icon: None, on_close: None }, cx);

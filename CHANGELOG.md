@@ -15,6 +15,23 @@ refreshes that repository's Downloads table.
 
 ## [Unreleased]
 
+### Changed
+- Backup and restore: the cards read Backups, Restores, Backup settings
+  (the settings card was titled "Backup" and is now last). Restore from
+  file is on the Restores card, where restores are, with a small History
+  title over the list of past restores. The same on a server's page.
+- Backup details: what the backup holds, from its own record. The file
+  and its check at the top; where and with which SENTIENT, database and
+  Platform Manager it was made, what was backed up, encryption and folder
+  (a fact an older backup did not record says so); its data (rows and
+  size per kind, or Not included); its parts with each one's last check;
+  and the platform at backup time (address, certificate, licence,
+  gateways; never a secret). Restore from it. An encrypted backup shows
+  its contents only when restored with its passphrase. Checks now record
+  each part's result; for a backup checked before that, the dialog offers
+  Check now. Telemetry with no valid time (stored as 1970) is named so.
+  One scroll area: the dialog's body, never a table inside it.
+
 ## [0.9.5] - 2026-11-20
 
 Gateways started from a compose file can be taken over, new releases show without a restart, the Logs page fills the window, and the Windows payload has its own name.

@@ -2332,7 +2332,7 @@ impl RemotePages {
         );
         let card = ui::panel(&theme)
             .gap_0()
-            .child(div().pb_1().child(self.section_title(&theme, "Backup", "auto", cx)))
+            .child(div().pb_1().child(self.section_title(&theme, "Backup settings", "auto", cx)))
             .child(folder_row)
             .child(auto_row)
             .child(keep_row)
@@ -2347,7 +2347,6 @@ impl RemotePages {
                 .items_center()
                 .child(ui::layout_probe("header-actions"))
                 .child(div().flex_1().min_w_0().child(self.section_title(&theme, "Backups", "backups", cx)))
-                .child(crate::ui::probed(crate::ui::button("r-restore-from").outline().icon(crate::manager::restore::icon("history")).label("Restore from file").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.restore_from(cx)))))
                 .child(crate::ui::probed(crate::ui::button("r-backup").outline().label("Back up now").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.run_job("Backing up", vec!["backup-now".into()], cx))))),
         );
         if b.list.is_empty() {
@@ -2367,6 +2366,29 @@ impl RemotePages {
                 e,
                 busy,
                 bk::RowActions {
+                    details: {
+                        let (inst, file, name, tw) = (self.inst.clone(), e.path.display().to_string(), e.name.clone(), this.clone());
+                        std::rc::Rc::new(move |_, cx| {
+                            let restore = (!damaged).then(|| -> std::rc::Rc<dyn Fn(&mut Window, &mut App)> {
+                                let (tw, file, name) = (tw.clone(), file.clone(), name.clone());
+                                std::rc::Rc::new(move |_, cx| {
+                                    tw.update(cx, |p, cx| {
+                                        p.restore_pending = Some(crate::manager::restore::Source { file: std::path::PathBuf::from(&file), sub: name.clone(), note: None });
+                                        cx.notify();
+                                    })
+                                    .ok();
+                                })
+                            });
+                            let (i2, f2) = (inst.clone(), file.clone());
+                            let (i3, f3) = (inst.clone(), file.clone());
+                            bk::open_details_dialog(
+                                std::sync::Arc::new(move || remote::backup_details(&i2, &f2)),
+                                Some(std::sync::Arc::new(move || remote::backup_check(&i3, &f3))),
+                                restore,
+                                cx,
+                            )
+                        })
+                    },
                     restore: (!damaged).then(|| -> std::rc::Rc<dyn Fn(&mut Window, &mut App)> {
                         std::rc::Rc::new(move |_, cx| {
                             t1.update(cx, |p, cx| {
@@ -2392,7 +2414,8 @@ impl RemotePages {
             Read::Got(l) => Some(Ok(l.clone())),
             Read::Failed(e) => Some(Err(remote::split_failure(e).0)),
         };
-        let history = crate::manager::restore::history_card(&theme, &crate::manager::restore::Target::Server(self.inst.clone()), restores.as_ref(), narrow);
+        let restore_from = crate::ui::probed(crate::ui::button("r-restore-from").outline().icon(crate::manager::restore::icon("history")).label("Restore from file").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.restore_from(cx)))).into_any_element();
+        let history = crate::manager::restore::history_card(&theme, &crate::manager::restore::Target::Server(self.inst.clone()), restores.as_ref(), narrow, Some(restore_from));
         v_flex().gap(px(ui::GAP)).child(list).child(history).child(card)
     }
 

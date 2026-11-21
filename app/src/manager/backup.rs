@@ -1149,7 +1149,7 @@ impl BackupPage {
         );
         let card = ui::panel(theme)
             .gap_0()
-            .child(h_flex().pb_1().gap_3().items_center().min_h(px(28.)).child(div().font_weight(FontWeight::MEDIUM).child("Backup")).children(self.saved_note(theme, "card")))
+            .child(h_flex().pb_1().gap_3().items_center().min_h(px(28.)).child(div().font_weight(FontWeight::MEDIUM).child("Backup settings")).children(self.saved_note(theme, "card")))
             .child(folder_row)
             .child(auto_row)
             .child(keep_row)
@@ -1157,7 +1157,6 @@ impl BackupPage {
             .child(pass_row)
             .child(copy_row)
             .child(split_row);
-        out.push(card.into_any_element());
 
         // The Backups table: Back up now at its title, as a server's.
         let estimate = self.sizes.map(|(pg, ch, hist, free)| {
@@ -1181,7 +1180,6 @@ impl BackupPage {
                 .child(ui::layout_probe("header-actions"))
                 .child(div().flex_1().min_w_0().font_weight(FontWeight::MEDIUM).child("Backups"))
                 .child(crate::ui::probed(crate::ui::button("add-backup").ghost().label("Add a file").tooltip("Add a backup file from elsewhere to the folder.").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.add_backup_file(cx)))))
-                .child(crate::ui::probed(crate::ui::button("restore-from").outline().icon(crate::manager::restore::icon("history")).label("Restore from file").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.restore_from(cx)))))
                 .when(!self.choose, |r| {
                     r.child(crate::ui::probed(crate::ui::button("backup-now").outline().label(if busy { "Backing up" } else { "Back up now" }).tooltip(now_tip).disabled(busy).on_click(cx.listener(|this, _, _, cx| this.run_preset_backup(cx)))))
                 }),
@@ -1193,7 +1191,7 @@ impl BackupPage {
             list = list.child(div().pb_2().child(ui::outcome(theme, tone, text)));
         }
         if self.list.is_empty() {
-            list = list.child(div().py_2().text_sm().text_color(theme.muted_foreground).child("No backups in this folder. Restore from… can still take a file from elsewhere or another instance."));
+            list = list.child(div().py_2().text_sm().text_color(theme.muted_foreground).child("No backups in this folder. Restore from file (under Restore history) can still take a file from elsewhere or another instance."));
         } else {
             list = list.child(table_header(theme, narrow));
         }
@@ -1209,6 +1207,28 @@ impl BackupPage {
                 e,
                 busy,
                 RowActions {
+                    details: {
+                        let (entry, tw) = (e.clone(), this.clone());
+                        std::rc::Rc::new(move |_, cx| {
+                            let restore = (!damaged).then(|| -> std::rc::Rc<dyn Fn(&mut Window, &mut App)> {
+                                let (tw, file, name) = (tw.clone(), entry.path.clone(), entry.name.clone());
+                                std::rc::Rc::new(move |_, cx| {
+                                    tw.update(cx, |this, cx| {
+                                        this.pending = Some(crate::manager::restore::Source { file: file.clone(), sub: name.clone(), note: None });
+                                        cx.notify();
+                                    })
+                                    .ok();
+                                })
+                            });
+                            let (entry, file) = (entry.clone(), entry.path.clone());
+                            open_details_dialog(
+                                std::sync::Arc::new(move || Ok(crate::backups::details(&entry))),
+                                Some(std::sync::Arc::new(move || crate::backups::check(&file, None).map(|_| ()))),
+                                restore,
+                                cx,
+                            )
+                        })
+                    },
                     restore: (!damaged).then(|| -> std::rc::Rc<dyn Fn(&mut Window, &mut App)> {
                         let name = e.name.clone();
                         std::rc::Rc::new(move |_, cx| {
@@ -1233,6 +1253,9 @@ impl BackupPage {
             ));
         }
         out.push(list.into_any_element());
+        // Last: the page reads Backups, Restores, Backup settings (render puts
+        // the Restores card before this one).
+        out.push(card.into_any_element());
         out
     }
 }
@@ -1319,7 +1342,9 @@ impl Render for BackupPage {
         let can_backup = !busy && self.inspection.is_some() && self.output.is_some();
 
         let narrow = narrow(window);
-        let panels = self.backup_panels(&theme, narrow, busy, cx);
+        let mut panels = self.backup_panels(&theme, narrow, busy, cx);
+        // Backups, Restores, Backup settings: the settings card goes last.
+        let settings = panels.pop();
         page.children(panels).when(self.choose, |page| page.child(
             ui::panel(&theme)
                 .child(div().font_weight(FontWeight::MEDIUM).child("Choose what to back up"))
@@ -1401,7 +1426,14 @@ impl Render for BackupPage {
                 })
                 ,
         ))
-        .child(crate::manager::restore::history_card(&theme, &crate::manager::restore::Target::Here(record.clone()), self.history.as_ref(), narrow))
+        .child(crate::manager::restore::history_card(
+            &theme,
+            &crate::manager::restore::Target::Here(record.clone()),
+            self.history.as_ref(),
+            narrow,
+            Some(crate::ui::probed(crate::ui::button("restore-from").outline().icon(crate::manager::restore::icon("history")).label("Restore from file").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.restore_from(cx)))).into_any_element()),
+        ))
+        .children(settings)
         .into_any_element()
     }
 }
@@ -1562,6 +1594,8 @@ pub(crate) struct RowActions {
     pub reveal: Option<std::rc::Rc<dyn Fn(&mut Window, &mut App)>>,
     pub verify: std::rc::Rc<dyn Fn(&mut Window, &mut App)>,
     pub delete: std::rc::Rc<dyn Fn(&mut Window, &mut App)>,
+    /// Details: what the backup holds (open_details_dialog).
+    pub details: std::rc::Rc<dyn Fn(&mut Window, &mut App)>,
 }
 
 /// One backup in the table: file (and "Old folder"), made, size, its
@@ -1579,14 +1613,14 @@ pub(crate) fn table_row(theme: &gpui_kit::component::Theme, narrow: bool, i: usi
         if e.parts > 1 { format!(" · {} parts", e.parts) } else { String::new() },
         if e.old_folder { format!("\nIn {}", e.path.parent().map(|p| p.display().to_string()).unwrap_or_default()) } else { String::new() }
     );
-    let RowActions { restore, reveal, verify, delete } = actions;
-    let details = format!("{}\n\n{}\n\n{}\n\n{}", e.name, made_tip, crate::dbstatus::bytes_label(e.bytes), tip);
+    let RowActions { restore, reveal, verify, delete, details } = actions;
+    let _ = (&made_tip, &tip);
     let path = e.path.display().to_string();
     let mut items = vec![
         crate::ui::RowMenuItem::Item {
             label: "Details".into(),
             icon: Some(IconName::Info),
-            action: std::rc::Rc::new(move |_, cx| crate::ui::show_info("Backup details", details.clone(), cx)),
+            action: details,
         },
         crate::ui::RowMenuItem::Item { label: "Check integrity".into(), icon: Some(IconName::CircleCheck), action: verify },
     ];
@@ -1684,4 +1718,310 @@ fn small_pill(theme: &gpui_kit::component::Theme, tone: Tone, text: &'static str
 /// B5: a backup left in a folder used before.
 pub(crate) fn old_folder_pill(theme: &gpui_kit::component::Theme) -> Div {
     h_flex().flex_shrink_0().px(px(7.)).py(px(1.)).rounded_full().bg(theme.secondary).text_color(theme.muted_foreground).text_size(px(12.)).child("Old folder")
+}
+
+// ---------------------------------------------------------------------------
+// Backup details: what one backup holds
+// ---------------------------------------------------------------------------
+
+/// Where the Details dialog gets its facts (this computer's file, or the
+/// server's agent). Blocking; run in the background.
+pub(crate) type DetailsLoad = std::sync::Arc<dyn Fn() -> Result<crate::backups::Details, String> + Send + Sync>;
+/// Check the backup now (the row menu's Check integrity), for the dialog's
+/// Check now. Blocking; run in the background.
+pub(crate) type DetailsCheck = std::sync::Arc<dyn Fn() -> Result<(), String> + Send + Sync>;
+
+/// The Backup details dialog: the file and its check, the facts its
+/// manifest records, the data it holds, its parts with their last check,
+/// and the platform at backup time. `restore`: the footer's Restore (None
+/// for a damaged backup).
+pub(crate) fn open_details_dialog(load: DetailsLoad, check: Option<DetailsCheck>, restore: Option<std::rc::Rc<dyn Fn(&mut Window, &mut App)>>, cx: &mut App) {
+    let view = cx.new(|cx: &mut Context<DetailsDialog>| {
+        let mut d = DetailsDialog { state: None, load, check, checking: false, check_error: None, _task: None };
+        d.read(false, cx);
+        d
+    });
+    crate::modal::open(
+        crate::modal::Modal { title: "Backup details".into(), body: view.into(), width: 640., icon: Some(crate::manager::restore::icon("database")), on_close: None },
+        cx,
+    );
+    let footer = cx.new(|_| DetailsFooter { restore });
+    crate::modal::set_footer(footer.into(), cx);
+}
+
+struct DetailsFooter {
+    restore: Option<std::rc::Rc<dyn Fn(&mut Window, &mut App)>>,
+}
+
+impl Render for DetailsFooter {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        let restore = self.restore.clone();
+        h_flex()
+            .gap(crate::ui::button_gap())
+            .justify_end()
+            .when_some(restore, |r, f| {
+                r.child(crate::ui::probed(crate::ui::button("bk-details-restore").outline().label("Restore").on_click(move |_, window, cx| {
+                    crate::modal::close(cx);
+                    f(window, cx);
+                })))
+            })
+            .child(crate::ui::probed(crate::ui::button("bk-details-close").primary().label("Close").on_click(|_, _, cx| crate::modal::close(cx))))
+    }
+}
+
+pub(crate) struct DetailsDialog {
+    state: Option<Result<crate::backups::Details, String>>,
+    load: DetailsLoad,
+    check: Option<DetailsCheck>,
+    /// Check now is running.
+    checking: bool,
+    check_error: Option<String>,
+    _task: Option<Task<()>>,
+}
+
+impl DetailsDialog {
+    /// Read the details (after checking the backup when `check_first`).
+    fn read(&mut self, check_first: bool, cx: &mut Context<Self>) {
+        let (load, check) = (self.load.clone(), self.check.clone().filter(|_| check_first));
+        self.checking = check.is_some();
+        self.check_error = None;
+        self._task = Some(cx.spawn(async move |this, cx| {
+            let (checked, got) = cx
+                .background_executor()
+                .spawn(async move {
+                    let checked = check.map(|c| c()).transpose();
+                    (checked, load())
+                })
+                .await;
+            this.update(cx, |d, cx| {
+                d.checking = false;
+                d.check_error = checked.err();
+                d.state = Some(got);
+                cx.notify();
+            })
+            .ok();
+        }));
+        cx.notify();
+    }
+}
+
+/// "17 Nov 2026, 04:25" from "2026-11-17 04:25".
+fn long_made(made: &str) -> String {
+    chrono::NaiveDateTime::parse_from_str(made, "%Y-%m-%d %H:%M").map(|t| t.format("%-d %b %Y, %H:%M").to_string()).unwrap_or_else(|_| made.to_string())
+}
+
+/// "12,904,331".
+fn grouped(n: i64) -> String {
+    let s = n.abs().to_string();
+    let mut out = String::new();
+    for (i, c) in s.chars().enumerate() {
+        if i > 0 && (s.len() - i) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    if n < 0 { format!("-{out}") } else { out }
+}
+
+/// A section heading in the dialog: small capitals, muted, an optional
+/// note at its right.
+fn details_heading(theme: &gpui_kit::component::Theme, title: &'static str, right: Option<String>) -> Div {
+    h_flex()
+        .pt_3()
+        .pb_2()
+        .items_center()
+        .gap_2()
+        .child(div().text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).text_color(theme.muted_foreground).child(title.to_uppercase()))
+        .child(div().flex_1())
+        .children(right.map(|r| div().text_size(px(12.5)).text_color(theme.muted_foreground).child(r)))
+}
+
+/// A bordered table with every row: the dialog's body is the one thing
+/// that scrolls (a table scrolling inside it took the wheel from it too).
+fn details_table(theme: &gpui_kit::component::Theme, header: Div, rows: Vec<Div>) -> Div {
+    let mut body = v_flex();
+    for (i, r) in rows.into_iter().enumerate() {
+        body = body.child(r.when(i > 0, |r| r.border_t_1().border_color(theme.border)));
+    }
+    v_flex().rounded(px(8.)).border_1().border_color(theme.border).overflow_hidden().child(header.border_b_1().border_color(theme.border)).child(body)
+}
+
+fn details_row() -> Div {
+    h_flex().min_h(px(32.)).px_3().gap_3().items_center().text_sm()
+}
+
+/// A fact, or "Not recorded" when the backup did not record it.
+fn fact_or(theme: &gpui_kit::component::Theme, label: &'static str, value: Option<String>) -> Div {
+    match value {
+        Some(v) => ui::fact(theme, label, v),
+        None => h_flex()
+            .gap_4()
+            .text_sm()
+            .child(div().w(px(168.)).flex_shrink_0().text_color(theme.muted_foreground).child(label))
+            .child(div().flex_1().min_w_0().text_color(theme.muted_foreground.opacity(0.75)).child("Not recorded")),
+    }
+}
+
+impl Render for DetailsDialog {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme().clone();
+        let d = match &self.state {
+            None => return v_flex().gap_3().child(div().text_sm().text_color(theme.muted_foreground).child("Reading the backup…")),
+            Some(Err(e)) => return v_flex().gap_3().child(ui::outcome(&theme, Tone::Bad, format!("The backup's details cannot be read: {e}"))),
+            Some(Ok(d)) => d.clone(),
+        };
+
+        // Top: the file and its check, the date, Manual or Automatic, size.
+        let (tone, pill) = match &d.check {
+            Some(c) if c.ok => (Tone::Good, if c.parts.is_empty() { "Verified".to_string() } else { format!("All {} parts match", c.parts.len()) }),
+            Some(c) => {
+                let bad = c.parts.iter().filter(|(_, ok)| !ok).count();
+                (Tone::Warn, if c.parts.is_empty() { "Damaged".to_string() } else { format!("{bad} of {} parts damaged", c.parts.len()) })
+            }
+            None => (Tone::Neutral, "Not verified".to_string()),
+        };
+        let size = if d.files > 1 { format!("{} in {} files", crate::dbstatus::bytes_label(d.bytes), d.files) } else { crate::dbstatus::bytes_label(d.bytes) };
+        let top = h_flex()
+            .gap_3()
+            .items_start()
+            .child(
+                v_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .child(div().font_weight(FontWeight::SEMIBOLD).child(d.name.clone()))
+                    .child(div().text_sm().text_color(theme.muted_foreground).child(format!("{} · {} · {size}", long_made(&d.made), if d.automatic { "Automatic" } else { "Manual" }))),
+            )
+            .child(ui::pill(&theme, tone, pill).flex_shrink_0());
+
+        // Facts.
+        let sentient = d.sentient_version.clone().map(|v| match d.schema_version {
+            Some(s) => format!("{v} (schema {s})"),
+            None => v,
+        });
+        let database = match (&d.database_type, &d.postgres_version) {
+            (Some(t), Some(pg)) => Some(format!("{t} (PostgreSQL {pg})")),
+            (Some(t), None) => Some(t.clone()),
+            (None, Some(pg)) => Some(format!("PostgreSQL {pg}")),
+            (None, None) => None,
+        };
+        let readable = d.unreadable.is_none();
+        let mut facts = v_flex().gap_2().pt_3();
+        if readable {
+            facts = facts
+                .child(fact_or(&theme, "Made on", d.host.clone()))
+                .child(fact_or(&theme, "SENTIENT", sentient))
+                .child(fact_or(&theme, "Database", database))
+                .child(fact_or(&theme, "What was backed up", d.scope.clone()));
+        }
+        facts = facts.child(ui::fact(&theme, "Encrypted", if d.encrypted { "Yes, with a passphrase" } else { "No" }));
+        if readable {
+            facts = facts.child(fact_or(&theme, "Made by", d.made_by.clone().map(|v| format!("Platform Manager {v}"))));
+        }
+        facts = facts.child(h_flex().gap_4().text_sm().child(div().w(px(168.)).flex_shrink_0().text_color(theme.muted_foreground).child("Folder")).child(
+            div().flex_1().min_w_0().font_family(theme.mono_font_family.clone()).text_size(px(12.5)).child(d.folder.clone()),
+        ));
+
+        let mut body = v_flex().child(top).child(facts);
+        if let Some(why) = &d.unreadable {
+            body = body.child(div().pt_3().text_sm().text_color(theme.muted_foreground).child(why.clone()));
+            return body;
+        }
+
+        // Data: what the backup holds, from its components.
+        if !d.data.is_empty() {
+            let header = details_row()
+                .text_size(px(12.5))
+                .text_color(theme.muted_foreground)
+                .child(div().flex_1().min_w_0().child("Kind"))
+                .child(div().w(px(110.)).flex_shrink_0().text_right().child("Rows"))
+                .child(div().w(px(80.)).flex_shrink_0().text_right().child("Size"));
+            let rows = d
+                .data
+                .iter()
+                .map(|k| {
+                    let r = details_row().child(div().flex_1().min_w_0().when(!k.included, |t| t.text_color(theme.muted_foreground)).child(k.name.clone()));
+                    if k.included {
+                        r.child(div().w(px(110.)).flex_shrink_0().text_right().font_features(ui::tabular()).when(k.rows == 0, |t| t.text_color(theme.muted_foreground)).child(if k.rows > 0 { grouped(k.rows) } else { "files".into() }))
+                            .child(div().w(px(80.)).flex_shrink_0().text_right().font_features(ui::tabular()).child(crate::dbstatus::bytes_label(k.bytes.max(0) as u64)))
+                    } else {
+                        r.child(div().w(px(190.)).flex_shrink_0().text_right().text_color(theme.muted_foreground).child("Not included"))
+                    }
+                })
+                .collect();
+            body = body.child(details_heading(&theme, "Data", None)).child(details_table(&theme, header, rows));
+        }
+
+        // Parts: the archive's members; each one's last check only when the
+        // stored check has per-part results (else no Check column, and a
+        // way to run one).
+        let marks = d.check.as_ref().filter(|c| !c.parts.is_empty());
+        let checked = marks.map(|c| {
+            let at = chrono::DateTime::parse_from_rfc3339(&c.at).map(|t| t.with_timezone(&chrono::Local).format("%-d %b %Y, %H:%M").to_string()).unwrap_or_else(|_| check_time(&c.at));
+            format!("Checked {at}")
+        });
+        let mark_of = |path: &str| marks.and_then(|c| c.parts.iter().find(|(p, _)| p == path).map(|(_, ok)| *ok));
+        let with_marks = marks.is_some();
+        let header = details_row()
+            .text_size(px(12.5))
+            .text_color(theme.muted_foreground)
+            .child(div().flex_1().min_w_0().child("Part"))
+            .child(div().w(px(80.)).flex_shrink_0().text_right().child("Size"))
+            .when(with_marks, |r| r.child(div().w(px(100.)).flex_shrink_0().text_right().child("Check")));
+        let rows = d
+            .contents
+            .iter()
+            .map(|c| {
+                let row = details_row()
+                    .child(div().flex_1().min_w_0().child(c.label.clone()))
+                    .child(div().w(px(80.)).flex_shrink_0().text_right().font_features(ui::tabular()).child(crate::dbstatus::bytes_label(c.bytes)));
+                if !with_marks {
+                    return row;
+                }
+                let mark = match mark_of(&c.path) {
+                    // The Verified pill's green (theme.success is its pale background).
+                    Some(true) => div().text_color(theme.success_foreground).font_weight(FontWeight::MEDIUM).child("✓ Matches").into_any_element(),
+                    Some(false) => ui::pill(&theme, Tone::Warn, "Damaged").into_any_element(),
+                    None => div().into_any_element(),
+                };
+                row.child(h_flex().w(px(100.)).flex_shrink_0().justify_end().child(mark))
+            })
+            .collect();
+        body = body.child(details_heading(&theme, "Parts", checked));
+        if !with_marks {
+            let can_check = self.check.is_some();
+            let checking = self.checking;
+            body = body.child(
+                h_flex()
+                    .pb_2()
+                    .gap_3()
+                    .items_center()
+                    .child(div().flex_1().min_w_0().text_sm().text_color(theme.muted_foreground).child("Run a check to see each part's result."))
+                    .when(can_check, |r| {
+                        r.child(crate::ui::probed(
+                            crate::ui::button("bk-details-check")
+                                .outline()
+                                .label(if checking { "Checking" } else { "Check now" })
+                                .loading(checking)
+                                .disabled(checking)
+                                .on_click(cx.listener(|d, _, _, cx| d.read(true, cx))),
+                        ))
+                    }),
+            );
+            if let Some(e) = &self.check_error {
+                body = body.child(div().pb_2().child(ui::outcome(&theme, Tone::Bad, e.clone())));
+            }
+        }
+        body = body.child(details_table(&theme, header, rows));
+
+        // The platform at backup time (backups that recorded it).
+        if let Some(p) = &d.platform {
+            let mut plat = v_flex().gap_2();
+            plat = plat.child(fact_or(&theme, "Address", p.address.clone()));
+            plat = plat.child(fact_or(&theme, "HTTPS certificate", p.certificate.clone()));
+            plat = plat.child(fact_or(&theme, "Licence", p.licence.clone()));
+            plat = plat.child(fact_or(&theme, "Gateways", (!p.gateways.is_empty()).then(|| p.gateways.join("\n"))));
+            body = body.child(details_heading(&theme, "Platform at backup time", None)).child(plat);
+        }
+        body
+    }
 }

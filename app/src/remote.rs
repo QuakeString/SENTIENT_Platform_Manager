@@ -1538,6 +1538,17 @@ pub fn backups(inst: &Instance) -> Result<RemoteBackups, String> {
     read_json(inst, "backups-json")
 }
 
+/// Check one of the server's backups (its agent reads it through and
+/// remembers the result, each part's too).
+pub fn backup_check(inst: &Instance, path: &str) -> Result<(), String> {
+    spm_job(inst, &format!("backup-verify {}", job_arg(path)?)).map(|_| ())
+}
+
+/// What one of the server's backups holds (the Details dialog).
+pub fn backup_details(inst: &Instance, path: &str) -> Result<crate::backups::Details, String> {
+    read_json(inst, &format!("backup-details {}", job_arg(path)?))
+}
+
 /// A path or name for a job's command line: one argument, quoted for the
 /// server's shell (a quote in it is refused, never stripped).
 fn job_arg(a: &str) -> Result<String, String> {
