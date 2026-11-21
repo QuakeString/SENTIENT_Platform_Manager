@@ -244,6 +244,20 @@ mod unix {
         let _ = Command::new("kill").args([sig, "--", &format!("-{pgid}")]).stdout(Stdio::null()).stderr(Stdio::null()).status();
     }
 
+    /// The PATH a root step runs with: the system's program folders first,
+    /// then what pkexec or sudo left (sudo-rs's secure_path can miss
+    /// /usr/bin, and a script's `pacman` or `systemctl` was then "command
+    /// not found").
+    pub(crate) fn root_path(inherited: Option<&str>) -> String {
+        let mut dirs: Vec<&str> = vec!["/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin"];
+        for d in inherited.unwrap_or("").split(':').filter(|d| !d.is_empty()) {
+            if !dirs.contains(&d) {
+                dirs.push(d);
+            }
+        }
+        dirs.join(":")
+    }
+
     /// Run one step. Cancel stops it (TERM to its process group, KILL ten
     /// seconds later). When the window goes away the step is let finish, as
     /// Setup's Cancel promises ("stops after the current task"), within ten
@@ -256,6 +270,7 @@ mod unix {
         };
         let spawned = Command::new(prog)
             .args(args)
+            .env("PATH", root_path(std::env::var("PATH").ok().as_deref()))
             .stdin(if input.is_some() { Stdio::piped() } else { Stdio::null() })
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -601,6 +616,15 @@ mod unix {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A root step finds the system's programs even when sudo's own path
+    /// leaves /usr/bin out; what it inherited follows, once.
+    #[cfg(unix)]
+    #[test]
+    fn a_root_step_has_the_system_folders_first() {
+        assert_eq!(unix::root_path(None), "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin");
+        assert_eq!(unix::root_path(Some("/opt/x/bin:/usr/bin::/snap/bin")), "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/opt/x/bin:/snap/bin");
+    }
 
     #[test]
     fn messages_round_trip() {
