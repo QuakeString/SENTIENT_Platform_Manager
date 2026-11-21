@@ -168,7 +168,7 @@ impl UninstallDialog {
         self.job.update(cx, |job, cx| {
             job.set_label("Uninstalling");
             job.set_on_page(true);
-            job.start(move |sink| run(args, sink), cx)
+            job.start_labelled(move |sink| run(args, sink), cx)
         });
         cx.notify();
     }

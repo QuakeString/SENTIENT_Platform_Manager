@@ -81,7 +81,7 @@ impl DiagnosisView {
         let inst = self.instance.as_ref().and_then(|(id, ..)| crate::remote::load().into_iter().find(|i| &i.id == id));
         let remote = self.instance.is_some();
         self.fix.update(cx, |job, cx| {
-            job.start(
+            job.start(label.clone(),
                 move |sink| match inst {
                     Some(inst) => {
                         let json = serde_json::to_string(&action).map_err(|e| e.to_string())?;

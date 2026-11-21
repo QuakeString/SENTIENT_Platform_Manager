@@ -263,8 +263,8 @@ impl Maintenance {
         };
         self.job.update(cx, |job, _| job.set_plan(plan));
         self.job.update(cx, |job, cx| match action {
-            Action::Repair => job.start(move |sink| run_repair(record, sink), cx),
-            Action::Uninstall => job.start(move |sink| run_uninstall(record, keep, sink), cx),
+            Action::Repair => job.start("Repairing SENTIENT", move |sink| run_repair(record, sink), cx),
+            Action::Uninstall => job.start("Uninstalling SENTIENT", move |sink| run_uninstall(record, keep, sink), cx),
             Action::ChangeDatabase => {}
         });
         cx.notify();
@@ -348,7 +348,7 @@ impl Maintenance {
         self.screen = Screen::Update;
         self.show_log = false;
         self.job.update(cx, |job, cx| {
-            job.start(
+            job.start("Updating SENTIENT",
                 move |sink| {
                     let mut record = record;
                     if install_only {

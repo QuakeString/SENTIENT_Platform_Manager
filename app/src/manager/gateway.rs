@@ -224,7 +224,7 @@ impl GatewayPage {
                         sentient_installer_core::progress::PlanStep::new("Reading the settings back"),
                     ]);
                     job.set_on_page(true);
-                    job.start(
+                    job.start_labelled(
                         move |sink| {
                             sink(sentient_installer_core::progress::Progress::Step { name: "Applying the settings".into() });
                             if canned {
@@ -256,7 +256,7 @@ impl GatewayPage {
                     job.set_label("Changing the gateway page's password");
                     job.set_plan(vec![sentient_installer_core::progress::PlanStep::new("Setting the password")]);
                     job.set_on_page(true);
-                    job.start(
+                    job.start_labelled(
                         move |sink| {
                             sink(sentient_installer_core::progress::Progress::Step { name: "Setting the password".into() });
                             if canned {
@@ -308,23 +308,23 @@ impl GatewayPage {
         self.problem = None;
         self.action = Some("install");
         self.clear_armed = true;
-        self.job.update(cx, |job, cx| job.start(move |sink| gateway::install(&sink, &offer, &settings), cx));
+        self.job.update(cx, |job, cx| job.start("Installing the gateway", move |sink| gateway::install(&sink, &offer, &settings), cx));
     }
 
     fn update_to(&mut self, offer: Offer, cx: &mut Context<Self>) {
-        self.job.update(cx, |job, cx| job.start(move |sink| gateway::update(&sink, &offer), cx));
+        self.job.update(cx, |job, cx| job.start("Updating the gateway", move |sink| gateway::update(&sink, &offer), cx));
     }
 
     fn control(&mut self, action: &'static str, cx: &mut Context<Self>) {
         self.action = Some(action);
-        self.job.update(cx, |job, cx| job.start(move |sink| gateway::control(&sink, action), cx));
+        self.job.update(cx, |job, cx| job.start(match action { "start" => "Starting the gateway", "stop" => "Stopping the gateway", "restart" => "Restarting the gateway", _ => "Changing the gateway" }, move |sink| gateway::control(&sink, action), cx));
     }
 
     /// "Manage it here": record the gateway as it is (nothing about it changes).
     fn adopt(&mut self, cx: &mut Context<Self>) {
         self.action = Some("adopt");
         self.job.update(cx, |job, cx| {
-            job.start(
+            job.start("Taking over the gateway",
                 move |sink| {
                     crate::gateway_record::adopt().map(|m| sink(sentient_installer_core::progress::Progress::Done { message: m }))
                 },
@@ -339,7 +339,7 @@ impl GatewayPage {
     fn read_as_admin(&mut self, cx: &mut Context<Self>) {
         self.action = Some("read");
         self.job.update(cx, |job, cx| {
-            job.start(
+            job.start("Reading the gateway's settings",
                 move |sink| {
                     let s = admin_read()?;
                     sink(sentient_installer_core::progress::Progress::Done {
@@ -363,7 +363,7 @@ impl GatewayPage {
         // to clear, needs root.
         let as_root = cfg!(target_os = "linux") && !crate::rootjob::is_root() && (status.container.is_none() || self.record.is_some());
         self.job.update(cx, |job, cx| {
-            job.start(
+            job.start("Removing the gateway",
                 move |sink| {
                     if as_root {
                         let mut args = vec!["gateway-remove".to_string()];
@@ -392,7 +392,7 @@ impl GatewayPage {
         // Its record (installation.json) is root's on Linux.
         let as_root = cfg!(target_os = "linux") && !crate::rootjob::is_root() && self.record.is_some();
         self.job.update(cx, |job, cx| {
-            job.start(
+            job.start("Taking over the gateway",
                 move |sink| {
                     if as_root {
                         let mut args = vec!["gateway-take-over".to_string(), "--container".to_string(), name.clone()];

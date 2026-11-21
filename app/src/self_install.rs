@@ -667,7 +667,7 @@ mod imp {
         /// The root script that removes the package.
         pub fn remove_script(&self) -> String {
             match self {
-                PackageOwner::Pacman(p) => format!("pacman -R --noconfirm {}", q(p)),
+                PackageOwner::Pacman(p) => format!("{} -R --noconfirm {}", q(&tool_path("pacman", &std::env::var("PATH").unwrap_or_default(), |x| x.is_file())), q(p)),
                 PackageOwner::Dpkg(p) => format!("apt-get remove -y {p} || dpkg -r {p}", p = q(p)),
                 PackageOwner::Rpm(p) => format!(
                     "if command -v dnf >/dev/null; then dnf remove -y {p}; elif command -v zypper >/dev/null; then zypper -n rm {p}; else rpm -e {p}; fi",
@@ -676,6 +676,75 @@ mod imp {
                 PackageOwner::Flatpak(id) => format!("flatpak uninstall -y --noninteractive {}", q(id)),
             }
         }
+
+        /// Whether `name` is a release file of this package's kind: the Arch
+        /// package, the .deb or the .rpm (x86_64). A Flatpak takes none.
+        pub fn takes(&self, name: &str) -> bool {
+            if !cfg!(target_arch = "x86_64") {
+                return false;
+            }
+            match self {
+                PackageOwner::Pacman(_) => name.starts_with("sentient-platform-manager-") && name.ends_with("-x86_64.pkg.tar.zst"),
+                PackageOwner::Dpkg(_) => name.starts_with("sentient-platform-manager_") && name.ends_with("_amd64.deb"),
+                PackageOwner::Rpm(_) => name.starts_with("sentient-platform-manager-") && name.ends_with(".x86_64.rpm"),
+                PackageOwner::Flatpak(_) => false,
+            }
+        }
+
+        /// The root script that installs the downloaded package `file` over
+        /// this one (None: Flatpak updates through Flatpak). The package
+        /// tool by its full path ([`tool_path`]): a root shell's PATH may
+        /// miss it (sudo-rs: "sudo: 'pacman': command not found").
+        pub fn install_script(&self, file: &Path) -> Option<String> {
+            Some(self.install_script_with(file, &|t| tool_path(t, &std::env::var("PATH").unwrap_or_default(), |p| p.is_file())))
+                .filter(|s| !s.is_empty())
+        }
+
+        pub(crate) fn install_script_with(&self, file: &Path, path_of: &dyn Fn(&str) -> String) -> String {
+            let f = q(&file.display().to_string());
+            match self {
+                PackageOwner::Pacman(_) => format!("{} -U --noconfirm {f}", q(&path_of("pacman"))),
+                // apt resolves the package's dependencies; dpkg alone where
+                // there is no apt.
+                PackageOwner::Dpkg(_) => {
+                    let (apt, dpkg) = (path_of("apt-get"), path_of("dpkg"));
+                    format!("if [ -x {a} ]; then DEBIAN_FRONTEND=noninteractive {a} install -y {f}; else {d} -i {f}; fi", a = q(&apt), d = q(&dpkg))
+                }
+                PackageOwner::Rpm(_) => {
+                    let (dnf, zypper, rpm) = (path_of("dnf"), path_of("zypper"), path_of("rpm"));
+                    format!(
+                        "if [ -x {d} ]; then {d} install -y {f}; elif [ -x {z} ]; then {z} -n --no-gpg-checks install {f}; else {r} -Uvh {f}; fi",
+                        d = q(&dnf),
+                        z = q(&zypper),
+                        r = q(&rpm)
+                    )
+                }
+                PackageOwner::Flatpak(_) => String::new(),
+            }
+        }
+    }
+
+    /// `name`'s full path: the first of /usr/bin, /usr/sbin, /bin, /sbin,
+    /// then `path`'s folders where `exists` finds it; else /usr/bin/<name>
+    /// (where every distribution this supports keeps its package tools).
+    pub fn tool_path(name: &str, path: &str, exists: impl Fn(&Path) -> bool) -> String {
+        ["/usr/bin", "/usr/sbin", "/bin", "/sbin"]
+            .into_iter()
+            .chain(path.split(':').filter(|d| !d.is_empty()))
+            .map(|d| Path::new(d).join(name))
+            .find(|p| exists(p))
+            .unwrap_or_else(|| Path::new("/usr/bin").join(name))
+            .display()
+            .to_string()
+    }
+
+    impl PackageOwner {
+    }
+
+    /// [`owner`], asked once per run (the release list is read often).
+    pub fn owner_cached() -> Option<PackageOwner> {
+        static OWNER: std::sync::OnceLock<Option<PackageOwner>> = std::sync::OnceLock::new();
+        OWNER.get_or_init(owner).clone()
     }
 
     /// The package's name from what the package manager answered for the
@@ -838,9 +907,46 @@ mod package_tests {
 
     #[test]
     fn each_package_is_removed_by_its_own_manager() {
-        assert_eq!(PackageOwner::Pacman("spm".into()).remove_script(), "pacman -R --noconfirm 'spm'");
+        assert_eq!(PackageOwner::Pacman("spm".into()).remove_script(), "'/usr/bin/pacman' -R --noconfirm 'spm'");
         assert!(PackageOwner::Dpkg("spm".into()).remove_script().starts_with("apt-get remove -y 'spm'"));
         assert!(PackageOwner::Rpm("spm".into()).remove_script().contains("dnf remove -y 'spm'"));
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn a_package_install_takes_its_own_kind_of_package() {
+        let pac = PackageOwner::Pacman("sentient-platform-manager".into());
+        let deb = PackageOwner::Dpkg("sentient-platform-manager".into());
+        let rpm = PackageOwner::Rpm("sentient-platform-manager".into());
+        let files = [
+            "sentient-platform-manager-0.9.7-1-x86_64.pkg.tar.zst",
+            "sentient-platform-manager_0.9.7_amd64.deb",
+            "sentient-platform-manager-0.9.7-1.x86_64.rpm",
+            "sentient-platform-manager-0.9.7-x86_64.AppImage",
+            "SENTIENT-Setup-manager-0.9.7-linux-x86_64",
+        ];
+        let pick = |o: &PackageOwner| files.iter().filter(|f| o.takes(f)).copied().collect::<Vec<_>>();
+        assert_eq!(pick(&pac), [files[0]]);
+        assert_eq!(pick(&deb), [files[1]]);
+        assert_eq!(pick(&rpm), [files[2]]);
+        assert!(pick(&PackageOwner::Flatpak("x".into())).is_empty());
+        let f = std::path::Path::new("/tmp/a b/x.pkg.tar.zst");
+        let at = |t: &str| format!("/usr/bin/{t}");
+        assert_eq!(pac.install_script_with(f, &at), "'/usr/bin/pacman' -U --noconfirm '/tmp/a b/x.pkg.tar.zst'");
+        assert!(deb.install_script_with(f, &at).contains("'/usr/bin/apt-get' install -y '/tmp/a b/x.pkg.tar.zst'"));
+        assert!(rpm.install_script_with(f, &at).contains("'/usr/bin/dnf' install -y '/tmp/a b/x.pkg.tar.zst'"));
+        assert!(PackageOwner::Flatpak("x".into()).install_script(f).is_none());
+    }
+
+    /// The package tool by its full path: the system folders first, then
+    /// PATH's, else /usr/bin.
+    #[test]
+    fn a_package_tool_is_called_by_its_full_path() {
+        let only = |hit: &'static str| move |p: &std::path::Path| p == std::path::Path::new(hit);
+        assert_eq!(super::tool_path("pacman", "/home/u/bin", only("/usr/bin/pacman")), "/usr/bin/pacman");
+        assert_eq!(super::tool_path("zypper", "/home/u/bin", only("/sbin/zypper")), "/sbin/zypper");
+        assert_eq!(super::tool_path("dnf", "/opt/x:/home/u/bin", only("/home/u/bin/dnf")), "/home/u/bin/dnf");
+        assert_eq!(super::tool_path("pacman", "", |_| false), "/usr/bin/pacman");
         assert_eq!(PackageOwner::Dpkg("spm".into()).tool(), "apt");
     }
 }

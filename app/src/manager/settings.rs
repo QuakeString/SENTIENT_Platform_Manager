@@ -212,7 +212,7 @@ impl SettingsPage {
                     let Some(record) = page.record.clone() else { return };
                     page.job.update(cx, |job, cx| {
                         job.set_label("Taking over the compose file");
-                        job.start(move |sink| crate::adopt::take_over_compose(record, compose.as_deref(), creds.db.as_deref(), creds.ch.as_deref(), sink).map(|_| ()), cx)
+                        job.start_labelled(move |sink| crate::adopt::take_over_compose(record, compose.as_deref(), creds.db.as_deref(), creds.ch.as_deref(), sink).map(|_| ()), cx)
                     });
                 })
                 .ok();
@@ -834,7 +834,7 @@ impl SettingsPage {
                     .map_err(|e| e.to_string())
                     .and_then(|j| std::fs::write(&path, j).map_err(|e| e.to_string()));
                 let args = vec!["apply-settings".to_string(), path.display().to_string()];
-                job.start(
+                job.start("Applying the settings",
                     move |sink| {
                         written?;
                         let result = crate::rootjob::run(&args, &sink).map(|_| ());
@@ -844,7 +844,7 @@ impl SettingsPage {
                     cx,
                 )
             } else {
-                job.start(move |sink| crate::settings::apply_with(record, &values, Some(&custom), sink).map(|_| ()), cx)
+                job.start("Applying the settings", move |sink| crate::settings::apply_with(record, &values, Some(&custom), sink).map(|_| ()), cx)
             }
         });
     }

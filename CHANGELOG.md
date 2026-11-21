@@ -15,6 +15,23 @@ refreshes that repository's Downloads table.
 
 ## [Unreleased]
 
+### Changed
+- A Platform Manager installed from a package (the Arch package, the .deb
+  or the .rpm) updates itself: Update downloads that kind of package from
+  the release, checks its SHA-256 and signature, installs it with the
+  system's package manager (pacman, apt or dnf/zypper) after the
+  administrator password, and opens the new version. Before, it refused
+  and said to update it with the package manager. A Flatpak still updates
+  through Flatpak. Releases sign the .deb, .rpm and Arch packages.
+- Every job has its name: the progress strip, the bell and a failed
+  job's details say what ran ("Updating the Platform Manager"), never
+  "A job".
+
+### Fixed
+- A job that stopped with the Platform Manager's own message and printed
+  nothing else shows that message as it is: no "This is not a cause the
+  Platform Manager knows yet", and no empty "No output yet." box under it.
+
 ## [0.9.6] - 2026-11-21
 
 Backup details show what a backup holds and check each of its parts, and the Backup page cards read Backups, Restores and Backup settings.

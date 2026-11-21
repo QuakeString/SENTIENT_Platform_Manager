@@ -103,7 +103,7 @@ export -f one; export RECORDS OUT HERE BIN PROFILE LOADING_PROFILE INSTANCE WAIT
 list=()
 for p in $PAGES_LOCAL; do for w in $WIDTHS; do for s in $SCALES; do for t in $THEMES; do list+=("local $p $w $s $t"); done; done; done; done
 # Dialogs and panels, opened by their debug hooks (this computer).
-DIALOGS=${DIALOGS-"SPM_DEBUG_TAKEOVER=found SPM_DEBUG_LOG_DIALOG=1 SPM_DEBUG_PARTS_DIALOG=1 SPM_DEBUG_BELL=1 SPM_DEBUG_SUDO_PROMPT=1 SPM_DEBUG_ERROR_DIALOG=1 SPM_DEBUG_LICENCES_DIALOG=1"}
+DIALOGS=${DIALOGS-"SPM_DEBUG_TAKEOVER=found SPM_DEBUG_LOG_DIALOG=1 SPM_DEBUG_PARTS_DIALOG=1 SPM_DEBUG_BELL=1 SPM_DEBUG_SUDO_PROMPT=1 SPM_DEBUG_ERROR_DIALOG=1 SPM_DEBUG_LICENCES_DIALOG=1 SPM_DEBUG_STRIP=refused"}
 for g in $DIALOGS; do for w in $WIDTHS; do for s in $SCALES; do for t in $THEMES; do list+=("local status $w $s $t $g"); done; done; done; done
 # The shared job view mid-way with a very long log (SPM_DEBUG_JOB_LOG,
 # crate::manager::jobview), on the Backup page.

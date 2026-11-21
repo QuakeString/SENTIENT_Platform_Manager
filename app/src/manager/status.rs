@@ -340,7 +340,7 @@ impl StatusPage {
                 "stop" => "Stopping SENTIENT",
                 _ => "Restarting SENTIENT",
             });
-            job.start(move |sink| platform.control_stack(sink, action, stop_shared_pg), cx)
+            job.start_labelled(move |sink| platform.control_stack(sink, action, stop_shared_pg), cx)
         });
         cx.notify();
     }
@@ -360,7 +360,7 @@ impl StatusPage {
         let label = service_job_label(&name, action);
         self.job.update(cx, |job, cx| {
             job.set_label(label);
-            job.start(move |sink| platform.service_control(sink, &name, action), cx)
+            job.start_labelled(move |sink| platform.service_control(sink, &name, action), cx)
         });
         cx.notify();
     }
@@ -513,7 +513,7 @@ impl StatusPage {
             dialog.title("Add this existing instance?").description(text.clone()).confirm().ok_text("Add instance").on_ok(move |_, _, cx| {
                 let candidate = candidate.clone();
                 this.update(cx, |page, cx| {
-                    page.adopt_job.update(cx, |job, cx| job.start(move |sink| crate::adopt::adopt_as_needed(&candidate, None, sink), cx));
+                    page.adopt_job.update(cx, |job, cx| job.start("Taking over SENTIENT", move |sink| crate::adopt::adopt_as_needed(&candidate, None, sink), cx));
                 })
                 .ok();
                 true

@@ -810,7 +810,7 @@ impl StatsPage {
             job.set_retry(Rc::new(move |cx: &mut App| {
                 me.update(cx, |p, cx| p.update_agent(cx)).ok();
             }));
-            job.start(move |sink| crate::remote::deploy(&inst, &sink), cx)
+            job.start_labelled(move |sink| crate::remote::deploy(&inst, &sink), cx)
         });
         let watch = cx.observe(&self.job, move |p, job, cx| {
             if matches!(job.read(cx).state(), crate::jobs::JobState::Done(_)) {

@@ -108,10 +108,12 @@ PY
 
 # Each installer signed with the release key: the Platform Manager refuses an
 # unsigned one once a signed release exists (scripts/sign-release.sh). The
-# AppImage too: it is a program people run as it is downloaded. (The .deb,
-# .rpm, Arch and Flatpak packages are checked by their SHA-256 below; their
-# package managers have their own signing.)
-"$here/sign-release.sh" "$work"/files/SENTIENT-Setup-manager-* "$work"/files/*.AppImage
+# AppImage too: it is a program people run as it is downloaded. The .deb,
+# .rpm and Arch packages too: a Platform Manager installed from one updates
+# itself with that kind of package (0.9.7 on) and checks it the same way.
+# (The Flatpak bundle is checked by its SHA-256 below.)
+"$here/sign-release.sh" "$work"/files/SENTIENT-Setup-manager-* "$work"/files/*.AppImage \
+  "$work"/files/*.pkg.tar.zst "$work"/files/*_amd64.deb "$work"/files/*.x86_64.rpm
 
 notes=$(python3 "$here/release-notes.py" extract "$root/CHANGELOG.md" "$version" --public)
 table=$'| File | Size | SHA-256 |\n|---|---|---|\n'
@@ -151,7 +153,7 @@ for a in src["assets"]:
     if g is None: bad.append(f'{a["name"]} is missing')
     elif g["size"] != a["size"] or (a.get("digest") and g.get("digest") != a["digest"]):
         bad.append(f'{a["name"]} differs from the source release')
-    signed = a["name"].startswith("SENTIENT-Setup-manager-") or a["name"].endswith(".AppImage")
+    signed = a["name"].startswith("SENTIENT-Setup-manager-") or a["name"].endswith((".AppImage", ".pkg.tar.zst", "_amd64.deb", ".x86_64.rpm"))
     if signed and a["name"] + ".minisig" not in got:
         bad.append(f'{a["name"]}.minisig is missing')
 # Every kind of Linux package is there (the source check above, read back).

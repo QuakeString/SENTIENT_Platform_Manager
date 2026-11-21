@@ -230,7 +230,7 @@ impl Transfers {
         }
         self.job.update(cx, |j, cx| {
             j.set_label("Copying");
-            j.start(|_| {
+            j.start_labelled(|_| {
                 std::thread::sleep(std::time::Duration::from_secs(3600));
                 Ok(())
             }, cx)
@@ -245,7 +245,7 @@ impl Transfers {
         let shared = self.shared.clone();
         self.job.update(cx, |j, cx| {
             j.set_label("Copying");
-            j.start(move |sink| work(shared, sink), cx);
+            j.start_labelled(move |sink| work(shared, sink), cx);
         });
         // Asks and changed folders reach the page while it runs.
         let shared = self.shared.clone();

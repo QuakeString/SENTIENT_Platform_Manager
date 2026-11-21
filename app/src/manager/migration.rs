@@ -225,9 +225,9 @@ impl MigrationPage {
                     // jobview: short (removing a kept item, followed in the progress strip).
                     if crate::rootjob::needed(&record) {
                         let args = vec!["remove-kept".to_string(), item.name.clone()];
-                        page.job.update(cx, |job, cx| job.start(move |sink| crate::rootjob::run(&args, &sink).map(|_| ()), cx));
+                        page.job.update(cx, |job, cx| job.start("Removing what was kept", move |sink| crate::rootjob::run(&args, &sink).map(|_| ()), cx));
                     } else {
-                        page.job.update(cx, |job, cx| job.start(move |sink| kept::remove(&record, &item, sink), cx));
+                        page.job.update(cx, |job, cx| job.start("Removing what was kept", move |sink| kept::remove(&record, &item, sink), cx));
                     }
                 })
                 .ok();
@@ -259,7 +259,7 @@ impl MigrationPage {
                     me.update(cx, |p, cx| again(p, cx)).ok();
                 }));
             }
-            job.start(work, cx)
+            job.start_labelled(work, cx)
         });
         cx.notify();
     }

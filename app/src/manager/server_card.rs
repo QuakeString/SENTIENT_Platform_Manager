@@ -419,7 +419,7 @@ pub fn start(job: &Entity<crate::jobs::Job>, action: Action, inst: Option<crate:
             j.set_instance(i.id.clone(), i.name.clone(), i.color.clone());
         }
         j.set_retry(retry);
-        j.start(
+        j.start_labelled(
             move |sink| {
                 // Screens: a server that is not there (SPM_DEBUG_SERVER_RESTART
                 // = ok | waiting | never | same-boot).

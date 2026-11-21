@@ -195,7 +195,7 @@ impl InstancesPage {
                     crate::jobplan::connect().when(&["Copying the Platform Manager"]),
                     sentient_installer_core::progress::PlanStep::new("Looking for SENTIENT on the server"),
                 ]);
-                job.start(
+                job.start(format!("Setting up {}", name),
                     move |sink| {
                         sink(Progress::Step { name: "Copying the Platform Manager to the server".into() });
                         sink(Progress::Log { line: "sentient-platform-manager-agent-linux-x86_64: 11.3 MB".into() });
@@ -512,7 +512,7 @@ impl InstancesPage {
         }
         self.job.update(cx, |job, cx| {
             job.set_plan(plan);
-            job.start(
+            job.start(label,
                 move |sink| {
                     sink(sentient_installer_core::progress::Progress::Step { name: crate::jobplan::CONNECT.into() });
                     remote::deploy(&inst, &sink)?;
@@ -554,7 +554,7 @@ impl InstancesPage {
                 crate::jobplan::connect().detail("SSH, and the Platform Manager copied to the server"),
                 sentient_installer_core::progress::PlanStep::new("Looking for SENTIENT on the server").detail("A SENTIENT found there is added; nothing on it changes"),
             ]);
-            job.start(
+            job.start(format!("Setting up {}", inst.name),
                 move |sink| {
                     sink(sentient_installer_core::progress::Progress::Step { name: crate::jobplan::CONNECT.into() });
                     remote::deploy(&inst, &sink)?;
@@ -582,7 +582,7 @@ impl InstancesPage {
             // A server's job: its agent diagnoses a failure there.
             job.set_instance(inst.id.clone(), inst.name.clone(), inst.color.clone());
             // jobview: its plan comes from the agent (the job's log starts with it).
-            job.start(move |sink| remote::follow(&inst, &job_id, &sink), cx)
+            job.start(format!("The job running on {}", inst.name), move |sink| remote::follow(&inst, &job_id, &sink), cx)
         });
         cx.notify();
     }

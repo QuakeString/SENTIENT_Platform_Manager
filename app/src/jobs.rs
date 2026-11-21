@@ -175,7 +175,8 @@ impl Job {
         }
     }
 
-    /// Name the job for the progress strip (before `start`).
+    /// Name the job for the progress strip, for [`Job::start_labelled`]
+    /// (a page that names its job where it is planned).
     pub fn set_label(&mut self, label: impl Into<SharedString>) {
         self.label = Some(label.into());
     }
@@ -455,10 +456,25 @@ impl Job {
         self.step_started = Some(std::time::Instant::now());
     }
 
-    /// Run `work` on a background thread. It receives the progress sink and
-    /// returns `Err(message)` on failure. Starting a job while one runs is
-    /// ignored.
+    /// Run `work`, named `label` (what the progress strip, the bell and a
+    /// failure's dialog call it: "Updating the Platform Manager"), on a
+    /// background thread. It receives the progress sink and returns
+    /// `Err(message)` on failure. Starting a job while one runs is ignored.
     pub fn start(
+        &mut self,
+        label: impl Into<SharedString>,
+        work: impl FnOnce(ProgressFn) -> Result<(), String> + Send + 'static,
+        cx: &mut Context<Self>,
+    ) {
+        if self.is_running() {
+            return;
+        }
+        self.label = Some(label.into());
+        self.start_labelled(work, cx);
+    }
+
+    /// [`Job::start`] with the name given by [`Job::set_label`] just before.
+    pub fn start_labelled(
         &mut self,
         work: impl FnOnce(ProgressFn) -> Result<(), String> + Send + 'static,
         cx: &mut Context<Self>,
@@ -466,6 +482,7 @@ impl Job {
         if self.is_running() {
             return;
         }
+        debug_assert!(self.label.is_some(), "a job starts with its name (Job::start or set_label)");
         self.begin();
         self.log_file = new_log_file(self.label.as_deref().unwrap_or("job"));
         cx.notify();
@@ -530,17 +547,21 @@ impl Job {
         let worker = cx.background_executor().spawn(async move {
             let _action = sentient_installer_core::elevation::user_action();
             let result = work(sink);
-            let diag = result.as_ref().err().map(|e| {
+            let diag = result.as_ref().err().and_then(|e| {
                 let lines: Vec<String> = tail.lock().map(|t| t.iter().cloned().collect()).unwrap_or_default();
                 if let Some(d) = lines.iter().rev().find_map(|l| Diagnosis::decode(l)) {
-                    return d;
+                    return Some(d);
                 }
                 let shown: Vec<String> = lines.into_iter().filter(|l| !l.starts_with(diagnose::DIAG_PREFIX)).collect();
-                if remote {
+                let d = if remote {
                     diagnose::diagnose(&diagnose::Evidence::from_text(e, &shown))
                 } else {
                     diagnose::diagnose_failure(e, &shown, crate::online::downloads_dir("").parent())
-                }
+                };
+                // The Platform Manager's own message, with nothing printed
+                // beside it ("This Platform Manager was installed with …"):
+                // it is the cause, shown as it is, never as an unknown one.
+                (d.is_known() || !own_message_only(e, &shown)).then_some(d)
             });
             // Screens: a canned cause (SPM_DEBUG_DIAGNOSIS, crate::diagnosis).
             #[cfg(debug_assertions)]
@@ -725,6 +746,12 @@ pub use crate::maintenance_ops::activity_log;
 
 /// A new file for a run's whole log, beside the activity log (the last 20
 /// runs are kept).
+/// Whether a failed job printed nothing but its own error: every line it
+/// printed is part of the message `error` (or it printed none).
+pub(crate) fn own_message_only(error: &str, shown: &[String]) -> bool {
+    shown.iter().map(|l| l.trim()).filter(|l| !l.is_empty()).all(|l| error.contains(l.trim_start_matches("!! ")))
+}
+
 fn new_log_file(label: &str) -> Option<std::path::PathBuf> {
     let dir = activity_log().parent()?.join("jobs");
     std::fs::create_dir_all(&dir).ok()?;
@@ -760,6 +787,25 @@ fn activity(line: &str) {
 mod plan_tests {
     // Not `super::*`: gpui's own `test` attribute would shadow the standard one.
     use super::{Job, JobState, PlanStep, Progress, RowState};
+
+    /// The Platform Manager's own refusal, printed as its only line, is the
+    /// cause as it is; output beyond it is diagnosed as before.
+    #[test]
+    fn an_own_message_alone_is_not_an_unknown_cause() {
+        let e = "This Platform Manager is a Flatpak: Flatpak updates it.";
+        assert!(super::own_message_only(e, &[]));
+        assert!(super::own_message_only(e, &[e.to_string()]));
+        assert!(super::own_message_only(e, &[format!("!! {e}"), String::new()]));
+        assert!(!super::own_message_only(e, &["error: disk full".to_string()]));
+    }
+
+    /// Every job starts with its name: the strip has no generic name.
+    #[test]
+    fn no_job_is_called_a_job() {
+        for (name, src) in [("manager/strip.rs", include_str!("manager/strip.rs")), ("jobs.rs", include_str!("jobs.rs"))] {
+            assert!(!src.contains(concat!("\"A ", "job\"")), "{name} names a job \"A job\"");
+        }
+    }
 
     fn states(j: &Job) -> Vec<RowState> {
         j.rows().iter().map(|r| r.state).collect()
