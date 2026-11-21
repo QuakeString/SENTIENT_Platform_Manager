@@ -1149,7 +1149,7 @@ impl BackupPage {
         );
         let card = ui::panel(theme)
             .gap_0()
-            .child(h_flex().pb_1().gap_3().items_center().min_h(px(28.)).child(div().font_weight(FontWeight::MEDIUM).child("Backup")).children(self.saved_note(theme, "card")))
+            .child(h_flex().pb_1().gap_3().items_center().min_h(px(28.)).child(div().font_weight(FontWeight::MEDIUM).child("Backup settings")).children(self.saved_note(theme, "card")))
             .child(folder_row)
             .child(auto_row)
             .child(keep_row)
@@ -1157,7 +1157,6 @@ impl BackupPage {
             .child(pass_row)
             .child(copy_row)
             .child(split_row);
-        out.push(card.into_any_element());
 
         // The Backups table: Back up now at its title, as a server's.
         let estimate = self.sizes.map(|(pg, ch, hist, free)| {
@@ -1181,7 +1180,6 @@ impl BackupPage {
                 .child(ui::layout_probe("header-actions"))
                 .child(div().flex_1().min_w_0().font_weight(FontWeight::MEDIUM).child("Backups"))
                 .child(crate::ui::probed(crate::ui::button("add-backup").ghost().label("Add a file").tooltip("Add a backup file from elsewhere to the folder.").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.add_backup_file(cx)))))
-                .child(crate::ui::probed(crate::ui::button("restore-from").outline().icon(crate::manager::restore::icon("history")).label("Restore from file").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.restore_from(cx)))))
                 .when(!self.choose, |r| {
                     r.child(crate::ui::probed(crate::ui::button("backup-now").outline().label(if busy { "Backing up" } else { "Back up now" }).tooltip(now_tip).disabled(busy).on_click(cx.listener(|this, _, _, cx| this.run_preset_backup(cx)))))
                 }),
@@ -1193,7 +1191,7 @@ impl BackupPage {
             list = list.child(div().pb_2().child(ui::outcome(theme, tone, text)));
         }
         if self.list.is_empty() {
-            list = list.child(div().py_2().text_sm().text_color(theme.muted_foreground).child("No backups in this folder. Restore from… can still take a file from elsewhere or another instance."));
+            list = list.child(div().py_2().text_sm().text_color(theme.muted_foreground).child("No backups in this folder. Restore from file (under Restore history) can still take a file from elsewhere or another instance."));
         } else {
             list = list.child(table_header(theme, narrow));
         }
@@ -1233,6 +1231,9 @@ impl BackupPage {
             ));
         }
         out.push(list.into_any_element());
+        // Last: the page reads Backups, Restores, Backup settings (render puts
+        // the Restores card before this one).
+        out.push(card.into_any_element());
         out
     }
 }
@@ -1319,7 +1320,9 @@ impl Render for BackupPage {
         let can_backup = !busy && self.inspection.is_some() && self.output.is_some();
 
         let narrow = narrow(window);
-        let panels = self.backup_panels(&theme, narrow, busy, cx);
+        let mut panels = self.backup_panels(&theme, narrow, busy, cx);
+        // Backups, Restores, Backup settings: the settings card goes last.
+        let settings = panels.pop();
         page.children(panels).when(self.choose, |page| page.child(
             ui::panel(&theme)
                 .child(div().font_weight(FontWeight::MEDIUM).child("Choose what to back up"))
@@ -1401,7 +1404,14 @@ impl Render for BackupPage {
                 })
                 ,
         ))
-        .child(crate::manager::restore::history_card(&theme, &crate::manager::restore::Target::Here(record.clone()), self.history.as_ref(), narrow))
+        .child(crate::manager::restore::history_card(
+            &theme,
+            &crate::manager::restore::Target::Here(record.clone()),
+            self.history.as_ref(),
+            narrow,
+            Some(crate::ui::probed(crate::ui::button("restore-from").outline().icon(crate::manager::restore::icon("history")).label("Restore from file").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.restore_from(cx)))).into_any_element()),
+        ))
+        .children(settings)
         .into_any_element()
     }
 }

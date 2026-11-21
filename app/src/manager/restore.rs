@@ -2504,10 +2504,19 @@ fn result_pill(theme: &gpui_kit::component::Theme, r: Result_) -> Div {
     ui::pill(theme, tone, r.label()).px(px(7.)).py(px(1.)).text_size(px(12.))
 }
 
-/// The Restores card. `entries`: None while it is read.
-pub fn history_card(theme: &gpui_kit::component::Theme, target: &Target, entries: Option<&Result<Vec<Entry>, String>>, narrow: bool) -> Div {
+/// The Restores card. `entries`: None while it is read. `action`:
+/// the card's button ("Restore from file"), beside its title.
+pub fn history_card(theme: &gpui_kit::component::Theme, target: &Target, entries: Option<&Result<Vec<Entry>, String>>, narrow: bool, action: Option<AnyElement>) -> Div {
     let here = if target.is_server() { "Restores on this server, who ran them from which computer, and their logs. Kept for a year." } else { "Restores on this computer, who ran them, and their logs. Kept for a year." };
-    let mut c = ui::panel(theme).gap_0().child(h_flex().pb_1().gap_2().items_center().min_h(px(28.)).child(div().flex_1().font_weight(FontWeight::MEDIUM).child("Restores")).child(ui::info("rs-history-i".into(), here.into())));
+    let mut c = ui::panel(theme).gap_0().child(
+        h_flex()
+            .pb_1()
+            .gap(crate::ui::button_gap())
+            .items_center()
+            .min_h(px(28.))
+            .child(h_flex().flex_1().min_w_0().gap_2().items_center().child(div().font_weight(FontWeight::MEDIUM).child("Restores")).child(ui::info("rs-history-i".into(), here.into())))
+            .children(action),
+    );
     match entries {
         None => {
             for n in 0..2 {
@@ -2517,6 +2526,8 @@ pub fn history_card(theme: &gpui_kit::component::Theme, target: &Target, entries
         Some(Err(e)) => c = c.child(div().py_2().text_sm().text_color(theme.muted_foreground).child(e.clone())),
         Some(Ok(l)) if l.is_empty() => c = c.child(div().py_2().text_sm().text_color(theme.muted_foreground).child(if target.is_server() { "No restores on this server yet." } else { "No restores on this computer yet." })),
         Some(Ok(l)) => {
+            // The list's own small title: the card holds Restore from file too.
+            c = c.child(div().pt_1().pb(px(2.)).text_size(px(12.)).font_weight(FontWeight::MEDIUM).text_color(theme.muted_foreground).child("History"));
             c = c.child(
                 h_flex()
                     .h(px(30.))

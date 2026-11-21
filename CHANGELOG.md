@@ -15,6 +15,12 @@ refreshes that repository's Downloads table.
 
 ## [Unreleased]
 
+### Changed
+- Backup and restore: the cards read Backups, Restores, Backup settings
+  (the settings card was titled "Backup" and is now last). Restore from
+  file is on the Restores card, where restores are, with a small History
+  title over the list of past restores. The same on a server's page.
+
 ## [0.9.5] - 2026-11-20
 
 Gateways started from a compose file can be taken over, new releases show without a restart, the Logs page fills the window, and the Windows payload has its own name.
