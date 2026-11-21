@@ -6,6 +6,7 @@
 //! save it. Every line reads as columns: local time, source (in All), level,
 //! message.
 
+use gpui_kit::component::scroll::ScrollableElement as _;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::Duration;
@@ -31,6 +32,22 @@ const FOLLOW_EVERY: Duration = Duration::from_secs(3);
 pub type LoadFn = Arc<dyn Fn(Source, u32, bool) -> Result<String, String> + Send + Sync>;
 /// The sources there are, or why they could not be read.
 pub type SourcesFn = Arc<dyn Fn() -> Result<Vec<Source>, String> + Send + Sync>;
+/// A longer read of one source written into a file as it comes (Save log):
+/// (source, lines, today, out, progress, going(bytes) false = cancel) →
+/// the log's bytes. Never holds a whole day's log in memory.
+pub type SaveFn = Arc<dyn Fn(Source, u32, bool, &mut dyn std::io::Write, &sentient_installer_core::progress::ProgressFn, &dyn Fn(u64) -> bool) -> Result<u64, String> + Send + Sync>;
+
+/// [`SaveFn`] from a [`LoadFn`] (a small log: the Platform Manager's own).
+fn save_from_load(load: LoadFn) -> SaveFn {
+    Arc::new(move |s, n, today, out, _sink, _going| {
+        let t = load(s, n, today)?;
+        if logsource::is_failure_text(&t) {
+            return Err(t.trim().to_string());
+        }
+        out.write_all(t.as_bytes()).and_then(|_| out.write_all(b"\n")).map_err(|e| format!("writing the log: {e}"))?;
+        Ok(t.len() as u64 + 1)
+    })
+}
 
 /// What this computer's Logs showed, kept when the window closes while
 /// the Platform Manager keeps running (the tray): a window opened again
@@ -83,6 +100,11 @@ enum Levels {
 
 pub struct LogView {
     load: LoadFn,
+    save_fn: SaveFn,
+    /// Save log, as a named job (the progress strip, the bell) with its own
+    /// line and Cancel under the toolbar.
+    save_job: Entity<crate::jobs::Job>,
+    save_cancel: Arc<std::sync::atomic::AtomicBool>,
     sources_fn: SourcesFn,
     sources: Vec<Source>,
     /// None: All.
@@ -153,7 +175,13 @@ impl LogView {
                 cx.notify();
             }
         })];
+        let save_job = cx.new(|_| crate::jobs::Job::new());
+        let mut _subscriptions = _subscriptions;
+        _subscriptions.push(cx.observe(&save_job, |_, _, cx| cx.notify()));
         let mut v = Self {
+            save_fn: save_from_load(load.clone()),
+            save_job,
+            save_cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             load,
             sources_fn,
             sources: vec![Source::Sentient],
@@ -181,6 +209,25 @@ impl LogView {
         if let Ok(k) = std::env::var("SPM_LOG_SOURCE") {
             v.pick = if k == "all" { None } else { Source::from_key(&k) };
         }
+        // Screens: Save log under way, failed or done (SPM_DEBUG_LOG_SAVE=running|failed|done).
+        #[cfg(debug_assertions)]
+        if let Ok(kind) = std::env::var("SPM_DEBUG_LOG_SAVE") {
+            v.save_job.update(cx, |j, cx| {
+                j.start("Saving the SENTIENT log", move |sink| {
+                    use sentient_installer_core::progress::Progress;
+                    sink(Progress::Step { name: "Downloading".into() });
+                    sink(Progress::Log { line: "Downloaded 41.2 MB of 96.0 MB".into() });
+                    std::thread::sleep(Duration::from_secs(if kind == "running" { 600 } else { 1 }));
+                    match kind.as_str() {
+                        "failed" => Err("The log was not saved: the server's disk is full (No space left on device).".into()),
+                        _ => {
+                            sink(Progress::Done { message: "Saved to /home/mz/sentient-log-20261121-2020.log (812.4 MB)".into() });
+                            Ok(())
+                        }
+                    }
+                }, cx)
+            });
+        }
         v.read_sources(cx);
         v.start(cx);
         v
@@ -192,8 +239,14 @@ impl LogView {
         let key = record_key(record.as_ref());
         let r1 = record.clone();
         let load: LoadFn = Arc::new(move |s, n, today| Ok(logsource::read(r1.as_ref(), s, n, today)));
+        let r2 = record.clone();
+        let save: SaveFn = Arc::new(move |s, n, today, out, sink, going| {
+            sink(sentient_installer_core::progress::Progress::Step { name: "Reading the log".into() });
+            logsource::read_to(r2.as_ref(), s, n, today, out, going)
+        });
         let sources: SourcesFn = Arc::new(move || Ok(logsource::available(record.as_ref())));
         let mut v = Self::new(load, sources, window, cx);
+        v.save_fn = save;
         v.shown_on = Some(super::Page::Logs);
         // A window opened again: the lines shown before, at once (the
         // first read, not run yet, reads them again behind them).
@@ -240,8 +293,12 @@ impl LogView {
     pub fn remote(inst: crate::remote::Instance, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let i1 = inst.clone();
         let load: LoadFn = Arc::new(move |s, n, today| crate::remote::logs_from(&i1, s, n, today));
+        let i2 = inst.clone();
+        let save: SaveFn = Arc::new(move |s, n, today, out, sink, going| remote_save(&i2, s, n, today, out, sink, going));
         let sources: SourcesFn = Arc::new(move || crate::remote::log_sources(&inst));
-        Self::new(load, sources, window, cx)
+        let mut v = Self::new(load, sources, window, cx);
+        v.save_fn = save;
+        v
     }
 
     fn read_sources(&mut self, cx: &mut Context<Self>) {
@@ -375,35 +432,108 @@ impl LogView {
         cx.notify();
     }
 
-    /// Save: the shown lines, or a longer read of the chosen source(s).
+    /// Save: the shown lines, or a longer read of the chosen source(s), as
+    /// a named job: the log goes into the file as it is read (never held
+    /// whole), with its progress and Cancel; it ends saying where the file
+    /// is, or why it could not be saved (never silently).
     fn save(&mut self, what: Option<(u32, bool)>, cx: &mut Context<Self>) {
+        if self.save_job.read(cx).is_running() {
+            return;
+        }
         let all = self.pick.is_none();
         let shown: Vec<String> = self.shown(cx).iter().map(|l| Self::text_of(l, all)).collect();
-        let (load, pick, sources) = (self.load.clone(), self.pick, self.sources.clone());
-        let name = format!("sentient-{}-{}.log", pick.map(|s| s.key()).unwrap_or("all"), chrono::Local::now().format("%Y%m%d-%H%M"));
+        let (save_fn, pick, sources) = (self.save_fn.clone(), self.pick, self.sources.clone());
+        let what_name = pick.map(|s| s.key()).unwrap_or("all");
+        let name = format!("{what_name}-log-{}.log", chrono::Local::now().format("%Y%m%d-%H%M"));
+        let label = format!("Saving the {} log", pick.map(|s| s.label()).unwrap_or("whole"));
         let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(std::path::PathBuf::from).unwrap_or_default();
         let rx = crate::chooser::save(cx, "Save the log as", &home, Some(&name));
+        let job = self.save_job.clone();
+        let cancel = self.save_cancel.clone();
+        self.status = None;
         cx.spawn(async move |this, cx| {
             let Ok(Ok(Some(path))) = rx.await else { return };
-            let text = match what {
-                None => shown.join("\n"),
-                Some((n, today)) => cx
-                    .background_executor()
-                    .spawn(async move { Self::read(&load, pick, &sources, n, today).map(|ls| ls.iter().map(|l| Self::text_of(l, all)).collect::<Vec<_>>().join("\n")).unwrap_or_else(|e| e) })
-                    .await,
-            };
-            let header = format!("# {}\n", logsource::zone_label());
-            let result = std::fs::write(&path, header + &text + "\n");
-            this.update(cx, |v, cx| {
-                v.status = Some(match result {
-                    Ok(()) => format!("Saved to {}", path.display()).into(),
-                    Err(e) => format!("Could not save: {e}").into(),
-                });
-                cx.notify();
-            })
-            .ok();
+            cancel.store(false, std::sync::atomic::Ordering::SeqCst);
+            job.update(cx, |j, cx| {
+                j.start(
+                    label,
+                    move |sink| {
+                        use sentient_installer_core::progress::Progress;
+                        let going = |_: u64| !cancel.load(std::sync::atomic::Ordering::SeqCst);
+                        let part = path.with_extension("log.part");
+                        let file = std::fs::File::create(&part).map_err(|e| format!("{} could not be written: {e}", part.display()))?;
+                        let mut out = std::io::BufWriter::with_capacity(1 << 20, file);
+                        let r = (|| -> Result<u64, String> {
+                            use std::io::Write as _;
+                            writeln!(out, "# {}", logsource::zone_label()).map_err(|e| e.to_string())?;
+                            match what {
+                                None => {
+                                    for l in &shown {
+                                        writeln!(out, "{l}").map_err(|e| e.to_string())?;
+                                    }
+                                    Ok(shown.len() as u64)
+                                }
+                                Some((n, today)) => {
+                                    let list: Vec<Source> = match pick {
+                                        Some(s) => vec![s],
+                                        None => sources.clone(),
+                                    };
+                                    let mut total = 0;
+                                    for s in list {
+                                        if pick.is_none() {
+                                            writeln!(out, "## {}", s.label()).map_err(|e| e.to_string())?;
+                                        }
+                                        total += save_fn(s, n, today, &mut out, &sink, &going)?;
+                                    }
+                                    Ok(total)
+                                }
+                            }
+                        })();
+                        let r = r.and_then(|n| out.into_inner().map_err(|e| e.to_string()).and_then(|f| f.sync_all().map_err(|e| e.to_string())).map(|_| n));
+                        match r {
+                            Ok(n) => {
+                                std::fs::rename(&part, &path).map_err(|e| format!("{} could not be written: {e}", path.display()))?;
+                                let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(n);
+                                sink(Progress::Done { message: format!("Saved to {} ({})", path.display(), mb(size)) });
+                                Ok(())
+                            }
+                            Err(e) => {
+                                let _ = std::fs::remove_file(&part);
+                                Err(if e == "Cancelled." { "Cancelled: nothing was saved.".into() } else { format!("The log was not saved: {e}") })
+                            }
+                        }
+                    },
+                    cx,
+                )
+            });
+            this.update(cx, |_, cx| cx.notify()).ok();
         })
         .detach();
+    }
+
+    /// Save log's line under the toolbar: its step and progress with
+    /// Cancel while it runs; where it saved, or why not, when it ended.
+    fn save_line(&self, theme: &gpui_kit::component::Theme, cx: &App) -> Option<AnyElement> {
+        use crate::jobs::JobState;
+        let job = self.save_job.read(cx);
+        match job.state() {
+            JobState::Running => {
+                let detail = job.log().back().map(|l| l.to_string()).unwrap_or_default();
+                let cancel = self.save_cancel.clone();
+                Some(
+                    h_flex()
+                        .gap_3()
+                        .items_center()
+                        .text_sm()
+                        .child(div().text_color(theme.muted_foreground).child(format!("{}  {}", job.step_with_time(), detail)))
+                        .child(crate::ui::button("log-save-cancel").outline().label("Cancel").on_click(move |_, _, _| cancel.store(true, std::sync::atomic::Ordering::SeqCst)))
+                        .into_any_element(),
+                )
+            }
+            JobState::Done(m) => Some(div().text_sm().child(m.to_string()).into_any_element()),
+            JobState::Failed(m) => Some(div().text_sm().text_color(theme.danger).child(crate::remote::split_failure(m).0).into_any_element()),
+            JobState::Idle => None,
+        }
     }
 
     fn click(&mut self, i: usize, shift: bool, ctrl: bool, cx: &mut Context<Self>) {
@@ -462,6 +592,7 @@ impl Render for LogView {
             self.start(cx);
         }
         let theme = cx.theme().clone();
+        let save_line = self.save_line(&theme, cx);
         let all = self.pick.is_none();
         let shown: Vec<Line> = self.shown(cx).into_iter().cloned().collect();
         let count = shown.len();
@@ -631,7 +762,16 @@ impl Render for LogView {
             .when(fill, |v| v.flex_1())
             .child(toolbar)
             .children(self.status.clone().map(|s| div().text_sm().child(s)))
+            .children(save_line)
             .child(
+                // The box and its bar: the list scrolls itself (Follow scrolls it
+                // from code), the shared bar is drawn over its edge (crate::theme:
+                // shown near the edge and while it scrolls).
+                div()
+                    .relative()
+                    .when(fill, |p| p.h(px(FILL_MIN_H)).flex_grow(1.).flex_shrink_0())
+                    .when(!fill, |p| p.h(px(DIALOG_H)))
+                    .child(ui::scroll_y_with(
                 ui::panel(&theme)
                     .id("log-lines")
                     .track_focus(&self.focus)
@@ -648,10 +788,7 @@ impl Render for LogView {
                             cx.notify();
                         }
                     }))
-                    .when(fill, |p| p.h(px(FILL_MIN_H)).flex_grow(1.).flex_shrink_0())
-                    .when(!fill, |p| p.h(px(DIALOG_H)))
-                    .track_scroll(&self.scroll)
-                    .overflow_y_scroll()
+                    .size_full()
                     .gap_0()
                     .p_2()
                     .font_family(theme.mono_font_family.clone())
@@ -677,6 +814,8 @@ impl Render for LogView {
                         )
                     })
                     .children(rows),
+                    &self.scroll,
+                    )),
             )
     }
 }
@@ -738,4 +877,62 @@ mod reopen_tests {
     fn another_installation_is_read_afresh() {
         assert!(take_kept(&mut Some(kept("rec")), "other").is_none());
     }
+}
+
+/// A server's log saved here: the server writes it gzipped to a temporary
+/// file (`logs-file`, as it comes), this downloads that over SFTP with its
+/// progress and unpacks it into `out`, then the file there is deleted. A
+/// Windows server answers the read as before (its log is bounded).
+fn remote_save(inst: &crate::remote::Instance, s: Source, n: u32, today: bool, out: &mut dyn std::io::Write, sink: &sentient_installer_core::progress::ProgressFn, going: &dyn Fn(u64) -> bool) -> Result<u64, String> {
+    use crate::manager::files::fs::Fs as _;
+    use sentient_installer_core::progress::Progress;
+    if crate::remote::is_windows(inst) {
+        sink(Progress::Step { name: format!("Reading the log on {}", inst.name) });
+        return save_from_load(Arc::new({
+            let inst = inst.clone();
+            move |s, n, today| crate::remote::logs_from(&inst, s, n, today)
+        }))(s, n, today, out, sink, going);
+    }
+    sink(Progress::Step { name: format!("Reading the log on {}", inst.name) });
+    let (path, bytes, packed) = crate::remote::logs_file(inst, s, n, today)?;
+    let result = (|| {
+        if !going(0) {
+            return Err("Cancelled.".to_string());
+        }
+        sink(Progress::Step { name: "Downloading".into() });
+        sink(Progress::Log { line: format!("{} of log, {} to download", mb(bytes), mb(packed)) });
+        let mut fs = crate::manager::files::fs::RemoteFs::connect(inst, false)?;
+        let mut dec = flate2::write::GzDecoder::new(out);
+        let mut got = 0u64;
+        let mut failed: Option<String> = None;
+        let mut last = std::time::Instant::now();
+        fs.read(&path, 0, packed, &mut |chunk| {
+            if let Err(e) = std::io::Write::write_all(&mut dec, chunk) {
+                failed = Some(format!("writing the log: {e}"));
+                return false;
+            }
+            got += chunk.len() as u64;
+            if packed > 0 && last.elapsed() > Duration::from_millis(250) {
+                last = std::time::Instant::now();
+                sink(Progress::Percent { value: got as f32 / packed as f32 });
+                sink(Progress::Log { line: format!("Downloaded {} of {}", mb(got), mb(packed)) });
+            }
+            going(got)
+        })?;
+        if let Some(e) = failed {
+            return Err(e);
+        }
+        if !going(got) {
+            return Err("Cancelled.".to_string());
+        }
+        dec.finish().map_err(|e| format!("the downloaded log is damaged: {e}"))?;
+        Ok(bytes)
+    })();
+    crate::remote::logs_file_remove(inst, &path);
+    result
+}
+
+/// Bytes in megabytes, for the progress line.
+fn mb(b: u64) -> String {
+    if b < 1_000_000 { format!("{:.0} KB", b as f64 / 1_000.) } else { format!("{:.1} MB", b as f64 / 1_000_000.) }
 }

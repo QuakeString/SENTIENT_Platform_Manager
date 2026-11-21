@@ -99,6 +99,16 @@ refreshes that repository's Downloads table.
   password on standard input), and the files holding them are private: the
   Docker compose file (0600), and on Windows conf\sentient.env, the
   service descriptor and ClickHouse's config (Administrators and SYSTEM).
+- Logs: Save log is a job with its progress and Cancel. The log goes into
+  the file as it is read (a day of SENTIENT's log is never held whole); a
+  server's log is written gzipped there and downloaded with its progress.
+  It ends saying where the file is, or why it was not saved; a log that
+  could not be read is never saved as if it were the log. The file is
+  named after the log it holds (sentient-log-…, gateway-log-…).
+- Logs: the log box has a scrollbar.
+- Scrollbars: every scrolling area (pages, menus, dialogs, lists, the log
+  box) shows its bar when the pointer comes near its edge and while it
+  scrolls.
 
 ## [0.9.7] - 2026-11-21
 

@@ -15,6 +15,7 @@
 //! passwords go to the server on the agent's standard input and are kept
 //! only in these fields while the flow is open.
 
+use gpui_kit::component::scroll::ScrollableElement as _;
 use std::rc::Rc;
 
 use gpui_kit::component::{
@@ -687,7 +688,7 @@ impl InstallFlow {
                     .id("rinst-steps")
                     .flex_1()
                     .min_h_0()
-                    .overflow_y_scroll()
+                    .overflow_y_scrollbar()
                     .gap(px(shell::ROW_GAP))
                     .pt(px(shell::NAV_TOP))
                     .pb(px(12.))
@@ -1112,7 +1113,7 @@ impl Render for InstallFlow {
                     .relative()
                     .flex_1()
                     .min_h_0()
-                    .overflow_y_scroll()
+                    .overflow_y_scrollbar()
                     .p(px(ui::PAGE_PAD))
                     .gap(px(ui::GAP))
                     .bg(theme.muted)

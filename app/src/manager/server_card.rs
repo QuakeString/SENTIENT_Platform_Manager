@@ -15,6 +15,7 @@
 //! is restarting instead of that it does not answer, and the checker
 //! raises no alarm ([`power_state`]); one shut down from here shows as off.
 
+use gpui_kit::component::scroll::ScrollableElement as _;
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Mutex;
@@ -951,13 +952,7 @@ impl Render for Details {
         } else {
             v_flex().gap(px(18.)).child(section(&theme, "Hardware", hw)).child(section(&theme, "System", sys))
         };
-        div()
-            .id("srv-details-scroll")
-            .flex_1()
-            .min_h_0()
-            .overflow_y_scroll()
-            .track_scroll(&self.scroll)
-            .child(body.pb(px(4.)))
+        crate::ui::scroll_y_with(div().id("srv-details-scroll").flex_1().min_h_0().child(body.pb(px(4.))), &self.scroll)
     }
 }
 
