@@ -23,8 +23,9 @@ refreshes that repository's Downloads table.
   could not be read is never saved as if it were the log. The file is
   named after the log it holds (sentient-log-…, gateway-log-…).
 - Logs: the log box has a scrollbar.
-- Scrollbars: the pages, the menus and the log box show the shared bar
-  when the pointer comes near its edge and while they scroll.
+- Scrollbars: every scrolling area (pages, menus, dialogs, lists, the log
+  box) shows its bar when the pointer comes near its edge and while it
+  scrolls.
 
 ## [0.9.7] - 2026-11-21
 

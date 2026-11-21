@@ -2623,10 +2623,9 @@ impl Render for HistoryDialog {
             rows.push((txt("Data from before"), div().font_family(theme.mono_font_family.clone()).text_size(px(13.)).child(a.clone()).into_any_element()));
         }
         v_flex().gap_3().child(kv(&theme, rows)).child(
-            div()
+            crate::ui::scroll_y(div()
                 .id("rh-log")
                 .max_h(px(160.))
-                .overflow_y_scroll() /* scroll-own: a box sized by its content or scrolled from code; its own bar is drawn beside it where it has a handle */
                 .p(px(10.))
                 .rounded(px(8.))
                 .bg(theme.muted)
@@ -2636,7 +2635,7 @@ impl Render for HistoryDialog {
                     Read::Got(t) => t.lines().map(|l| div().child(l.to_string())).collect::<Vec<_>>(),
                     Read::Failed(e) => vec![div().text_color(theme.muted_foreground).child(e.clone())],
                     _ => vec![div().text_color(theme.muted_foreground).child("Reading the log…")],
-                }),
+                })),
         )
     }
 }

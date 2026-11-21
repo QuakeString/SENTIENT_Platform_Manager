@@ -259,7 +259,7 @@ pub fn layer(window: &mut Window, cx: &mut App, page_left: f32, page_top: f32) -
             // A list dialog: the body fills and the list inside scrolls (one
             // scroll area); any other scrolls itself, with the shared bar.
             // A dialog grows with its content: a wrapper's bar would collapse it.
-            if list { body.into_any_element() } else { body.overflow_y_scroll() /* scroll-own: grows with its content */.into_any_element() }
+            if list { body.into_any_element() } else { crate::ui::scroll_y(body).into_any_element() }
         })
         .when_some(footer, |p, f| p.child(div().flex_shrink_0().px(px(20.)).py(px(14.)).border_t_1().border_color(theme.border).child(f)));
     Some(

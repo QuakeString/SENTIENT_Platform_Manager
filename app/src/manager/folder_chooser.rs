@@ -531,7 +531,7 @@ impl Render for FolderChooser {
             .text_color(theme.muted_foreground)
             .child(div().flex_1().child("Name"))
             .child("Free space");
-        let mut rows = v_flex().id("fc-rows").flex_1().min_h_0().track_scroll(&self.rows_scroll).overflow_y_scroll() /* scroll-own: a box sized by its content or scrolled from code; its own bar is drawn beside it where it has a handle */.child(crate::ui::layout_probe("fc-rows"));
+        let mut rows = v_flex().id("fc-rows").flex_1().min_h_0().child(crate::ui::layout_probe("fc-rows"));
         if let Some(input) = &self.new_name {
             rows = rows.child(
                 h_flex()
@@ -589,7 +589,7 @@ impl Render for FolderChooser {
                 );
             }
         }
-        let table = v_flex().flex_1().min_h_0().rounded(px(8.)).border_1().border_color(theme.border).overflow_hidden().child(header).child(rows);
+        let table = v_flex().flex_1().min_h_0().rounded(px(8.)).border_1().border_color(theme.border).overflow_hidden().child(header).child(crate::ui::scroll_y_with(rows, &self.rows_scroll));
 
         // B2/B3: what the picked folder allows.
         let full = self.o.full_bytes;

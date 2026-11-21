@@ -952,13 +952,7 @@ impl Render for Details {
         } else {
             v_flex().gap(px(18.)).child(section(&theme, "Hardware", hw)).child(section(&theme, "System", sys))
         };
-        div()
-            .id("srv-details-scroll")
-            .flex_1()
-            .min_h_0()
-            .track_scroll(&self.scroll)
-            .overflow_y_scroll() /* scroll-own: a box sized by its content or scrolled from code; its own bar is drawn beside it where it has a handle */
-            .child(body.pb(px(4.)))
+        crate::ui::scroll_y_with(div().id("srv-details-scroll").flex_1().min_h_0().child(body.pb(px(4.))), &self.scroll)
     }
 }
 

@@ -318,19 +318,18 @@ pub fn pane(c: &Ctx, cx: &App) -> AnyElement {
         )
         .child(
             // It scrolls on its own; the form stays as it is.
-            div().relative().flex_1().min_h_0().child(
+            div().relative().flex_1().min_h_0().child(crate::ui::scroll_y_with(
                 v_flex()
                     .id("guide-steps")
                     .absolute()
                     .inset_0()
-                    .track_scroll(&c.scroll)
-                    .overflow_y_scroll() /* scroll-own: a box sized by its content or scrolled from code; its own bar is drawn beside it where it has a handle */
                     .px(px(20.))
                     .pt(px(16.))
                     .pb(px(20.))
                     .gap(px(18.))
                     .children(body),
-            ),
+                &c.scroll,
+            )),
         )
         .into_any_element()
 }

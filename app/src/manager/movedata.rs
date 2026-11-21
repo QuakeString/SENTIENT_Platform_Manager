@@ -1152,7 +1152,7 @@ impl MoveFlow {
             .text_color(theme.muted_foreground)
             .child(div().flex_1().child("Name"))
             .child(h_flex().w(px(120.)).justify_end().child("Free space"));
-        let mut rows = v_flex().id("md-rows").max_h(px(5. * 34.)).overflow_y_scroll() /* scroll-own: a box sized by its content or scrolled from code; its own bar is drawn beside it where it has a handle */;
+        let mut rows = v_flex().id("md-rows").max_h(px(5. * 34.));
         if let Some(input) = &p.new_name {
             rows = rows.child(
                 h_flex()
@@ -1216,7 +1216,7 @@ impl MoveFlow {
                 }
             }
         }
-        let table = v_flex().rounded(px(8.)).border_1().border_color(theme.border).overflow_hidden().child(header).child(rows);
+        let table = v_flex().rounded(px(8.)).border_1().border_color(theme.border).overflow_hidden().child(header).child(ui::scroll_y(rows));
         let status: AnyElement = match &p.check {
             None | Some(Read::Loading) => h_flex().gap_2().items_center().text_sm().text_color(theme.muted_foreground).child("Checking the folder…").into_any_element(),
             Some(Read::Failed(e)) => out_line(theme, Tone::Bad, e.clone()).into_any_element(),

@@ -1591,7 +1591,7 @@ struct DeleteBody {
 impl Render for DeleteBody {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
-        let mut list = v_flex().id("del-list").max_h(px(240.)).overflow_y_scroll() /* scroll-own: a box sized by its content or scrolled from code; its own bar is drawn beside it where it has a handle */.rounded(px(8.)).border_1().border_color(theme.border).py_1();
+        let mut list = v_flex().id("del-list").max_h(px(240.)).rounded(px(8.)).border_1().border_color(theme.border).py_1();
         for r in &self.rows {
             list = list.child(
                 h_flex()
@@ -1605,7 +1605,7 @@ impl Render for DeleteBody {
                     .child(div().text_color(theme.muted_foreground).child(if r.dir { "folder".to_string() } else { bytes_label(r.size) })),
             );
         }
-        v_flex().gap(px(14.)).child(list).child(div().text_sm().text_color(theme.muted_foreground).child(self.note))
+        v_flex().gap(px(14.)).child(crate::ui::scroll_y(list)).child(div().text_sm().text_color(theme.muted_foreground).child(self.note))
     }
 }
 

@@ -641,7 +641,7 @@ impl Render for Panel {
                 let t = t.clone();
                 move |_, _, cx| t.update(cx, |t, cx| t.clear_finished(cx))
             }));
-        let mut list = v_flex().id("tr-list").max_h(px(420.)).overflow_y_scroll() /* scroll-own: a box sized by its content or scrolled from code; its own bar is drawn beside it where it has a handle */;
+        let mut list = v_flex().id("tr-list").max_h(px(420.));
         if items.is_empty() {
             list = list.child(div().px(px(16.)).py_4().text_sm().text_color(theme.muted_foreground).child("No copies yet."));
         }
@@ -710,7 +710,7 @@ impl Render for Panel {
             }
             list = list.child(row);
         }
-        v_flex().child(header).child(list)
+        v_flex().child(header).child(crate::ui::scroll_y(list))
     }
 }
 

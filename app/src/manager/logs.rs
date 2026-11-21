@@ -771,7 +771,7 @@ impl Render for LogView {
                     .relative()
                     .when(fill, |p| p.h(px(FILL_MIN_H)).flex_grow(1.).flex_shrink_0())
                     .when(!fill, |p| p.h(px(DIALOG_H)))
-                    .child(
+                    .child(ui::scroll_y_with(
                 ui::panel(&theme)
                     .id("log-lines")
                     .track_focus(&self.focus)
@@ -789,8 +789,6 @@ impl Render for LogView {
                         }
                     }))
                     .size_full()
-                    .track_scroll(&self.scroll)
-                    .overflow_y_scroll() /* scroll-own: a box sized by its content or scrolled from code; its own bar is drawn beside it where it has a handle */
                     .gap_0()
                     .p_2()
                     .font_family(theme.mono_font_family.clone())
@@ -816,8 +814,8 @@ impl Render for LogView {
                         )
                     })
                     .children(rows),
-                    )
-                    .child(div().absolute().inset_0().child(gpui_kit::component::scroll::Scrollbar::vertical(&self.scroll))),
+                    &self.scroll,
+                    )),
             )
     }
 }

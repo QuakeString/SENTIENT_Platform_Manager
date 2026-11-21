@@ -800,9 +800,8 @@ mod plan_tests {
     }
 
     /// Every scroll area has the shared bar (shown near its edge and while
-    /// it scrolls, crate::theme): overflow_y_scrollbar, or a plain scroll
-    /// marked `scroll-own:` with its reason (a box sized by its content,
-    /// which the bar's wrapper would collapse, or one scrolled from code).
+    /// it scrolls, crate::theme): overflow_y_scrollbar, or ui::scroll_y for
+    /// a box sized by its content or scrolled from code. No exceptions.
     #[test]
     fn every_scroll_area_has_the_shared_bar() {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
@@ -823,7 +822,8 @@ mod plan_tests {
                 }
             }
         }
-        assert!(bare.is_empty(), "scroll areas without the shared bar: {bare:?}");
+        // The one plain scroll: the shared bar's own area (ui::ScrollY).
+        assert!(bare.len() <= 1 && bare.iter().all(|b| b.contains("ui.rs")), "scroll areas without the shared bar: {bare:?}");
     }
 
     /// Every job starts with its name: the strip has no generic name.

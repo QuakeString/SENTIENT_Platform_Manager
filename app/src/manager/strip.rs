@@ -600,11 +600,10 @@ impl Render for JobDetails {
         v_flex()
             .gap_3()
             .child(state)
-            .when(output_box, |v| v.child(
+            .when(output_box, |v| v.child(crate::ui::scroll_y(
                 div()
                     .id("job-details-lines")
                     .max_h(px(380.))
-                    .overflow_y_scroll() /* scroll-own: a box sized by its content or scrolled from code; its own bar is drawn beside it where it has a handle */
                     .p_2()
                     .rounded(theme.radius)
                     .bg(theme.muted)
@@ -612,7 +611,7 @@ impl Render for JobDetails {
                     .text_size(px(12.5))
                     .when(lines.is_empty(), |d| d.child(div().text_color(theme.muted_foreground).child("No output yet.")))
                     .children(lines.into_iter().map(|l| div().child(l))),
-            ))
+            )))
             .child(
                 h_flex()
                     .gap(crate::ui::button_gap())

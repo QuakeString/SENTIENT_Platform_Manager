@@ -93,7 +93,7 @@ pub fn show_error_with(title: impl Into<SharedString>, text: impl Into<SharedStr
                 .gap_3()
                 .child(div().text_sm().child(head))
                 .when_some(detail.filter(|d| !d.trim().is_empty()), |c, d| {
-                    c.child(div().id("error-detail").max_h(px(300.)).overflow_y_scroll() /* scroll-own: a box sized by its content or scrolled from code; its own bar is drawn beside it where it has a handle */.p_2().rounded(theme.radius).bg(theme.muted).font_family(theme.mono_font_family.clone()).text_size(px(12.5)).child(d.trim().to_string()))
+                    c.child(scroll_y(div().id("error-detail").max_h(px(300.)).p_2().rounded(theme.radius).bg(theme.muted).font_family(theme.mono_font_family.clone()).text_size(px(12.5)).child(d.trim().to_string())))
                 })
                 .child(
                     gpui_kit::component::h_flex()
@@ -2745,5 +2745,43 @@ mod menu_fit_tests {
         let (up, h) = menu_fit(250., 278., 420.);
         assert!(up);
         assert_eq!(h, 250. - 16.);
+    }
+}
+
+/// A scroll area that keeps its own size and scroll (a box sized by its
+/// content, a list scrolled from code) with the shared bar drawn over its
+/// edge: the bar paints where its handle's area is (gpui_base::Scrollbar
+/// reads the handle's bounds), so it sits inside the area, last, and takes
+/// no room. Shown near the edge and while scrolling (crate::theme). Every
+/// scroll area that is not overflow_y_scrollbar is one of these.
+#[derive(IntoElement)]
+pub struct ScrollY {
+    el: Stateful<Div>,
+    handle: Option<ScrollHandle>,
+}
+
+/// [`ScrollY`] with a handle of its own, kept by the element's id.
+pub fn scroll_y(el: Stateful<Div>) -> ScrollY {
+    ScrollY { el, handle: None }
+}
+
+/// [`ScrollY`] on `handle` (code scrolls it: Follow, a selected row).
+pub fn scroll_y_with(el: Stateful<Div>, handle: &ScrollHandle) -> ScrollY {
+    ScrollY { el, handle: Some(handle.clone()) }
+}
+
+impl RenderOnce for ScrollY {
+    fn render(mut self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let h = match self.handle.take() {
+            Some(h) => h,
+            None => {
+                let id = self.el.interactivity().element_id.clone().unwrap_or_else(|| ElementId::Name("scroll-y".into()));
+                window.use_keyed_state((id, "scroll-y"), cx, |_, _| ScrollHandle::new()).read(cx).clone()
+            }
+        };
+        self.el
+            .track_scroll(&h)
+            .overflow_y_scroll() /* scroll-own: this is the shared bar's own area */
+            .child(div().absolute().top_0().left_0().size_0().child(gpui_kit::component::scroll::Scrollbar::vertical(&h)))
     }
 }
