@@ -28,7 +28,9 @@ refreshes that repository's Downloads table.
   and the platform at backup time (address, certificate, licence,
   gateways; never a secret). Restore from it. An encrypted backup shows
   its contents only when restored with its passphrase. Checks now record
-  each part's result.
+  each part's result; for a backup checked before that, the dialog offers
+  Check now. Telemetry with no valid time (stored as 1970) is named so.
+  One scroll area: the dialog's body, never a table inside it.
 
 ## [0.9.5] - 2026-11-20
 

@@ -226,10 +226,18 @@ pub struct Content {
 /// "File store: Reports", "Manifest".
 pub fn part_name(path: &str) -> String {
     use sentient_backup_core::backup::{DUMP_MEMBER, TELEMETRY_MEMBER, TELEMETRY_MONTH_PREFIX};
-    // "2026-09" from ".../2026-09.copy.zst" or ".../202609.native.zst".
+    // "2026-09" from ".../2026-09.copy.zst" or ".../202609.native.zst";
+    // a month before 2000 is data that came without a real time (ts 0, a
+    // device that sent none), named so rather than "1970-01".
     let month = |p: &str| -> Option<String> {
         let stem = p.rsplit('/').next()?.split('.').next()?.replace('-', "");
-        (stem.len() >= 6 && stem[..6].bytes().all(|b| b.is_ascii_digit())).then(|| format!("{}-{}", &stem[..4], &stem[4..6]))
+        if stem.len() < 6 || !stem[..6].bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        if stem[..4].parse::<u32>().ok()? < 2000 {
+            return Some("with no valid time".into());
+        }
+        Some(format!("{}-{}", &stem[..4], &stem[4..6]))
     };
     if path == "manifest.json" {
         "Manifest".into()
@@ -365,7 +373,8 @@ pub fn details(e: &Entry) -> Details {
         platform: None,
         contents: Vec::new(),
         unreadable: None,
-        check: e.check.clone(),
+        // Read now: a check just run from the dialog is newer than the list's.
+        check: check_of(&e.path).or_else(|| e.check.clone()),
     };
     if encrypted {
         d.unreadable = Some("The backup is encrypted: what it holds is shown when it is restored with its passphrase.".into());
@@ -976,6 +985,8 @@ mod details_tests {
         assert_eq!(part_name("files/reports.tar.zst"), "File store: Reports");
         assert_eq!(part_name("files/vc-repos.tar.zst"), "File store: Version control");
         assert_eq!(part_name("files/extra.tar.zst"), "File store: extra");
+        assert_eq!(part_name("clickhouse/ts_kv/197001.native.zst"), "ClickHouse telemetry with no valid time");
+        assert_eq!(part_name("db/telemetry/1970-01.copy.zst"), "Telemetry with no valid time");
     }
 }
 
@@ -1070,14 +1081,22 @@ pub fn canned_details(kind: &str) -> Details {
             d.platform = None;
             d.unreadable = Some("The backup is encrypted: what it holds is shown when it is restored with its passphrase.".into());
         }
-        // "new", "long": every month since 2023 in "long".
+        // "new", "long" (every month since 2023, and ClickHouse rows with
+        // no valid time), "noparts" (a check from before per-part results).
         _ => {
             let tele = if kind == "long" { months(1, 36, 2023) } else { months(8, 4, 2026) };
+            let no_time: Vec<Content> = if kind == "long" { vec![Content { path: "clickhouse/ts_kv/197001.native.zst".into(), label: part_name("clickhouse/ts_kv/197001.native.zst"), bytes: 271 }] } else { Vec::new() };
             d.contents = std::iter::once(content("db/dump.pgc.zst", 104))
                 .chain(tele)
+                .chain(no_time)
                 .chain([content("clickhouse/ts_kv/202611.native.zst", 71), content("clickhouse/ts_kv_latest.native.zst", 1), content("files/reports.tar.zst", 9), content("files/vc-repos.tar.zst", 3)])
                 .collect();
             d.check = Some(check("2026-11-17T04:25:00+05:30", &d.contents, &[]));
+            if kind == "noparts" {
+                if let Some(c) = d.check.as_mut() {
+                    c.parts.clear();
+                }
+            }
         }
     }
     d

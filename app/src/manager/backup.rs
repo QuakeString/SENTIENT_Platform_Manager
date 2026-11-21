@@ -1220,8 +1220,13 @@ impl BackupPage {
                                     .ok();
                                 })
                             });
-                            let entry = entry.clone();
-                            open_details_dialog(Box::new(move || Ok(crate::backups::details(&entry))), restore, cx)
+                            let (entry, file) = (entry.clone(), entry.path.clone());
+                            open_details_dialog(
+                                std::sync::Arc::new(move || Ok(crate::backups::details(&entry))),
+                                Some(std::sync::Arc::new(move || crate::backups::check(&file, None).map(|_| ()))),
+                                restore,
+                                cx,
+                            )
                         })
                     },
                     restore: (!damaged).then(|| -> std::rc::Rc<dyn Fn(&mut Window, &mut App)> {
@@ -1721,23 +1726,20 @@ pub(crate) fn old_folder_pill(theme: &gpui_kit::component::Theme) -> Div {
 
 /// Where the Details dialog gets its facts (this computer's file, or the
 /// server's agent). Blocking; run in the background.
-pub(crate) type DetailsLoad = Box<dyn FnOnce() -> Result<crate::backups::Details, String> + Send>;
+pub(crate) type DetailsLoad = std::sync::Arc<dyn Fn() -> Result<crate::backups::Details, String> + Send + Sync>;
+/// Check the backup now (the row menu's Check integrity), for the dialog's
+/// Check now. Blocking; run in the background.
+pub(crate) type DetailsCheck = std::sync::Arc<dyn Fn() -> Result<(), String> + Send + Sync>;
 
 /// The Backup details dialog: the file and its check, the facts its
 /// manifest records, the data it holds, its parts with their last check,
 /// and the platform at backup time. `restore`: the footer's Restore (None
 /// for a damaged backup).
-pub(crate) fn open_details_dialog(load: DetailsLoad, restore: Option<std::rc::Rc<dyn Fn(&mut Window, &mut App)>>, cx: &mut App) {
+pub(crate) fn open_details_dialog(load: DetailsLoad, check: Option<DetailsCheck>, restore: Option<std::rc::Rc<dyn Fn(&mut Window, &mut App)>>, cx: &mut App) {
     let view = cx.new(|cx: &mut Context<DetailsDialog>| {
-        let task = cx.spawn(async move |this, cx| {
-            let got = cx.background_executor().spawn(async move { load() }).await;
-            this.update(cx, |d, cx| {
-                d.state = Some(got);
-                cx.notify();
-            })
-            .ok();
-        });
-        DetailsDialog { state: None, _task: Some(task) }
+        let mut d = DetailsDialog { state: None, load, check, checking: false, check_error: None, _task: None };
+        d.read(false, cx);
+        d
     });
     crate::modal::open(
         crate::modal::Modal { title: "Backup details".into(), body: view.into(), width: 640., icon: Some(crate::manager::restore::icon("database")), on_close: None },
@@ -1769,7 +1771,38 @@ impl Render for DetailsFooter {
 
 pub(crate) struct DetailsDialog {
     state: Option<Result<crate::backups::Details, String>>,
+    load: DetailsLoad,
+    check: Option<DetailsCheck>,
+    /// Check now is running.
+    checking: bool,
+    check_error: Option<String>,
     _task: Option<Task<()>>,
+}
+
+impl DetailsDialog {
+    /// Read the details (after checking the backup when `check_first`).
+    fn read(&mut self, check_first: bool, cx: &mut Context<Self>) {
+        let (load, check) = (self.load.clone(), self.check.clone().filter(|_| check_first));
+        self.checking = check.is_some();
+        self.check_error = None;
+        self._task = Some(cx.spawn(async move |this, cx| {
+            let (checked, got) = cx
+                .background_executor()
+                .spawn(async move {
+                    let checked = check.map(|c| c()).transpose();
+                    (checked, load())
+                })
+                .await;
+            this.update(cx, |d, cx| {
+                d.checking = false;
+                d.check_error = checked.err();
+                d.state = Some(got);
+                cx.notify();
+            })
+            .ok();
+        }));
+        cx.notify();
+    }
 }
 
 /// "17 Nov 2026, 04:25" from "2026-11-17 04:25".
@@ -1803,10 +1836,10 @@ fn details_heading(theme: &gpui_kit::component::Theme, title: &'static str, righ
         .children(right.map(|r| div().text_size(px(12.5)).text_color(theme.muted_foreground).child(r)))
 }
 
-/// A bordered table whose rows scroll inside a fixed height; the header
-/// stays.
-fn details_table(theme: &gpui_kit::component::Theme, id: &'static str, header: Div, rows: Vec<Div>) -> Div {
-    let mut body = v_flex().id(id).max_h(px(228.)).overflow_y_scroll();
+/// A bordered table with every row: the dialog's body is the one thing
+/// that scrolls (a table scrolling inside it took the wheel from it too).
+fn details_table(theme: &gpui_kit::component::Theme, header: Div, rows: Vec<Div>) -> Div {
+    let mut body = v_flex();
     for (i, r) in rows.into_iter().enumerate() {
         body = body.child(r.when(i > 0, |r| r.border_t_1().border_color(theme.border)));
     }
@@ -1915,37 +1948,70 @@ impl Render for DetailsDialog {
                     }
                 })
                 .collect();
-            body = body.child(details_heading(&theme, "Data", None)).child(details_table(&theme, "bk-details-data", header, rows));
+            body = body.child(details_heading(&theme, "Data", None)).child(details_table(&theme, header, rows));
         }
 
-        // Parts: the archive's members, each with its last check.
-        let checked = d.check.as_ref().map(|c| {
+        // Parts: the archive's members; each one's last check only when the
+        // stored check has per-part results (else no Check column, and a
+        // way to run one).
+        let marks = d.check.as_ref().filter(|c| !c.parts.is_empty());
+        let checked = marks.map(|c| {
             let at = chrono::DateTime::parse_from_rfc3339(&c.at).map(|t| t.with_timezone(&chrono::Local).format("%-d %b %Y, %H:%M").to_string()).unwrap_or_else(|_| check_time(&c.at));
             format!("Checked {at}")
         });
-        let mark_of = |path: &str| d.check.as_ref().and_then(|c| c.parts.iter().find(|(p, _)| p == path).map(|(_, ok)| *ok));
+        let mark_of = |path: &str| marks.and_then(|c| c.parts.iter().find(|(p, _)| p == path).map(|(_, ok)| *ok));
+        let with_marks = marks.is_some();
         let header = details_row()
             .text_size(px(12.5))
             .text_color(theme.muted_foreground)
             .child(div().flex_1().min_w_0().child("Part"))
             .child(div().w(px(80.)).flex_shrink_0().text_right().child("Size"))
-            .child(div().w(px(100.)).flex_shrink_0().text_right().child("Check"));
+            .when(with_marks, |r| r.child(div().w(px(100.)).flex_shrink_0().text_right().child("Check")));
         let rows = d
             .contents
             .iter()
             .map(|c| {
+                let row = details_row()
+                    .child(div().flex_1().min_w_0().child(c.label.clone()))
+                    .child(div().w(px(80.)).flex_shrink_0().text_right().font_features(ui::tabular()).child(crate::dbstatus::bytes_label(c.bytes)));
+                if !with_marks {
+                    return row;
+                }
                 let mark = match mark_of(&c.path) {
-                    Some(true) => div().text_color(theme.success).font_weight(FontWeight::MEDIUM).child("✓ Matches").into_any_element(),
+                    // The Verified pill's green (theme.success is its pale background).
+                    Some(true) => div().text_color(theme.success_foreground).font_weight(FontWeight::MEDIUM).child("✓ Matches").into_any_element(),
                     Some(false) => ui::pill(&theme, Tone::Warn, "Damaged").into_any_element(),
                     None => div().into_any_element(),
                 };
-                details_row()
-                    .child(div().flex_1().min_w_0().child(c.label.clone()))
-                    .child(div().w(px(80.)).flex_shrink_0().text_right().font_features(ui::tabular()).child(crate::dbstatus::bytes_label(c.bytes)))
-                    .child(h_flex().w(px(100.)).flex_shrink_0().justify_end().child(mark))
+                row.child(h_flex().w(px(100.)).flex_shrink_0().justify_end().child(mark))
             })
             .collect();
-        body = body.child(details_heading(&theme, "Parts", checked)).child(details_table(&theme, "bk-details-parts", header, rows));
+        body = body.child(details_heading(&theme, "Parts", checked));
+        if !with_marks {
+            let can_check = self.check.is_some();
+            let checking = self.checking;
+            body = body.child(
+                h_flex()
+                    .pb_2()
+                    .gap_3()
+                    .items_center()
+                    .child(div().flex_1().min_w_0().text_sm().text_color(theme.muted_foreground).child("Run a check to see each part's result."))
+                    .when(can_check, |r| {
+                        r.child(crate::ui::probed(
+                            crate::ui::button("bk-details-check")
+                                .outline()
+                                .label(if checking { "Checking" } else { "Check now" })
+                                .loading(checking)
+                                .disabled(checking)
+                                .on_click(cx.listener(|d, _, _, cx| d.read(true, cx))),
+                        ))
+                    }),
+            );
+            if let Some(e) = &self.check_error {
+                body = body.child(div().pb_2().child(ui::outcome(&theme, Tone::Bad, e.clone())));
+            }
+        }
+        body = body.child(details_table(&theme, header, rows));
 
         // The platform at backup time (backups that recorded it).
         if let Some(p) = &d.platform {

@@ -2379,8 +2379,14 @@ impl RemotePages {
                                     .ok();
                                 })
                             });
-                            let (inst, file) = (inst.clone(), file.clone());
-                            bk::open_details_dialog(Box::new(move || remote::backup_details(&inst, &file)), restore, cx)
+                            let (i2, f2) = (inst.clone(), file.clone());
+                            let (i3, f3) = (inst.clone(), file.clone());
+                            bk::open_details_dialog(
+                                std::sync::Arc::new(move || remote::backup_details(&i2, &f2)),
+                                Some(std::sync::Arc::new(move || remote::backup_check(&i3, &f3))),
+                                restore,
+                                cx,
+                            )
                         })
                     },
                     restore: (!damaged).then(|| -> std::rc::Rc<dyn Fn(&mut Window, &mut App)> {
