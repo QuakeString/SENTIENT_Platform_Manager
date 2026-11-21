@@ -23,6 +23,10 @@ refreshes that repository's Downloads table.
   interfaces), then waits for the gateway to connect or puts the previous
   connection back. Every gateway container the Platform Manager creates
   (install, take over, update, Apply) gets host.docker.internal.
+- A native (systemd) or Windows service gateway: a new connection on
+  Gateway › Connection counts only once the gateway connects with it
+  within 60 seconds; otherwise the previous host and port are put back
+  and the job says so.
 - A failed job shows its own explanation first, with the last error
   lines under it, instead of the last log line; a long explanation is no
   longer replaced by "The action did not finish on the server".

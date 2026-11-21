@@ -854,13 +854,38 @@ pub fn apply(sink: &ProgressFn, status: &Status, plan: &ApplyPlan) -> Result<(),
     if let Some(why) = &before.machine.not_editable {
         return Err(why.clone());
     }
-    match status.kind() {
-        "docker" => crate::distro::gateway_docker::apply_settings(sink, status, &before, plan)?,
-        #[cfg(not(windows))]
-        "service" => crate::distro::gateway_native::apply_settings(sink, status, &before, plan)?,
-        #[cfg(windows)]
-        "windows-service" => crate::gateway::windows_apply_settings(sink, &before, plan)?,
-        _ => return Err("This gateway's settings cannot be changed from here.".into()),
+    let since = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    apply_kind(sink, status, &before, plan)?;
+    // A new connection counts only once the gateway is connected with it,
+    // else the previous one comes back (a container does this itself).
+    let conn = plan.conn_host.is_some() || plan.conn_port.is_some();
+    if conn && status.kind() != "docker" {
+        let target = format!("{}:{}", plan.conn_host.clone().or_else(|| before.conn.host.clone()).unwrap_or_default(), plan.conn_port.or(before.conn.port).unwrap_or(1883));
+        sink(Progress::Step { name: format!("Checking the gateway connects to SENTIENT at {target}") });
+        let ok = wait_connected(status, since, 60);
+        if ok.is_none() {
+            sink(Progress::Log { line: "This gateway does not say whether it is connected, so the connection could not be checked: see Connected on the card.".into() });
+        }
+        if ok == Some(false) {
+            sink(Progress::Log { line: "Not connected within 60 seconds.".into() });
+            sink(Progress::Step { name: "Putting the previous connection back".into() });
+            let back = ApplyPlan {
+                conn_host: before.conn.host.clone().filter(|_| plan.conn_host.is_some()),
+                conn_port: before.conn.port.filter(|_| plan.conn_port.is_some()),
+                ..ApplyPlan::default()
+            };
+            if !back.is_empty() {
+                let now = crate::gateway::status();
+                let current = read(&now);
+                if let Err(e) = apply_kind(sink, &now, &current, &back) {
+                    sink(Progress::Log { line: format!("The previous connection could not be put back: {e}") });
+                }
+            }
+            return Err(crate::distro::gateway_docker::no_connect_words(&target, false));
+        }
+        if ok == Some(true) {
+            sink(Progress::Log { line: format!("Connected to SENTIENT at {target}.") });
+        }
     }
     sink(Progress::Step { name: "Reading the settings back".into() });
     let status = crate::gateway::status();
@@ -871,6 +896,46 @@ pub fn apply(sink: &ProgressFn, status: &Status, plan: &ApplyPlan) -> Result<(),
     }
     sink(Progress::Done { message: format!("Applied and read back: {}.", plan.names().join(", ")) });
     Ok(())
+}
+
+/// The settings applied by the way the gateway runs.
+fn apply_kind(sink: &ProgressFn, status: &Status, before: &GwSettings, plan: &ApplyPlan) -> Result<(), String> {
+    match status.kind() {
+        "docker" => crate::distro::gateway_docker::apply_settings(sink, status, before, plan),
+        #[cfg(not(windows))]
+        "service" => crate::distro::gateway_native::apply_settings(sink, status, before, plan),
+        #[cfg(windows)]
+        "windows-service" => crate::gateway::windows_apply_settings(sink, before, plan),
+        _ => Err("This gateway's settings cannot be changed from here.".into()),
+    }
+}
+
+/// Whether the service gateway connects within `secs` seconds of `since`
+/// (Unix seconds): its log since then says so (systemd), or its own open
+/// connections do. None: it cannot be known (no log here, and the gateway
+/// does not say).
+fn wait_connected(status: &Status, since: u64, secs: u64) -> Option<bool> {
+    let journal = cfg!(not(windows)) && status.service.is_some();
+    for _ in 0..secs / 3 {
+        std::thread::sleep(std::time::Duration::from_secs(3));
+        #[cfg(not(windows))]
+        if let Some(unit) = &status.service {
+            let at = format!("@{since}");
+            if let Ok(o) = crate::sys::host_command("journalctl").args(["-u", unit, "--since", &at, "-o", "cat", "--no-pager"]).output() {
+                if crate::distro::gateway_docker::connected_in_log(&crate::distro::gateway_docker::strip_ansi(&String::from_utf8_lossy(&o.stdout))) {
+                    return Some(true);
+                }
+            }
+        }
+        #[cfg(windows)]
+        let _ = since;
+        match read(&crate::gateway::status()).connected {
+            Some(true) => return Some(true),
+            None if !journal => return None,
+            _ => {}
+        }
+    }
+    Some(false)
 }
 
 /// Set the local page's administrator password through the gateway's own

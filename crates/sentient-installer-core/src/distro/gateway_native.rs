@@ -648,7 +648,7 @@ pub fn apply_settings(sink: &ProgressFn, status: &Status, before: &crate::gatewa
     }
     match &steps.restart {
         Restart::ByInstall(args) => {
-            sink(Progress::Step { name: "Setting the web page and restarting the gateway once (its own --install)".into() });
+            sink(Progress::Step { name: "Writing the settings and restarting the gateway once (its own --install)".into() });
             let refs: Vec<&str> = args.iter().map(String::as_str).collect();
             let o = crate::sys::host_command(&program).args(&refs).output().map_err(|e| format!("{program}: {e}"))?;
             crate::exec::emit(sink, &o.stdout);
