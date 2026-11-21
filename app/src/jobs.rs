@@ -107,6 +107,9 @@ pub struct Job {
     steps: Vec<SharedString>,
     /// The latest completion message a step reported.
     last_done: Option<SharedString>,
+    /// A note the job finished with (Progress::Warning): its words and what
+    /// the window may offer to do about it.
+    warning: Option<(SharedString, Option<String>)>,
     /// When the current step began.
     step_started: Option<std::time::Instant>,
     /// What the global progress strip calls it ("Stopping ClickHouse on
@@ -159,6 +162,7 @@ impl Job {
             took: None,
             steps: Vec::new(),
             last_done: None,
+            warning: None,
             step_started: None,
             label: None,
             details: None,
@@ -375,6 +379,11 @@ impl Job {
         matches!(self.state, JobState::Failed(_)).then(|| self.diag_view.clone().map(Into::into)).flatten()
     }
 
+    /// The note the job finished with (a Progress::Warning), and its offer.
+    pub fn warning(&self) -> Option<&(SharedString, Option<String>)> {
+        self.warning.as_ref()
+    }
+
     pub fn state(&self) -> &JobState {
         &self.state
     }
@@ -389,6 +398,7 @@ impl Job {
             return;
         }
         self.state = JobState::Idle;
+        self.warning = None;
         self.steps.clear();
         self.log.clear();
         self.log_total = 0;
@@ -451,6 +461,7 @@ impl Job {
         self.began = Some(std::time::Instant::now());
         self.took = None;
         self.last_done = None;
+        self.warning = None;
         self.diagnosis = None;
         self.diag_view = None;
         self.step_started = Some(std::time::Instant::now());
@@ -529,6 +540,7 @@ impl Job {
                 Progress::Log { line } if !line.starts_with(diagnose::DIAG_PREFIX) => Some(crate::ui::strip_ansi(line)),
                 Progress::Step { name } => Some(format!(">> {name}")),
                 Progress::Error { message } => Some(message.clone()),
+                Progress::Warning { message, .. } => Some(format!("Note: {message}")),
                 _ => None,
             };
             if let (Some(t), Ok(mut f)) = (text, file.lock()) {
@@ -629,6 +641,10 @@ impl Job {
             // itself ends only when its work returns, with the last message.
             Progress::Done { message } => self.last_done = Some(message.into()),
             Progress::Error { message } => self.push_line(message.into()),
+            Progress::Warning { message, offer } => {
+                self.push_line(format!("Note: {message}").into());
+                self.warning = Some((message.into(), offer));
+            }
         }
     }
 

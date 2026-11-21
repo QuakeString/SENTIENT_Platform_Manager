@@ -60,6 +60,10 @@ pub struct Connection {
     pub credential: String,
     /// The token or password: "set", or `••••` and its last four characters.
     pub secret_hint: Option<String>,
+    /// SHA-256 (hex) of the access token, to find the gateway among
+    /// SENTIENT's devices without the token leaving the machine.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_sha256: Option<String>,
     pub username: Option<String>,
     pub client_id: Option<String>,
     pub tls: bool,
@@ -322,6 +326,7 @@ fn read_config(s: &mut GwSettings, v: &Value) {
         host: str_of(&p, "host"),
         port: p.get("port").and_then(Value::as_u64).map(|x| x as u16),
         secret_hint: if credential == "usernamePassword" { password.as_deref().and_then(hint) } else { token.as_deref().and_then(hint) },
+        token_sha256: token.as_deref().filter(|t| !t.is_empty()).map(sha256_hex),
         username: str_of(&sec, "username"),
         client_id: str_of(&sec, "clientId"),
         tls: credential.starts_with("tls") || sec.get("caCert").is_some_and(|c| c.as_str().is_some_and(|c| !c.is_empty())),
@@ -507,6 +512,7 @@ pub fn apply_env(s: &mut GwSettings, env: &[String], in_container: bool) {
         // The image's placeholder is no token (the file's then counts).
         if !t.eq_ignore_ascii_case("YOUR_ACCESS_TOKEN") && !t.starts_with('<') {
             s.conn.secret_hint = hint(t);
+            s.conn.token_sha256 = Some(sha256_hex(t));
             s.conn.from_env = true;
         }
     }
@@ -888,23 +894,69 @@ pub fn apply(sink: &ProgressFn, status: &Status, plan: &ApplyPlan) -> Result<(),
     }
     // Connected, the gateway takes the connection SENTIENT keeps for it
     // (its gateway configuration) and writes it to its file: the one typed
-    // here is then not kept, and the reason is SENTIENT, not this Apply.
+    // here is then not kept. The gateway connected (it switches only to a
+    // connection that works), so this is a note with the result, not a
+    // failure, with the offer to save the typed one in SENTIENT.
+    let mut sentient_kept = false;
     if conn {
         if let Some((h, p)) = platform_took_connection(status, since, 20) {
-            let target = format!("{}:{}", plan.conn_host.clone().or_else(|| before.conn.host.clone()).unwrap_or_default(), plan.conn_port.or(before.conn.port).unwrap_or(1883));
-            let via = status.kind() == "docker" && plan.conn_host.as_deref().is_some_and(crate::distro::gateway_docker::is_loopback) && !crate::distro::gateway_docker::dials_machine(status.version.as_deref());
-            return Err(platform_owns_words(&target, &h, p, via));
+            let typed_host = plan.conn_host.clone().or_else(|| before.conn.host.clone()).unwrap_or_default();
+            let typed_port = plan.conn_port.or(before.conn.port).unwrap_or(1883);
+            let target = format!("{typed_host}:{typed_port}");
+            let dials = crate::distro::gateway_docker::dials_machine(status.version.as_deref());
+            let bridge = status.kind() == "docker" && before.machine.network.as_deref().is_some_and(|n| !matches!(n, "host" | "none"));
+            let via = bridge && crate::distro::gateway_docker::is_loopback(&typed_host) && !dials;
+            let offer = SentientConnectionOffer {
+                typed_host: typed_host.clone(),
+                typed_port,
+                write_host: if via { crate::distro::gateway_docker::HOST_ALIAS.to_string() } else { typed_host.clone() },
+                sentient_host: h.clone(),
+                sentient_port: p,
+                token_sha256: before.conn.token_sha256.clone(),
+            };
+            sink(Progress::Warning { message: platform_owns_words(&target, &h, p, via), offer: serde_json::to_string(&offer).ok().map(|j| format!("{SENTIENT_CONNECTION_OFFER}{j}")) });
+            sentient_kept = true;
         }
     }
     sink(Progress::Step { name: "Reading the settings back".into() });
     let status = crate::gateway::status();
     let after = read(&status);
-    let wrong = mismatches(plan, &after);
+    // The connection is SENTIENT's now (said above): the rest is checked.
+    let checked = if sentient_kept { ApplyPlan { conn_host: None, conn_port: None, ..plan.clone() } } else { plan.clone() };
+    let wrong = mismatches(&checked, &after);
     if !wrong.is_empty() {
         return Err(format!("Applied, but the gateway reads back {}.", wrong.join("; ")));
     }
     sink(Progress::Done { message: format!("Applied and read back: {}.", plan.names().join(", ")) });
     Ok(())
+}
+
+/// The `offer` of a [`Progress::Warning`] for a connection SENTIENT kept:
+/// this prefix, then [`SentientConnectionOffer`] as JSON.
+pub const SENTIENT_CONNECTION_OFFER: &str = "sentient-connection:";
+
+/// What the window needs to save the typed connection in SENTIENT's
+/// gateway configuration (Update in SENTIENT).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SentientConnectionOffer {
+    /// As typed here (shown).
+    pub typed_host: String,
+    pub typed_port: u16,
+    /// What SENTIENT is given: as typed, or host.docker.internal for
+    /// localhost in a container on its own network with a gateway that does
+    /// not dial the machine itself.
+    pub write_host: String,
+    /// The connection SENTIENT kept.
+    pub sentient_host: String,
+    pub sentient_port: u16,
+    /// Finds the gateway's device in SENTIENT.
+    pub token_sha256: Option<String>,
+}
+
+/// SHA-256 of `s`, hex.
+pub fn sha256_hex(s: &str) -> String {
+    use sha2::Digest as _;
+    sha2::Sha256::digest(s.as_bytes()).iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// Why a connection set here was not kept: SENTIENT sent the one it keeps
@@ -1006,7 +1058,77 @@ pub fn set_password(status: &Status, password: &str) -> Result<String, String> {
         "windows-service" => run_with_stdin(&crate::gateway::windows_program(), &["--ui-password", "-"], password)?,
         _ => return Err("There is no gateway here whose password can be set.".into()),
     };
+    // The real effect: the page signs in with it where it is reached.
+    let now = read(&crate::gateway::status());
+    if now.ui.enabled {
+        let (addr, port) = match now.ui.listen.rsplit_once(':') {
+            Some((a, p)) => (a.trim_matches(['[', ']']).to_string(), p.parse().unwrap_or(crate::gateway::UI_PORT)),
+            None => ("127.0.0.1".to_string(), crate::gateway::UI_PORT),
+        };
+        let host = if matches!(addr.as_str(), "0.0.0.0" | "::" | "") { "127.0.0.1".to_string() } else { addr };
+        let mut last = String::new();
+        for _ in 0..5 {
+            match page_sign_in(&host, port, password) {
+                Ok(()) => return Ok(format!("The web page's password is changed, and the page signs in with it as admin on port {port}. Every browser signed in to it before is signed out.")),
+                Err(e) => last = e,
+            }
+            std::thread::sleep(std::time::Duration::from_secs(2));
+        }
+        return Err(format!("The password was set, but signing in to the page on port {port} with it did not work: {last}"));
+    }
     Ok("The web page's password is changed; every browser signed in to it is signed out.".into())
+}
+
+/// Sign in to the gateway's local page at `host:port` as admin with
+/// `password` (HTTPS, any certificate: it is the gateway's own; plain HTTP
+/// when the page does not speak TLS there). Ok: signed in.
+pub fn page_sign_in(host: &str, port: u16, password: &str) -> Result<(), String> {
+    use std::io::{Read as _, Write as _};
+    let body = serde_json::json!({ "username": crate::gateway::UI_USER, "password": password }).to_string();
+    let request = format!("POST /api/login HTTP/1.1\r\nHost: {host}:{port}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+    let connect = || {
+        use std::net::ToSocketAddrs as _;
+        let addr = (host, port).to_socket_addrs().map_err(|e| e.to_string())?.next().ok_or("no address")?;
+        let tcp = std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_secs(4)).map_err(|e| format!("nothing answers on {host}:{port} ({e})"))?;
+        tcp.set_read_timeout(Some(std::time::Duration::from_secs(8))).ok();
+        Ok::<_, String>(tcp)
+    };
+    let mut answer = String::new();
+    // HTTPS first (the page on any address but loopback).
+    let tls = (|| -> Result<String, String> {
+        let provider = std::sync::Arc::new(rustls::crypto::ring::default_provider());
+        let config = rustls::ClientConfig::builder_with_provider(provider.clone())
+            .with_safe_default_protocol_versions()
+            .map_err(|e| e.to_string())?
+            .dangerous()
+            .with_custom_certificate_verifier(std::sync::Arc::new(AnyCert(provider)))
+            .with_no_client_auth();
+        let name = rustls::pki_types::ServerName::try_from("localhost".to_string()).map_err(|e| e.to_string())?;
+        let conn = rustls::ClientConnection::new(std::sync::Arc::new(config), name).map_err(|e| e.to_string())?;
+        let mut s = rustls::StreamOwned::new(conn, connect()?);
+        s.write_all(request.as_bytes()).map_err(|e| e.to_string())?;
+        let mut out = String::new();
+        let _ = s.read_to_string(&mut out);
+        if out.is_empty() { Err("no answer over HTTPS".into()) } else { Ok(out) }
+    })();
+    match tls {
+        Ok(a) => answer = a,
+        Err(_) => {
+            let mut tcp = connect()?;
+            tcp.write_all(request.as_bytes()).map_err(|e| e.to_string())?;
+            let _ = tcp.read_to_string(&mut answer);
+        }
+    }
+    let status: u16 = answer.split_whitespace().nth(1).and_then(|c| c.parse().ok()).unwrap_or(0);
+    match status {
+        200..=299 => Ok(()),
+        0 => Err(format!("the page on {host}:{port} gave no answer")),
+        _ => {
+            let body = answer.split("\r\n\r\n").nth(1).unwrap_or("");
+            let msg = serde_json::from_str::<Value>(body).ok().and_then(|v| v.get("message").and_then(Value::as_str).map(str::to_string));
+            Err(msg.unwrap_or_else(|| format!("the page answered {status}")))
+        }
+    }
 }
 
 /// Run `program args` with `input` as one line on its standard input:

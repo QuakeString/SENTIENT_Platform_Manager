@@ -51,7 +51,7 @@ cross_agent() { # <target> <image> <release name> <built file> [setup shell]
   if docker run --rm -u "$(id -u):$(id -g)" \
       -v "$work/src:/src" -v "$tc_dir:/toolchain:ro" -v "$cache/cargo:/cache/cargo" \
       -v "$cache/target-$target:/t" -v "$cache/extra-$target:/extra" \
-      -e HOME=/tmp -e CARGO_HOME=/cache/cargo -e PATH="/toolchain/bin:/usr/local/bin:/usr/bin:/bin" \
+      -e HOME=/tmp ${CARGO_BUILD_JOBS:+-e CARGO_BUILD_JOBS=$CARGO_BUILD_JOBS} -e CARGO_HOME=/cache/cargo -e PATH="/toolchain/bin:/usr/local/bin:/usr/bin:/bin" \
       -e SPM_VERSION="$version" -e SPM_COMMIT="$short" -e CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-6}" \
       -w /src/app "$image" sh -c "set -e; $setup; cargo build --release --locked --no-default-features --target $target --target-dir /t"; then
     cp "$cache/target-$target/$target/release/$file" "$agents/$name"
@@ -70,7 +70,7 @@ cross_agent aarch64-unknown-linux-musl ghcr.io/cross-rs/aarch64-unknown-linux-mu
 docker run --rm \
   -v "$work:/w" -v "$cache/cargo:/cache/cargo" -v "$cache/target:/cache/target" -v "$out:/out" \
   -u builder -e HOME=/home/builder \
-  -e CARGO_HOME=/cache/cargo -e SPM_CARGO_TARGET_DIR=/cache/target \
+  ${CARGO_BUILD_JOBS:+-e CARGO_BUILD_JOBS=$CARGO_BUILD_JOBS} -e CARGO_HOME=/cache/cargo -e SPM_CARGO_TARGET_DIR=/cache/target \
   -e SPM_VERSION="$version" -e SPM_COMMIT="$short" -e SPM_PREBUILT_AGENTS=/w/agents \
   spm-archbuild:latest bash -c 'cd /w/src/packaging/arch && BUILDDIR=/tmp/build PKGDEST=/out SRCDEST=/tmp/src makepkg -f --noconfirm --nodeps'
 ls -la "$out"/sentient-platform-manager-"$pkgver"-"$pkgrel"-*.pkg.tar.zst

@@ -37,7 +37,9 @@ use crate::ui::{self, SettingRow, Tone};
 
 /// What the card asks its page to run.
 pub enum Work {
-    Apply(ApplyPlan),
+    /// The plan, and the page's new password to set after it (the page
+    /// turned on where its default password cannot sign in).
+    Apply(ApplyPlan, Option<String>),
     Password(String),
     Test,
 }
@@ -87,6 +89,9 @@ pub struct GatewaySettingsCard {
     edit: Edit,
     addr: Option<Entity<InputState>>,
     port: Option<Entity<InputState>>,
+    /// The page's new password and again (see needs_password).
+    new_pw: Option<Entity<InputState>>,
+    new_pw2: Option<Entity<InputState>>,
     base_addr: String,
     base_port: String,
     /// The connection to SENTIENT (host, MQTT port), editable while the
@@ -119,6 +124,8 @@ impl GatewaySettingsCard {
             edit: Edit::default(),
             addr: None,
             port: None,
+            new_pw: None,
+            new_pw2: None,
             base_addr: String::new(),
             base_port: String::new(),
             conn_host: None,
@@ -184,6 +191,13 @@ impl GatewaySettingsCard {
         self.base_addr = addr.clone();
         self.base_port = port.to_string();
         self.addr = Some(self.input(addr, "192.168.1.20", window, cx));
+        let pw = cx.new(|cx| InputState::new(window, cx).masked(true));
+        let pw2 = cx.new(|cx| InputState::new(window, cx).masked(true));
+        for i in [&pw, &pw2] {
+            self._subs.push(cx.subscribe(i, |_, _, _: &InputEvent, cx| cx.notify()));
+        }
+        self.new_pw = Some(pw);
+        self.new_pw2 = Some(pw2);
         self.port = Some(self.input(port.to_string(), "8642", window, cx));
         self.base_conn_host = s.conn.host.clone().unwrap_or_default();
         self.base_conn_port = s.conn.port.map(|p| p.to_string()).unwrap_or_default();
@@ -214,6 +228,10 @@ impl GatewaySettingsCard {
                     self.edit.restart_on = !self.base.restart_on;
                     self.edit.level = Some(2);
                     if v == "apply" {
+                        // A page password where Apply asks for one.
+                        for i in [self.new_pw.clone(), self.new_pw2.clone()].into_iter().flatten() {
+                            i.update(cx, |i, cx| i.set_value("screens-password", window, cx));
+                        }
                         cx.on_next_frame(window, |c, window, cx| c.apply(window, cx));
                     }
                 }
@@ -274,6 +292,16 @@ impl GatewaySettingsCard {
                 return Some((0, "The MQTT port needs a number from 1 to 65535.".into()));
             }
         }
+        if self.needs_password() {
+            let pw = self.new_pw.as_ref().map(|i| i.read(cx).value().to_string()).unwrap_or_default();
+            let pw2 = self.new_pw2.as_ref().map(|i| i.read(cx).value().to_string()).unwrap_or_default();
+            if pw.chars().count() < 8 {
+                return Some((1, "Give the page its own password (8 characters or more): its default one signs in only on the gateway's own machine.".into()));
+            }
+            if pw != pw2 {
+                return Some((1, "The two passwords differ.".into()));
+            }
+        }
         if self.edit.ui_on {
             let port = Self::text(&self.port, cx);
             if !port.parse::<u16>().is_ok_and(|p| p > 0) {
@@ -289,6 +317,18 @@ impl GatewaySettingsCard {
             }
         }
         None
+    }
+
+    /// The page goes on (or to all interfaces) where a browser reaches it
+    /// over the network (a Docker gateway always does, through its published
+    /// port), and its default password, which signs in only on the
+    /// gateway's own machine, is still in force: the same Apply sets one.
+    fn needs_password(&self) -> bool {
+        let Some(Ok(s)) = &self.settings else { return false };
+        let (b, e) = (&self.base, &self.edit);
+        let turning = e.ui_on && (!b.ui_on || e.listen_mode != b.listen_mode);
+        let from_network = s.machine.kind == "docker" || e.listen_mode != 0;
+        turning && from_network && s.ui.password_set != Some(true) && s.caps.ui_password
     }
 
     fn plan(&self, cx: &App) -> ApplyPlan {
@@ -344,7 +384,8 @@ impl GatewaySettingsCard {
             return;
         }
         self.filled_from = None;
-        (self.run)(Work::Apply(plan), window, cx);
+        let pw = self.needs_password().then(|| self.new_pw.as_ref().map(|i| i.read(cx).value().to_string())).flatten();
+        (self.run)(Work::Apply(plan, pw), window, cx);
     }
 
     fn open_password(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -761,6 +802,34 @@ impl GatewaySettingsCard {
             }
         } else if !can_page && s.ui.enabled {
             rows.push(plain(theme, "Listen on", None, s.ui.listen.clone()));
+        }
+        if self.needs_password() {
+            if let (Some(pw), Some(pw2)) = (self.new_pw.clone(), self.new_pw2.clone()) {
+                let short = { let v = pw.read(cx).value().to_string(); (!v.is_empty() && v.chars().count() < 8).then(|| "8 characters or more".to_string()) };
+                let differs = { let (a, b) = (pw.read(cx).value().to_string(), pw2.read(cx).value().to_string()); (!b.is_empty() && a != b).then(|| "Not the same".to_string()) };
+                rows.push(SettingRow {
+                    label: "New password".into(),
+                    help: Some("The page signs in as admin. Its default password works only on the gateway's own machine, so the page gets its own password with this Apply (set through the gateway's own command, never on a command line or in a log).".into()),
+                    desc: Some("Needed: the page is reached over the network".into()),
+                    restart: false,
+                    changed: true,
+                    control: ui::field_input(theme, &pw, None, short, true, window, cx).into_any_element(),
+                    wide: false,
+                    current: None,
+                    first: false,
+                });
+                rows.push(SettingRow {
+                    label: "Again".into(),
+                    help: None,
+                    desc: None,
+                    restart: false,
+                    changed: true,
+                    control: ui::field_input(theme, &pw2, None, differs, true, window, cx).into_any_element(),
+                    wide: false,
+                    current: None,
+                    first: false,
+                });
+            }
         }
         let names = if s.ui.hostnames.is_empty() { "none".to_string() } else { s.ui.hostnames.join(", ") };
         rows.push(plain(

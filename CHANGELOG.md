@@ -33,6 +33,18 @@ refreshes that repository's Downloads table.
   says so and where to change it. Messages never name the gateway's legacy
   file; a test gates it.
 - A gateway install says whether the gateway connected to SENTIENT.
+- When SENTIENT's saved connection replaces the one set on Gateway ›
+  Connection and the gateway is connected with it, Apply ends as done with
+  a note, not as a failure, and offers Update in SENTIENT: sign in once
+  as the gateway's tenant administrator (the password is never stored,
+  the session lasts until the Platform Manager closes) and the typed
+  connection is saved in SENTIENT's gateway configuration, read back,
+  and checked on the gateway.
+- A native install (Windows, Linux) listens on the MQTT and CoAP ports
+  chosen in Setup: they are written to SENTIENT's connectivity settings
+  before its first start. Before, it always used 1883 and 5683.
+- A database that refuses its password is said as such ("PostgreSQL
+  refused the password for postgres"), not as a cancelled password prompt.
 - A Docker gateway from 4.18.3 (it dials the machine itself for localhost
   in a container on its own network) gets localhost / 127.0.0.1 written
   as typed; an older one gets host.docker.internal. When SENTIENT's saved

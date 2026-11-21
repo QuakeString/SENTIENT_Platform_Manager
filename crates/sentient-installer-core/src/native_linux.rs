@@ -524,13 +524,14 @@ pub fn deploy(sink: ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
            echo '>> note: the schema installer returned an error. If the database was already installed this is expected. Continuing.'\n\
          fi\n\
          {stock_fix}\
+         runuser -u postgres -- psql -p {pgport} -d {db} -v ON_ERROR_STOP=1 -qAt -c {conn}\n\
          echo '>> Registering the SENTIENT service'\n\
          cat > {UNIT_FILE} <<'SENTIENTEOF'\n{unit}SENTIENTEOF\n\
          systemctl daemon-reload\n\
          systemctl enable {APP_UNIT} >/dev/null 2>&1\n\
          systemctl restart {APP_UNIT}\n",
         env = env_file_body(cfg), unit = unit_body(cfg), inst = shq(&install_dir), url = shq(&db_url), access = admin_group_script(),
-        pgport = cfg.pg_port, db = shq(&cfg.db_name),
+        pgport = cfg.pg_port, db = shq(&cfg.db_name), conn = shq(&crate::native::connectivity_sql(cfg.mqtt_port, cfg.coap_port)),
         stock_fix = if cfg.flavor == stack::Flavor::Stock {
             format!(
                 "runuser -u postgres -- psql -p {} -d {} -v ON_ERROR_STOP=1 -qAt -c {}\n",

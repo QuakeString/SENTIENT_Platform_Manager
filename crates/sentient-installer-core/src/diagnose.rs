@@ -540,6 +540,7 @@ pub struct Rule {
 pub const RULES: &[Rule] = &[
     Rule { id: "ssh-host-key", matches: ssh_host_key },
     Rule { id: "ssh-network", matches: ssh_network },
+    Rule { id: "db-password", matches: db_password },
     Rule { id: "auth-cancelled", matches: auth_cancelled },
     Rule { id: "not-admin", matches: not_admin },
     Rule { id: "cwd-invalid", matches: cwd_invalid },
@@ -695,6 +696,36 @@ fn win_replace_file(_: &Evidence, t: &str) -> Option<Diagnosis> {
                 "Remove-Item -Force 'C:\\ProgramData\\SENTIENT\\Platform Manager\\remote\\sentient-platform-manager.exe'",
             ),
         ],
+    )
+}
+
+/// A database refused the password it was given (PostgreSQL's "password
+/// authentication failed for user …"): not an administrator prompt.
+fn db_password(_: &Evidence, t: &str) -> Option<Diagnosis> {
+    let line = t.lines().find(|l| l.contains("password authentication failed for user"))?;
+    let user = line
+        .split("for user")
+        .nth(1)
+        .map(|u| {
+            let u = u.trim_start().trim_start_matches(['\\', '"']);
+            u.split(|c: char| c == '"' || c == '\\' || c.is_whitespace()).next().unwrap_or("").trim_end_matches('.').to_string()
+        })
+        .filter(|u| !u.is_empty())
+        .unwrap_or_else(|| "the database user".into());
+    let kept = t.contains("was kept from an earlier install");
+    diag(
+        "db-password",
+        format!("PostgreSQL refused the password for {user}."),
+        if kept {
+            "This computer's PostgreSQL is one an earlier install left, and it keeps its own password: the one entered is not it."
+        } else {
+            "The password given does not match the one this PostgreSQL has for that user."
+        },
+        vec![steps(if kept {
+            "Enter the earlier install's PostgreSQL admin password, or start fresh (Setup › the kept database › Start fresh), then try again."
+        } else {
+            "Check the password and try again."
+        })],
     )
 }
 
@@ -1448,6 +1479,16 @@ mod tests {
         assert_eq!(d.id, "data-permission");
         assert!(d.cause.contains("/var/lib/postgres/data"), "{}", d.cause);
         assert!(matches!(&d.fixes[0], Fix::Command { command, .. } if command == "sudo chown -R postgres:postgres /var/lib/postgres/data && sudo chmod 700 /var/lib/postgres/data"));
+    }
+
+    #[test]
+    fn a_refused_database_password_is_not_a_cancelled_prompt() {
+        let d = diagnose(&Evidence::from_text("psql: psql: error: connection to server at \"127.0.0.1\", port 5432 failed: FATAL:  password authentication failed for user \"postgres\". This computer's PostgreSQL was kept from an earlier install: enter that install's PostgreSQL admin password.", &[]));
+        assert_eq!(d.id, "db-password");
+        assert_eq!(d.cause, "PostgreSQL refused the password for postgres.");
+        assert!(d.why.contains("earlier install"), "{}", d.why);
+        let d = diagnose(&Evidence::from_text("Authorization failed", &[]));
+        assert_eq!(d.id, "auth-cancelled");
     }
 
     #[test]

@@ -199,6 +199,7 @@ fn print_plain(p: Progress) {
         Progress::Percent { .. } => {}
         Progress::Done { message } => println!("✓ {message}"),
         Progress::Error { message } => eprintln!("✗ {message}"),
+        Progress::Warning { message, .. } => println!("! {message}"),
     }
 }
 
@@ -559,6 +560,9 @@ fn run_job(args: &[String]) -> i32 {
                 sentient_installer_core::gateway_settings::set_password(&gateway::status(), &pw).map(|m| sink(sentient_installer_core::progress::Progress::Done { message: m }))
             }
             "gateway-test" => sentient_installer_core::gateway_settings::test_connection(&gateway::status()).map(|m| sink(sentient_installer_core::progress::Progress::Done { message: m })),
+            // Debug builds: Update in SENTIENT without the window.
+            #[cfg(all(debug_assertions, feature = "gui"))]
+            "gateway-sc-debug" => std::process::exit(crate::manager::sentient_connection::debug_run(args.get(1).map(String::as_str).unwrap_or("{}"))),
             _ => Err(USAGE.into()),
         };
         return match result {

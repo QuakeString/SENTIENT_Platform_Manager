@@ -296,7 +296,7 @@ impl Reply {
     }
 
     /// SENTIENT's own message, or the status in words.
-    fn message(&self) -> String {
+    pub(crate) fn message(&self) -> String {
         let msg = serde_json::from_str::<Value>(&self.body).ok().and_then(|v| v.get("message").and_then(|m| m.as_str()).map(str::to_string));
         msg.filter(|m| !m.trim().is_empty()).unwrap_or_else(|| match self.status {
             401 => "SENTIENT refused the sign-in.".into(),
@@ -908,6 +908,19 @@ impl Target {
     /// Sign in with `creds`, read the licence's versions, and forget both:
     /// `creds` is consumed (and wiped) here, and the token is not kept.
     /// Blocking.
+    /// Any call to SENTIENT's REST API there (this computer's web port, or
+    /// the server's agent). Blocking.
+    pub(crate) fn api(&self, req: &Request) -> Result<Reply, String> {
+        self.send(req)
+    }
+
+    /// Sign in with `creds` (wiped once used): SENTIENT's token. Blocking.
+    pub(crate) fn sign_in_with(&self, creds: Credentials) -> Result<String, String> {
+        let signed = self.sign_in(&creds.email, &creds.password);
+        drop(creds);
+        signed.map(|(t, _)| t)
+    }
+
     pub fn check_licence(&self, creds: Credentials) -> Result<Licence, String> {
         let signed = self.sign_in(&creds.email, &creds.password);
         drop(creds);

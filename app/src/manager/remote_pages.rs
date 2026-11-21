@@ -1393,7 +1393,16 @@ impl RemotePages {
             _ => None,
         };
         let _ = migrating;
-        Some(crate::manager::jobview::JobView::new("rjob", title, &self.job).actions(std::iter::once(back).chain(retry)).render(cx))
+        // SENTIENT kept its own saved connection for the gateway: offer to
+        // save the typed one there.
+        let update = (self.kind == Kind::Gateway)
+            .then(|| crate::manager::sentient_connection::offer_of(job.warning()))
+            .flatten()
+            .map(|offer| {
+                let inst = self.inst.clone();
+                crate::manager::sentient_connection::button("rgw-sc-update", crate::licence::Target::Remote(inst.clone()), inst.name.clone(), crate::manager::sentient_connection::GatewayAt::Remote(inst), offer)
+            });
+        Some(crate::manager::jobview::JobView::new("rjob", title, &self.job).actions(std::iter::once(back).chain(retry).chain(update)).render(cx))
     }
 
     fn failed(theme: &gpui_kit::component::Theme, e: &str) -> Div {
@@ -3203,7 +3212,7 @@ impl RemotePages {
         }
         self.shown_job = Some(Kind::Gateway);
         match work {
-            Work::Apply(plan) => {
+            Work::Apply(plan, page_pw) => {
                 self.job_label = Some(format!("Applying the gateway's settings on {}", inst.name).into());
                 let kind = match &self.gw_settings {
                     Read::Got(s) => s.machine.kind.clone(),
@@ -3211,7 +3220,11 @@ impl RemotePages {
                 };
                 let names = format!("{}. {}", plan.names().join(", "), plan.restart_words(&kind));
                 self.job.update(cx, |job, cx| {
-                    job.set_plan(vec![crate::jobplan::connect(), PlanStep::new("Applying the settings").detail(names).weight(3.), PlanStep::new("Reading the settings back")]);
+                    let mut steps = vec![crate::jobplan::connect(), PlanStep::new("Applying the settings").detail(names).weight(3.), PlanStep::new("Reading the settings back")];
+                    if page_pw.is_some() {
+                        steps.push(PlanStep::new("Setting the page's password").detail("Then signing in to the page with it"));
+                    }
+                    job.set_plan(steps);
                     job.set_label(format!("Applying the gateway's settings on {}", inst.name));
                     job.set_on_page(true);
                     job.set_instance(inst.id.clone(), inst.name.clone(), inst.color.clone());
@@ -3233,7 +3246,14 @@ impl RemotePages {
                             let id = remote::start_job(&inst, &["gateway-apply", &file])?;
                             let r = remote::follow(&inst, &id, &sink);
                             remote::remove_file(&inst, &file);
-                            r
+                            r?;
+                            // The page's own password, then a real sign-in with it (on the server).
+                            if let Some(pw) = page_pw {
+                                sink(Progress::Step { name: "Setting the page's password".into() });
+                                let m = remote::gateway_ui_password(&inst, &pw)?;
+                                sink(Progress::Done { message: m });
+                            }
+                            Ok(())
                         },
                         cx,
                     )

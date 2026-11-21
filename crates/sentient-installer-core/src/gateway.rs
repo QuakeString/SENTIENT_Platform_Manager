@@ -19,6 +19,10 @@ use crate::releases::{self, Release};
 
 /// The local page's port when the gateway's settings name none.
 pub const UI_PORT: u16 = 8642;
+/// The local page's administrator user name on a fresh gateway (the
+/// gateway's local-ui DEFAULT_USERNAME). Its default password ("invenia")
+/// signs in only on the gateway's own machine, to set a real one.
+pub const UI_USER: &str = "admin";
 pub const IMAGE: &str = "quakestring/sentient-gateway-rs";
 pub const CONTAINER: &str = "sentient-gateway";
 

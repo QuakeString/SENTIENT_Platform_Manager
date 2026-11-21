@@ -118,8 +118,10 @@ impl JobView {
         let job = self.job.read(cx);
         let state = job.state().clone();
         let running = matches!(state, JobState::Running);
+        let warning = job.warning().map(|(m, _)| m.clone()).filter(|_| matches!(state, JobState::Done(_)));
         let (pill, tone) = self.pill.clone().unwrap_or(match &state {
             JobState::Running | JobState::Idle => ("Running".into(), Tone::Neutral),
+            JobState::Done(_) if warning.is_some() => ("Done".into(), Tone::Warn),
             JobState::Done(_) => ("Done".into(), Tone::Good),
             JobState::Failed(_) => ("Failed".into(), Tone::Bad),
         });
@@ -180,7 +182,14 @@ impl JobView {
         let result: Option<AnyElement> = match (&state, self.result) {
             (JobState::Running | JobState::Idle, _) => None,
             (_, Some(el)) => Some(el),
-            (JobState::Done(m), None) => Some(ui::outcome(theme, Tone::Good, m.to_string()).into_any_element()),
+            (JobState::Done(m), None) => Some(match &warning {
+                Some(w) => v_flex()
+                    .gap(px(8.))
+                    .child(ui::outcome(theme, Tone::Good, m.to_string()))
+                    .child(ui::outcome(theme, Tone::Warn, w.to_string()))
+                    .into_any_element(),
+                None => ui::outcome(theme, Tone::Good, m.to_string()).into_any_element(),
+            }),
             (JobState::Failed(m), None) => {
                 let (head, detail) = crate::remote::split_failure(m);
                 // What went wrong and the fix, when it was diagnosed.
