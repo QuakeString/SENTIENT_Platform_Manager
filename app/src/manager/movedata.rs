@@ -13,6 +13,7 @@
 //! while open, for the instance it was opened on, the menu keeps that page
 //! selected, and its back arrow returns there (crate::manager's SubFlow).
 
+use gpui_kit::component::scroll::ScrollableElement as _;
 use std::collections::HashMap;
 
 use gpui_kit::assets::IconName as Lucide;
@@ -1151,7 +1152,7 @@ impl MoveFlow {
             .text_color(theme.muted_foreground)
             .child(div().flex_1().child("Name"))
             .child(h_flex().w(px(120.)).justify_end().child("Free space"));
-        let mut rows = v_flex().id("md-rows").max_h(px(5. * 34.)).overflow_y_scroll();
+        let mut rows = v_flex().id("md-rows").max_h(px(5. * 34.)).overflow_y_scroll() /* scroll-own: a box sized by its content or scrolled from code; its own bar is drawn beside it where it has a handle */;
         if let Some(input) = &p.new_name {
             rows = rows.child(
                 h_flex()
@@ -1506,7 +1507,7 @@ impl Render for MoveFlow {
             let (t, on, w) = (self.target.clone(), self.on.clone(), self.windows);
             self.locations = Some(cx.new(|cx| LocationsCard::new(t, on, w, cx)));
         }
-        let page = v_flex().id("page").flex_1().min_w_0().h_full().overflow_y_scroll().p(px(ui::PAGE_PAD)).gap(px(ui::GAP)).bg(theme.muted);
+        let page = v_flex().id("page").flex_1().min_w_0().h_full().overflow_y_scrollbar().p(px(ui::PAGE_PAD)).gap(px(ui::GAP)).bg(theme.muted);
         // The run keeps the flow's title (the menu keeps the page it was
         // opened from); its back arrow closes it once the move has ended.
         if self.stage == Stage::Run {

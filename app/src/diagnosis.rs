@@ -16,6 +16,7 @@
 //! - The real last error lines always show; the full log and "Copy details"
 //!   are one click away. Retry stays the host's own button.
 
+use gpui_kit::component::scroll::ScrollableElement as _;
 use std::rc::Rc;
 
 use gpui_kit::component::button::ButtonVariants as _;
@@ -210,7 +211,7 @@ impl Render for DiagnosisView {
                                 v_flex()
                                     .id("diag-last")
                                     .max_h(px(160.))
-                                    .overflow_y_scroll()
+                                    .overflow_y_scroll() /* scroll-own: a box sized by its content or scrolled from code; its own bar is drawn beside it where it has a handle */
                                     .px_2()
                                     .py_1p5()
                                     .rounded(theme.radius)
@@ -226,7 +227,7 @@ impl Render for DiagnosisView {
                             v_flex()
                                 .id("diag-full-log")
                                 .max_h(px(260.))
-                                .overflow_y_scroll()
+                                .overflow_y_scroll() /* scroll-own: a box sized by its content or scrolled from code; its own bar is drawn beside it where it has a handle */
                                 .px_2()
                                 .py_1p5()
                                 .rounded(theme.radius)

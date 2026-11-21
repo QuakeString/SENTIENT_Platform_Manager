@@ -8,6 +8,7 @@
 //! the folder in use holds backups, a second step asks whether they move
 //! along or stay (B4). The caller saves the choice.
 
+use gpui_kit::component::scroll::ScrollableElement as _;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
@@ -530,7 +531,7 @@ impl Render for FolderChooser {
             .text_color(theme.muted_foreground)
             .child(div().flex_1().child("Name"))
             .child("Free space");
-        let mut rows = v_flex().id("fc-rows").flex_1().min_h_0().overflow_y_scroll().track_scroll(&self.rows_scroll).child(crate::ui::layout_probe("fc-rows"));
+        let mut rows = v_flex().id("fc-rows").flex_1().min_h_0().track_scroll(&self.rows_scroll).overflow_y_scroll() /* scroll-own: a box sized by its content or scrolled from code; its own bar is drawn beside it where it has a handle */.child(crate::ui::layout_probe("fc-rows"));
         if let Some(input) = &self.new_name {
             rows = rows.child(
                 h_flex()

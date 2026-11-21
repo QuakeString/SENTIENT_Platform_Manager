@@ -7,6 +7,7 @@
 //! Windows, a terminal elsewhere. The text is the documentation's
 //! (remote-instances).
 
+use gpui_kit::component::scroll::ScrollableElement as _;
 use std::rc::Rc;
 
 use gpui_kit::component::{ActiveTheme as _, Icon, IconName, h_flex, v_flex};
@@ -322,8 +323,8 @@ pub fn pane(c: &Ctx, cx: &App) -> AnyElement {
                     .id("guide-steps")
                     .absolute()
                     .inset_0()
-                    .overflow_y_scroll()
                     .track_scroll(&c.scroll)
+                    .overflow_y_scroll() /* scroll-own: a box sized by its content or scrolled from code; its own bar is drawn beside it where it has a handle */
                     .px(px(20.))
                     .pt(px(16.))
                     .pb(px(20.))

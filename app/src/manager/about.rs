@@ -6,6 +6,7 @@
 //! then preferences and support, the company with the build and the
 //! third-party licences, and where it lives as a quiet footer.
 
+use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::{
     ActiveTheme, Icon, IconName, Disableable as _, h_flex, v_flex, button::ButtonVariants as _,
 };
@@ -450,7 +451,7 @@ impl Render for AboutPage {
             .flex_1()
             .min_w_0()
             .h_full()
-            .overflow_y_scroll()
+            .overflow_y_scrollbar()
             .p(px(crate::ui::PAGE_PAD))
             .bg(theme.muted)
             .items_center()

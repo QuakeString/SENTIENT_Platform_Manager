@@ -1929,6 +1929,20 @@ pub fn logs_from(inst: &Instance, source: crate::logsource::Source, lines: u32, 
     spm_job(inst, &format!("logs {lines} --source {}{}", source.key(), if today { " --today" } else { "" }))
 }
 
+/// A whole log written gzipped to a temporary file on the server for
+/// download (`logs-file`): (its path there, log bytes, file bytes).
+pub fn logs_file(inst: &Instance, source: crate::logsource::Source, lines: u32, today: bool) -> Result<(String, u64, u64), String> {
+    let out = spm_job(inst, &format!("logs-file {lines} --source {}{}", source.key(), if today { " --today" } else { "" }))?;
+    let v: serde_json::Value = out.lines().rev().find_map(|l| serde_json::from_str(l.trim()).ok()).ok_or("The server did not say where it saved the log.")?;
+    let path = v["path"].as_str().ok_or("The server did not say where it saved the log.")?.to_string();
+    Ok((path, v["bytes"].as_u64().unwrap_or(0), v["packed"].as_u64().unwrap_or(0)))
+}
+
+/// Delete the temporary file [`logs_file`] made (only such a file).
+pub fn logs_file_remove(inst: &Instance, path: &str) {
+    let _ = spm_job(inst, &format!("logs-file-remove '{}'", path.replace('\'', "")));
+}
+
 /// ClickHouse parts set aside on the server.
 pub fn ch_detached(inst: &Instance) -> Result<Vec<crate::dbstatus::DetachedPart>, String> {
     read_json(inst, "ch-detached")

@@ -4,6 +4,7 @@
 //! One card each, with its state and the everyday actions; adding a server
 //! checks its key fingerprint before anything is sent to it.
 
+use gpui_kit::component::scroll::ScrollableElement as _;
 use std::collections::{HashMap, HashSet};
 
 use gpui_kit::assets::IconName as Lucide;
@@ -1359,7 +1360,7 @@ impl Render for InstancesPage {
             .flex_1()
             .min_w_0()
             .h_full()
-            .overflow_y_scroll()
+            .overflow_y_scrollbar()
             .p(px(crate::ui::PAGE_PAD))
             .gap(px(crate::ui::GAP))
             .bg(theme.muted)

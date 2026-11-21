@@ -18,6 +18,7 @@
 //! wizard names that program); ports held by the earlier install itself go
 //! with it.
 
+use gpui_kit::component::scroll::ScrollableElement as _;
 use std::path::PathBuf;
 
 use gpui_kit::component::{
@@ -489,7 +490,7 @@ impl Render for EarlierPage {
             .size_full()
             .bg(theme.muted)
             .text_color(theme.foreground)
-            .child(v_flex().id("earlier").flex_1().min_h_0().overflow_y_scroll().p_8().gap_4().children(children))
+            .child(v_flex().id("earlier").flex_1().min_h_0().overflow_y_scrollbar().p_8().gap_4().children(children))
             .children(footer)
     }
 }

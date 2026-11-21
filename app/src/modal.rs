@@ -6,6 +6,7 @@
 //! click on the dim layer close it; the body scrolls between a fixed title
 //! and the buttons the content draws at its bottom.
 
+use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::{ActiveTheme, IconName, button::ButtonVariants as _, h_flex, v_flex};
 use gpui_kit::*;
 use gpui_kit::prelude::FluentBuilder as _;
@@ -241,23 +242,25 @@ pub fn layer(window: &mut Window, cx: &mut App, page_left: f32, page_top: f32) -
                 })
                 .child(crate::ui::button("modal-close").ghost().icon(IconName::Close).on_click(|_, window, cx| dismiss(window, cx))),
         )
-        .child(
+        .child({
             // 20 px around the body (the mockup's dialog); the probe lets the
             // layout test check nothing reaches into it.
-            div()
+            let body = div()
                 .id("modal-body")
                 .relative()
                 .flex_1()
                 .min_h_0()
-                // A list dialog: the body fills and the list inside scrolls.
-                .when(!list, |d| d.overflow_y_scroll())
                 .when(list, |d| d.flex().flex_col())
                 .px(px(20.))
                 .pt(px(12.))
                 .pb(px(16.))
                 .child(crate::ui::layout_probe("dialog"))
-                .child(modal.body.clone()),
-        )
+                .child(modal.body.clone());
+            // A list dialog: the body fills and the list inside scrolls (one
+            // scroll area); any other scrolls itself, with the shared bar.
+            // A dialog grows with its content: a wrapper's bar would collapse it.
+            if list { body.into_any_element() } else { body.overflow_y_scroll() /* scroll-own: grows with its content */.into_any_element() }
+        })
         .when_some(footer, |p, f| p.child(div().flex_shrink_0().px(px(20.)).py(px(14.)).border_t_1().border_color(theme.border).child(f)));
     Some(
         div()

@@ -18,6 +18,7 @@
 //! if asked, its data. Change database opens the Platform Manager on its
 //! Migration screen.
 
+use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::{
     ActiveTheme, Disableable as _, Icon, h_flex, v_flex,
@@ -898,9 +899,9 @@ impl Maintenance {
 }
 
 impl Maintenance {
-    fn body(&mut self, cx: &mut Context<Self>) -> Stateful<Div> {
+    fn body(&mut self, cx: &mut Context<Self>) -> crate::ui::ScrollPage {
         let theme = cx.theme().clone();
-        let page = v_flex().id("maintenance").size_full().overflow_y_scroll().p_8().gap_4().bg(theme.muted).text_color(theme.foreground);
+        let page = v_flex().id("maintenance").size_full().overflow_y_scrollbar().p_8().gap_4().bg(theme.muted).text_color(theme.foreground);
 
         let (Some(record), Some(found)) = (self.record.clone(), self.found.clone()) else {
             return page.child(div().text_size(px(19.)).font_weight(FontWeight::MEDIUM).child("SENTIENT Setup")).child(ui::not_installed(&theme));

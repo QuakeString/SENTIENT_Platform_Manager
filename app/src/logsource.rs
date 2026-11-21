@@ -198,6 +198,173 @@ pub fn read(record: Option<&InstallationRecord>, source: Source, tail: u32, toda
     }
 }
 
+/// A message [`read`] gives instead of a log (the source is not there or
+/// could not be read): an error for a save, never the file's content.
+pub fn is_failure_text(s: &str) -> bool {
+    let t = s.trim_start();
+    ["Could not read", "No gateway", "SENTIENT is not installed", "No PostgreSQL log", "no log yet at", "No such log"].iter().any(|p| t.starts_with(p))
+}
+
+/// Copy `from` to `out`, counting bytes; `going` false stops it (Cancel).
+fn pump(from: &mut dyn std::io::Read, out: &mut dyn std::io::Write, going: &dyn Fn(u64) -> bool) -> Result<u64, String> {
+    let mut buf = vec![0u8; 256 * 1024];
+    let mut n = 0u64;
+    loop {
+        if !going(n) {
+            return Err("Cancelled.".into());
+        }
+        let k = from.read(&mut buf).map_err(|e| format!("reading the log: {e}"))?;
+        if k == 0 {
+            return Ok(n);
+        }
+        out.write_all(&buf[..k]).map_err(|e| format!("writing the log: {e}"))?;
+        n += k as u64;
+    }
+}
+
+/// A program's output into `out` as it comes (a day of a container's log can
+/// be hundreds of megabytes: never held in memory).
+fn stream_cmd(prog: &str, args: &[String], out: &mut dyn std::io::Write, going: &dyn Fn(u64) -> bool) -> Result<u64, String> {
+    use std::process::Stdio;
+    let mut child = sentient_installer_core::host::host_command(prog)
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("{prog} could not be started: {e}"))?;
+    let mut stdout = child.stdout.take().ok_or("no output")?;
+    let mut stderr = child.stderr.take().ok_or("no output")?;
+    let err_reader = std::thread::spawn(move || {
+        let mut e = String::new();
+        let _ = std::io::Read::read_to_string(&mut stderr, &mut e);
+        e
+    });
+    let copied = pump(&mut stdout, out, going);
+    if copied.is_err() {
+        let _ = child.kill();
+    }
+    let status = child.wait().map_err(|e| e.to_string())?;
+    let err = err_reader.join().unwrap_or_default();
+    let n = copied?;
+    if !status.success() && n == 0 {
+        let why = err.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("it gave no reason");
+        return Err(format!("{prog} could not read the log: {why}"));
+    }
+    Ok(n)
+}
+
+/// The lines of a log file from the last 24 hours into `out`: a line with a
+/// time is kept when that time is in the window, a line without one goes
+/// with the line before it (a stack trace).
+fn stream_file_today(path: &std::path::Path, out: &mut dyn std::io::Write, going: &dyn Fn(u64) -> bool) -> Result<u64, String> {
+    use std::io::BufRead;
+    let f = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let since = Utc::now() - chrono::Duration::hours(24);
+    let mut keep = false;
+    let mut n = 0u64;
+    for line in std::io::BufReader::with_capacity(256 * 1024, f).split(b'\n') {
+        let line = line.map_err(|e| format!("reading {}: {e}", path.display()))?;
+        if !going(n) {
+            return Err("Cancelled.".into());
+        }
+        let text = String::from_utf8_lossy(&line);
+        if let Some((t, _)) = take_time(&text) {
+            keep = t >= since;
+        }
+        if keep {
+            out.write_all(&line).and_then(|_| out.write_all(b"\n")).map_err(|e| format!("writing the log: {e}"))?;
+            n += line.len() as u64 + 1;
+        }
+    }
+    Ok(n)
+}
+
+/// [`read`] into `out` without holding the log: since midnight's 24 hours
+/// (`today`) streams from Docker, the journal or the log file; a number of
+/// last lines is read as [`read`] does (bounded) and written. An unreadable
+/// source is an error, never written as the log. `going(bytes)` false
+/// cancels. Returns the bytes written.
+pub fn read_to(record: Option<&InstallationRecord>, source: Source, tail: u32, today: bool, out: &mut dyn std::io::Write, going: &dyn Fn(u64) -> bool) -> Result<u64, String> {
+    let text = |out: &mut dyn std::io::Write| -> Result<u64, String> {
+        let t = read(record, source, tail, today);
+        if is_failure_text(&t) {
+            return Err(t.trim().to_string());
+        }
+        out.write_all(t.as_bytes()).and_then(|_| out.write_all(b"\n")).map_err(|e| format!("writing the log: {e}"))?;
+        Ok(t.len() as u64 + 1)
+    };
+    if !today || cfg!(windows) {
+        return text(out);
+    }
+    let docker = |c: &str, out: &mut dyn std::io::Write| stream_cmd("sh", &["-c".into(), format!("docker logs --timestamps --since 24h '{}' 2>&1", c.replace('\'', ""))], out, going);
+    let journal = |unit: &str, out: &mut dyn std::io::Write| stream_cmd("journalctl", &["-u".into(), unit.into(), "--no-pager".into(), "-o".into(), "short-iso".into(), "--since".into(), "-24h".into()], out, going);
+    if source == Source::Gateway {
+        return match (gateway_files(), gateway_container(), gateway_unit()) {
+            (Some(_), _, _) => text(out),
+            (None, Some(c), _) => docker(&c, out),
+            (None, None, Some(u)) => journal(&u, out),
+            _ => Err("No gateway on this computer.".into()),
+        };
+    }
+    let Some(record) = record else {
+        return Err(format!("SENTIENT is not installed on this computer, so it has no {} log.", source.label()));
+    };
+    let names = record.stack.names();
+    let file_or = |p: &std::path::Path, unit: &str, out: &mut dyn std::io::Write| -> Result<u64, String> {
+        if std::fs::File::open(p).is_ok() { stream_file_today(p, out, going) } else { journal(unit, out) }
+    };
+    match (record.engine, source) {
+        (Engine::Docker, Source::Sentient) => docker(&names.app, out),
+        (Engine::Docker, Source::Database) => docker(&names.pg, out),
+        (Engine::Docker, Source::ClickHouse) => docker(&names.ch, out),
+        (_, Source::Gateway) => unreachable!("read above"),
+        (Engine::Native, Source::Sentient) => file_or(std::path::Path::new("/var/log/sentient/sentient.log"), "sentient", out),
+        (Engine::Native, Source::Database) => match newest(std::path::Path::new("/var/log/postgresql"), ".log") {
+            Some(p) => stream_file_today(&p, out, going),
+            None => journal("postgresql*", out),
+        },
+        (Engine::Native, Source::ClickHouse) => file_or(std::path::Path::new("/var/log/clickhouse-server/clickhouse-server.log"), "clickhouse-server", out),
+    }
+}
+
+/// The temporary file `logs-file` writes: `<temp>/spm-log-<pid>-<time>.log.gz`.
+fn packed_path() -> std::path::PathBuf {
+    std::env::temp_dir().join(format!("spm-log-{}-{}.log.gz", std::process::id(), Utc::now().format("%Y%m%d%H%M%S")))
+}
+
+/// Whether `p` is a file [`save_packed`] wrote (the only kind
+/// `logs-file-remove` deletes).
+pub fn is_packed_path(p: &str) -> bool {
+    let path = std::path::Path::new(p);
+    path.parent() == Some(std::env::temp_dir().as_path())
+        && path.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("spm-log-") && n.ends_with(".log.gz") && !n.contains('/'))
+}
+
+/// [`read_to`] into a gzipped temporary file readable by the account that
+/// downloads it: (path, log bytes, file bytes).
+pub fn save_packed(record: Option<&InstallationRecord>, source: Source, tail: u32, today: bool) -> Result<(std::path::PathBuf, u64, u64), String> {
+    let path = packed_path();
+    let file = std::fs::File::create(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644));
+    }
+    let mut gz = flate2::write::GzEncoder::new(std::io::BufWriter::new(file), flate2::Compression::fast());
+    let r = read_to(record, source, tail, today, &mut gz, &|_| true);
+    let done = r.and_then(|bytes| gz.finish().and_then(|mut w| std::io::Write::flush(&mut w)).map(|_| bytes).map_err(|e| format!("writing {}: {e}", path.display())));
+    match done {
+        Ok(bytes) => {
+            let packed = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+            Ok((path, bytes, packed))
+        }
+        Err(e) => {
+            let _ = std::fs::remove_file(&path);
+            Err(e)
+        }
+    }
+}
+
 /// One line as columns.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Line {
@@ -306,6 +473,50 @@ pub fn zone_label() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Save log: a day of a log file streams through without the old lines,
+    /// a line with no time goes with the line before it, Cancel stops it.
+    #[test]
+    fn a_log_file_streams_its_last_day() {
+        let dir = std::env::temp_dir().join(format!("spm-logday-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let f = dir.join("x.log");
+        let old = (Utc::now() - chrono::Duration::hours(30)).to_rfc3339();
+        let new = (Utc::now() - chrono::Duration::hours(1)).to_rfc3339();
+        std::fs::write(&f, format!("{old} INFO old\n  at old trace\n{new} INFO new\n  at new trace\n")).unwrap();
+        let mut out = Vec::new();
+        let n = stream_file_today(&f, &mut out, &|_| true).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert_eq!(n as usize, text.len());
+        assert!(!text.contains("old"));
+        assert!(text.contains("INFO new\n  at new trace\n"));
+        assert_eq!(stream_file_today(&f, &mut Vec::new(), &|_| false), Err("Cancelled.".into()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A program's output streams; a failing one with no output is an error.
+    #[cfg(unix)]
+    #[test]
+    fn a_command_streams_or_fails_plainly() {
+        let mut out = Vec::new();
+        assert_eq!(stream_cmd("sh", &["-c".into(), "printf 'a\\nb\\n'".into()], &mut out, &|_| true), Ok(4));
+        assert_eq!(out, b"a\nb\n");
+        let e = stream_cmd("sh", &["-c".into(), "echo nope >&2; exit 3".into()], &mut Vec::new(), &|_| true).unwrap_err();
+        assert!(e.contains("nope"), "{e}");
+    }
+
+    /// Only a file save_packed made may be deleted by logs-file-remove; a
+    /// message read() gives instead of a log is an error, never the file.
+    #[test]
+    fn packed_paths_and_failure_texts() {
+        let t = std::env::temp_dir();
+        assert!(is_packed_path(&t.join("spm-log-12-20261121.log.gz").display().to_string()));
+        assert!(!is_packed_path(&t.join("other.log.gz").display().to_string()));
+        assert!(!is_packed_path("/etc/spm-log-1.log.gz"));
+        assert!(is_failure_text("Could not read the SENTIENT log."));
+        assert!(is_failure_text("No gateway on this computer."));
+        assert!(!is_failure_text("2026-11-21T10:00:00Z INFO started"));
+    }
 
     #[test]
     fn docker_and_own_stamps() {

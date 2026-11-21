@@ -12,6 +12,7 @@
 //! fails; a job that succeeds shows its last message in the strip for a few
 //! seconds, then the strip goes.
 
+use gpui_kit::component::scroll::ScrollableElement as _;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
@@ -603,7 +604,7 @@ impl Render for JobDetails {
                 div()
                     .id("job-details-lines")
                     .max_h(px(380.))
-                    .overflow_y_scroll()
+                    .overflow_y_scroll() /* scroll-own: a box sized by its content or scrolled from code; its own bar is drawn beside it where it has a handle */
                     .p_2()
                     .rounded(theme.radius)
                     .bg(theme.muted)

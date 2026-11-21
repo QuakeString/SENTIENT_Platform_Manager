@@ -393,4 +393,13 @@ mod scheme_tests {
 /// no ring outside it.
 fn thin_focus(cx: &mut App) {
     Theme::global_mut(cx).focus_ring = false;
+    // Every scroll area's bar (ui::scroll_y, gpui-kit's overflow_y_scrollbar)
+    // shows when the pointer comes near its edge and while it scrolls, on
+    // every desktop (not only where the system keeps bars visible).
+    use gpui_kit::component::scroll::ScrollbarMode;
+    // Screens: the bars drawn as when hovered (SPM_DEBUG_SCROLLBARS=always).
+    let mode = if cfg!(debug_assertions) && std::env::var("SPM_DEBUG_SCROLLBARS").as_deref() == Ok("always") { ScrollbarMode::Always } else { ScrollbarMode::Hover };
+    if Theme::global(cx).scrollbar_mode != mode {
+        Theme::set_scrollbar_mode(mode, cx);
+    }
 }

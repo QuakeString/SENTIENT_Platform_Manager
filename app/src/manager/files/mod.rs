@@ -12,6 +12,7 @@
 pub(crate) mod fs;
 pub(crate) mod transfers;
 
+use gpui_kit::component::scroll::ScrollableElement as _;
 use std::collections::BTreeSet;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
@@ -1164,7 +1165,7 @@ impl FilesPage {
                 }
             }))
             .on_drop(cx.listener(|this, _: &ColDrag, _, _| this.save_layout()));
-        let mut list = v_flex().id(SharedString::from(format!("f-rows-{side}"))).flex_1().min_h_0().overflow_y_scroll();
+        let mut list = v_flex().id(SharedString::from(format!("f-rows-{side}"))).flex_1().min_h_0().overflow_y_scrollbar();
         if let Some(input) = &p.new_folder {
             list = list.child(
                 h_flex()
@@ -1464,7 +1465,6 @@ impl Render for FilesPage {
             .p(px(ui::PAGE_PAD))
             .gap(px(ui::GAP))
             .bg(theme.muted)
-            .when(narrow, |p| p.overflow_y_scroll())
             .child(h_flex().min_h(px(32.)).items_center().child(div().flex_1().text_size(px(22.)).font_weight(FontWeight::MEDIUM).child("Files")).child(h_flex().gap_3().items_center().children(stale).child(crate::ui::probed(refresh))))
             .child(panes);
         // The short note, bottom centre over the page (fades in).
@@ -1482,6 +1482,8 @@ impl Render for FilesPage {
                     .with_animation(SharedString::from(format!("toast-{text}")), Animation::new(std::time::Duration::from_millis(150)), |el, t| el.opacity(t)),
             )
         });
+        // Narrow: the whole page scrolls (the panes stack), with the shared bar.
+        let page = if narrow { page.overflow_y_scrollbar().into_any_element() } else { page.into_any_element() };
         div().relative().flex().flex_1().min_w_0().h_full().child(page).children(toast)
     }
 }
@@ -1589,7 +1591,7 @@ struct DeleteBody {
 impl Render for DeleteBody {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
-        let mut list = v_flex().id("del-list").max_h(px(240.)).overflow_y_scroll().rounded(px(8.)).border_1().border_color(theme.border).py_1();
+        let mut list = v_flex().id("del-list").max_h(px(240.)).overflow_y_scroll() /* scroll-own: a box sized by its content or scrolled from code; its own bar is drawn beside it where it has a handle */.rounded(px(8.)).border_1().border_color(theme.border).py_1();
         for r in &self.rows {
             list = list.child(
                 h_flex()

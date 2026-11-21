@@ -15,6 +15,7 @@
 //! is restarting instead of that it does not answer, and the checker
 //! raises no alarm ([`power_state`]); one shut down from here shows as off.
 
+use gpui_kit::component::scroll::ScrollableElement as _;
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Mutex;
@@ -955,8 +956,8 @@ impl Render for Details {
             .id("srv-details-scroll")
             .flex_1()
             .min_h_0()
-            .overflow_y_scroll()
             .track_scroll(&self.scroll)
+            .overflow_y_scroll() /* scroll-own: a box sized by its content or scrolled from code; its own bar is drawn beside it where it has a handle */
             .child(body.pb(px(4.)))
     }
 }

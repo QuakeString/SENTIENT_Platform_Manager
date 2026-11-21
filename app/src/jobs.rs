@@ -799,6 +799,33 @@ mod plan_tests {
         assert!(!super::own_message_only(e, &["error: disk full".to_string()]));
     }
 
+    /// Every scroll area has the shared bar (shown near its edge and while
+    /// it scrolls, crate::theme): overflow_y_scrollbar, or a plain scroll
+    /// marked `scroll-own:` with its reason (a box sized by its content,
+    /// which the bar's wrapper would collapse, or one scrolled from code).
+    #[test]
+    fn every_scroll_area_has_the_shared_bar() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut bare = Vec::new();
+        let mut stack = vec![dir];
+        while let Some(d) = stack.pop() {
+            for e in std::fs::read_dir(&d).unwrap().flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    stack.push(p);
+                } else if p.extension().is_some_and(|x| x == "rs") {
+                    let src = std::fs::read_to_string(&p).unwrap();
+                    for (i, l) in src.lines().enumerate() {
+                        if (l.contains(concat!(".overflow_y_", "scroll()")) || l.contains(concat!(".overflow_", "scroll()"))) && !l.contains("scroll-own:") {
+                            bare.push(format!("{}:{}", p.display(), i + 1));
+                        }
+                    }
+                }
+            }
+        }
+        assert!(bare.is_empty(), "scroll areas without the shared bar: {bare:?}");
+    }
+
     /// Every job starts with its name: the strip has no generic name.
     #[test]
     fn no_job_is_called_a_job() {

@@ -12,6 +12,7 @@
 //! installation needs it (crate::rootjob), or on the server through its
 //! agent (`--job restore-*`).
 
+use gpui_kit::component::scroll::ScrollableElement as _;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -1845,7 +1846,7 @@ impl Render for RestoreFlow {
             .flex_1()
             .min_w_0()
             .h_full()
-            .overflow_y_scroll()
+            .overflow_y_scrollbar()
             .p(px(ui::PAGE_PAD))
             .gap(px(ui::GAP))
             .bg(theme.muted)
@@ -2625,7 +2626,7 @@ impl Render for HistoryDialog {
             div()
                 .id("rh-log")
                 .max_h(px(160.))
-                .overflow_y_scroll()
+                .overflow_y_scroll() /* scroll-own: a box sized by its content or scrolled from code; its own bar is drawn beside it where it has a handle */
                 .p(px(10.))
                 .rounded(px(8.))
                 .bg(theme.muted)

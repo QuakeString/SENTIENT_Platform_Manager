@@ -1013,6 +1013,43 @@ fn run_job(args: &[String]) -> i32 {
             None => return print_log(crate::logsource::read(record.as_ref(), sources[0], n, today)),
         }
     }
+    // A whole log saved on this computer for the window on another one to
+    // download (crate::manager::logs, Save log): logs-file <lines>
+    // --source <key> [--today] writes it gzipped to a temporary file only as
+    // it comes (a day of a container's log is never held in memory) and
+    // answers {"path","bytes","packed"}; logs-file-remove <path> deletes it.
+    if job == "logs-file" {
+        let record = InstallationRecord::load();
+        let sources = crate::logsource::available(record.as_ref());
+        let n = args.get(1).and_then(|n| n.parse().ok()).unwrap_or(1_000);
+        let today = args.iter().any(|a| a == "--today");
+        let Some(src) = args.windows(2).find(|w| w[0] == "--source").and_then(|w| crate::logsource::Source::from_key(&w[1])).filter(|s| sources.contains(s)) else {
+            eprintln!("No such log here.");
+            return 2;
+        };
+        return match crate::logsource::save_packed(record.as_ref(), src, n, today) {
+            Ok((path, bytes, packed)) => {
+                println!("{}", serde_json::json!({ "path": path.display().to_string(), "bytes": bytes, "packed": packed }));
+                0
+            }
+            Err(e) => {
+                eprintln!("{e}");
+                1
+            }
+        };
+    }
+    if job == "logs-file-remove" {
+        return match args.get(1).filter(|p| crate::logsource::is_packed_path(p)) {
+            Some(p) => {
+                let _ = std::fs::remove_file(p);
+                0
+            }
+            None => {
+                eprintln!("Not a saved log.");
+                2
+            }
+        };
+    }
     // The Server card's reading and actions (crate::server_ops): no
     // SENTIENT needed on the machine.
     {
