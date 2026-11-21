@@ -8,6 +8,7 @@
 //! Live reads every few seconds, only while this page is shown (`set_open`).
 //! The longer ranges come from the sampler's history, one reading a minute.
 
+use gpui_kit::component::scroll::ScrollableElement as _;
 use std::cell::Cell;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -1187,7 +1188,7 @@ impl Render for StatsPage {
 
         let latest = self.live.last().cloned().or_else(|| self.points().last().cloned());
         let mut col = v_flex().gap(px(crate::ui::GAP)).child(header);
-        let page = |col: Div| v_flex().id("stats-page").flex_1().min_w_0().h_full().overflow_y_scroll().p(px(crate::ui::PAGE_PAD)).bg(theme.muted).child(col);
+        let page = |col: Div| v_flex().id("stats-page").flex_1().min_w_0().h_full().overflow_y_scrollbar().p(px(crate::ui::PAGE_PAD)).bg(theme.muted).child(col);
         // One of the Server card's jobs, in the shared job view, until
         // "Back to Statistics".
         if self.server_shown && !matches!(self.server_job.read(cx).state(), crate::jobs::JobState::Idle) {

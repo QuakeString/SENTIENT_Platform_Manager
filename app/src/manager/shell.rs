@@ -6,6 +6,7 @@
 //! version and the preferences button. The bar over the page is
 //! `Manager::top_bar`.
 
+use gpui_kit::component::scroll::ScrollableElement as _;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -774,7 +775,7 @@ impl Manager {
                     .id("nav-scroll")
                     .flex_1()
                     .min_h_0()
-                    .overflow_y_scroll()
+                    .overflow_y_scrollbar()
                     .gap(px(ROW_GAP))
                     .pt(px(NAV_TOP))
                     .pl(px(left_pad))

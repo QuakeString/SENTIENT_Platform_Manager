@@ -8,6 +8,7 @@
 //! only when its size is the source's. A name already there asks (C5):
 //! Replace, Keep both or Skip, for the rest of that copy too if ticked.
 
+use gpui_kit::component::scroll::ScrollableElement as _;
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -640,7 +641,7 @@ impl Render for Panel {
                 let t = t.clone();
                 move |_, _, cx| t.update(cx, |t, cx| t.clear_finished(cx))
             }));
-        let mut list = v_flex().id("tr-list").max_h(px(420.)).overflow_y_scroll();
+        let mut list = v_flex().id("tr-list").max_h(px(420.));
         if items.is_empty() {
             list = list.child(div().px(px(16.)).py_4().text_sm().text_color(theme.muted_foreground).child("No copies yet."));
         }
@@ -709,7 +710,7 @@ impl Render for Panel {
             }
             list = list.child(row);
         }
-        v_flex().child(header).child(list)
+        v_flex().child(header).child(crate::ui::scroll_y(list))
     }
 }
 
