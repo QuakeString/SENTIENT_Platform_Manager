@@ -1285,6 +1285,64 @@ pub fn published_ui_listen(spec: &Spec, inner: &str) -> Option<String> {
     })
 }
 
+/// Why `host` cannot reach SENTIENT from this container (None: it can be
+/// tried): on a container's own network, loopback is the container itself.
+pub fn loopback_refused(spec: &Spec, host: &str) -> Option<String> {
+    let h = host.trim().trim_matches(['[', ']']).to_ascii_lowercase();
+    let loopback = h == "localhost" || h == "::1" || h.starts_with("127.");
+    (loopback && needs_publish(spec)).then(|| format!(
+        "{host} is the gateway's own container here: it runs on the Docker network {}, not on this machine's. Use this machine's network address, or SENTIENT's container name when both are on the same Docker network.",
+        spec.network
+    ))
+}
+
+/// Whether the gateway in `name` reports being connected to SENTIENT
+/// within `secs` seconds (its --status-json, else its log).
+#[cfg(not(windows))]
+fn wait_connected(name: &str, secs: u64) -> bool {
+    for _ in 0..secs / 3 {
+        std::thread::sleep(std::time::Duration::from_secs(3));
+        if let Some((true, out)) = docker(&["exec", name, "sentient-gateway", "--status-json"]) {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(out.trim()) {
+                if v.get("connected").and_then(|c| c.as_bool()) == Some(true) {
+                    return true;
+                }
+                continue;
+            }
+        }
+        if let Some((_, log)) = docker_all(&["logs", "--since", "90s", name]) {
+            if connected_in_log(&strip_ansi(&log)) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Whether a gateway's log says it is connected now: its last "connected to
+/// platform" comes after its last connection error or loss (a gateway
+/// without --status-json).
+pub fn connected_in_log(log: &str) -> bool {
+    let lines: Vec<&str> = log.lines().collect();
+    let last = |f: &dyn Fn(&str) -> bool| lines.iter().rposition(|l| f(l));
+    let up = last(&|l| l.contains("connected to platform"));
+    let down = last(&|l| l.contains("uplink connection error") || l.contains("the platform is lost") || l.contains("disconnected from platform"));
+    match (up, down) {
+        (Some(u), Some(d)) => u > d,
+        (Some(_), None) => true,
+        _ => false,
+    }
+}
+
+/// (path, content) of the config file the gateway in container `name` uses.
+#[cfg(not(windows))]
+fn read_config_file(name: &str) -> Option<(String, String)> {
+    let find = "d=\"${ST_GW_CONFIG_DIR:-/sentient_gateway/config}\"; for f in st_gateway.json tb_gateway.json; do if [ -f \"$d/$f\" ]; then echo \"$d/$f\"; cat \"$d/$f\"; exit 0; fi; done; exit 3";
+    let (ok, out) = docker(&["exec", name, "sh", "-c", find])?;
+    let (p, j) = out.split_once('\n')?;
+    ok.then(|| (p.trim().to_string(), j.to_string()))
+}
+
 /// `json` (the gateway's config file) with the platform host and port set:
 /// under `sentient`, or `thingsboard` in an older file that has only that.
 pub fn with_connection(json: &str, host: Option<&str>, port: Option<u16>) -> Result<String, String> {
@@ -1307,15 +1365,24 @@ pub fn with_connection(json: &str, host: Option<&str>, port: Option<u16>) -> Res
 /// container's own user, through a temporary file and a rename.
 #[cfg(not(windows))]
 fn write_connection(name: &str, host: Option<&str>, port: Option<u16>) -> Result<(), String> {
-    let find = "d=\"${ST_GW_CONFIG_DIR:-/sentient_gateway/config}\"; for f in st_gateway.json tb_gateway.json; do if [ -f \"$d/$f\" ]; then echo \"$d/$f\"; cat \"$d/$f\"; exit 0; fi; done; exit 3";
-    let out = match docker(&["exec", name, "sh", "-c", find]) {
-        Some((true, o)) => o,
-        _ => return Err("The gateway's config file could not be read in its container.".into()),
+    // A gateway set up only by its environment has no file yet: it gets one.
+    let (path, json) = match read_config_file(name) {
+        Some(f) => f,
+        None => {
+            let dir = docker(&["exec", name, "sh", "-c", "echo \"${ST_GW_CONFIG_DIR:-/sentient_gateway/config}\""]).filter(|(ok, _)| *ok).map(|(_, o)| o.trim().to_string()).ok_or("The gateway's config folder could not be read in its container.")?;
+            (format!("{dir}/st_gateway.json"), "{}".to_string())
+        }
     };
-    let (path, json) = out.split_once('\n').ok_or("The gateway's config file could not be read in its container.")?;
-    let new = with_connection(json, host, port)?;
+    let new = with_connection(&json, host, port)?;
+    write_config_raw(name, &path, &new)
+}
+
+/// Write `content` to `path` in container `name`, as its own user, through a
+/// temporary file and a rename.
+#[cfg(not(windows))]
+fn write_config_raw(name: &str, path: &str, content: &str) -> Result<(), String> {
     let tmp = write_env_file(&[])?;
-    std::fs::write(&tmp, new.as_bytes()).map_err(|e| format!("write {}: {e}", tmp.display()))?;
+    std::fs::write(&tmp, content.as_bytes()).map_err(|e| format!("write {}: {e}", tmp.display()))?;
     let q = super::shell_quote;
     let line = format!(
         "docker exec -i {} sh -c {} sh {} < {} 2>&1",
@@ -1429,11 +1496,50 @@ pub fn apply_settings(sink: &ProgressFn, status: &Status, before: &crate::gatewa
         let spec = inspect_spec(&name).ok_or("The gateway container could not be read.")?;
         let new = planned_spec(&spec, before, plan, &gid_of)?;
         let name = new.name.clone();
-        if plan.conn_host.is_some() || plan.conn_port.is_some() {
+        let conn = plan.conn_host.is_some() || plan.conn_port.is_some();
+        if let Some(why) = plan.conn_host.as_deref().and_then(|h| loopback_refused(&spec, h)) {
+            return Err(why);
+        }
+        // An image that sets the connection itself wins over the file even
+        // once the container's own variables are gone: said before anything
+        // changes.
+        if conn {
+            if let Some(v) = image_env(&spec.image).into_iter().find(|e| ["host=", "ST_GW_HOST=", "TB_GW_HOST=", "port=", "ST_GW_PORT=", "TB_GW_PORT="].iter().any(|p| e.starts_with(p))) {
+                return Err(format!("The gateway's image {} sets {v} itself, which wins over its config file: nothing was changed. Use the standard image (Update the gateway), or set the connection in the image.", spec.image));
+            }
+        }
+        // The config file as it was, to put back when the new connection
+        // does not connect.
+        let old_file = if conn { read_config_file(&spec.name) } else { None };
+        if conn {
             sink(Progress::Step { name: "Writing the connection to the gateway's config file".into() });
             write_connection(&spec.name, plan.conn_host.as_deref(), plan.conn_port)?;
         }
         recreate_container(sink, &new, Some(format!("Stopping the container {name}")), &format!("Creating {name} again with the same volumes"), "with the new settings")?;
+        // A new connection counts only once the gateway is connected with it;
+        // otherwise the old one comes back, and the error says why.
+        if conn {
+            let target = format!("{}:{}", plan.conn_host.clone().or_else(|| before.conn.host.clone()).unwrap_or_default(), plan.conn_port.or(before.conn.port).unwrap_or(1883));
+            sink(Progress::Step { name: format!("Checking the gateway connects to SENTIENT at {target}") });
+            if !wait_connected(&name, 60) {
+                let last = docker_all(&["logs", "--tail", "40", &name]).map(|(_, o)| o).unwrap_or_default();
+                let why = last.lines().rev().map(strip_ansi).find(|l| l.contains("uplink") || l.contains("connect")).unwrap_or_default();
+                sink(Progress::Log { line: format!("Not connected within 60 seconds{}", if why.is_empty() { String::new() } else { format!(": {}", why.trim()) }) });
+                sink(Progress::Step { name: "Putting the previous connection back".into() });
+                match &old_file {
+                    Some((path, json)) => {
+                        let _ = write_config_raw(&name, path, json);
+                    }
+                    // It had none: the one written for the new connection goes.
+                    None => {
+                        let _ = docker(&["exec", &name, "sh", "-c", "rm -f \"${ST_GW_CONFIG_DIR:-/sentient_gateway/config}/st_gateway.json\""]);
+                    }
+                }
+                recreate_container(sink, &spec, None, "Creating the gateway again with its previous settings", "with its previous settings")?;
+                return Err(format!("The gateway did not connect to SENTIENT at {target} within 60 seconds, so its previous connection was put back. Check the address from the gateway's machine{}.", if needs_publish(&spec) { " (in a container on its own network, use the machine's network address or SENTIENT's container name, not localhost)" } else { "" }));
+            }
+            sink(Progress::Log { line: format!("Connected to SENTIENT at {target}.") });
+        }
         // The real effect, not the setting: the page answers where it is
         // published (or on the host network, where it listens).
         if plan.ui_enabled.is_some() || plan.ui_listen.is_some() {
@@ -1786,6 +1892,15 @@ mod tests {
         // Its two mounts, and a volume for the data folder, which had none.
         assert_eq!(spec.mounts.len(), 3);
         assert_eq!(spec.mounts[2], (DATA_VOLUME.to_string(), "/sentient_gateway/data".to_string(), false, false));
+    }
+
+    /// Connected only when "connected to platform" comes after the last loss.
+    #[test]
+    fn connected_is_read_from_the_log() {
+        assert!(connected_in_log("a\nINFO gateway_core::uplink: connected to platform epoch=1\nWARN uplink: no session limits"));
+        assert!(!connected_in_log("INFO connected to platform\nWARN uplink connection error; retrying"));
+        assert!(connected_in_log("WARN uplink connection error\nINFO connected to platform epoch=2"));
+        assert!(!connected_in_log("WARN the platform is lost: telling 0 connectors"));
     }
 
     /// A container with no volume for the gateway's data folder gets one;

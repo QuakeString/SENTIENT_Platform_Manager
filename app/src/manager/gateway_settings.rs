@@ -270,6 +270,14 @@ impl GatewaySettingsCard {
             if h.is_empty() || h.contains(char::is_whitespace) || h.contains("://") {
                 return Some((0, "The host is a name or an address, with no spaces and no http://.".into()));
             }
+            // In a container on its own network, loopback is the container.
+            if let Some(s) = self.settings.as_ref().and_then(|s| s.as_ref().ok()) {
+                let hl = h.trim_matches(['[', ']']).to_ascii_lowercase();
+                let own_net = s.machine.kind == "docker" && s.machine.network.as_deref().is_some_and(|n| !matches!(n, "host" | "none"));
+                if own_net && (hl == "localhost" || hl == "::1" || hl.starts_with("127.")) {
+                    return Some((0, format!("{h} is the gateway's own container: use this machine's network address, or SENTIENT's container name when both are on the same Docker network.")));
+                }
+            }
             if !Self::text(&self.conn_port, cx).parse::<u16>().is_ok_and(|p| p > 0) {
                 return Some((0, "The MQTT port needs a number from 1 to 65535.".into()));
             }
@@ -587,7 +595,7 @@ impl GatewaySettingsCard {
             let what = if c.from_env {
                 "The container's environment sets this connection and overrides the gateway's config file. Apply writes the host and port to the config file and removes the override; the gateway restarts once."
             } else {
-                "Apply writes the host and port to the gateway's config file; the gateway restarts once. Use the address SENTIENT has on this network (localhost when it runs on this machine), not a public name that goes out through the router."
+                "Apply writes the host and port to the gateway's config file; the gateway restarts once and must connect with them, or the previous ones come back. Use the address SENTIENT has on this network, not a public name that goes out through the router."
             };
             out.push(info_line(theme, "conn", &state, Some(what)).into_any_element());
             let editable = s.machine.not_editable.is_none() && !self.busy;
@@ -601,7 +609,11 @@ impl GatewaySettingsCard {
                     let env_note = c.from_env.then(|| "Now set in the container's environment".to_string());
                     rows.push(SettingRow {
                         label: "Host".into(),
-                        help: Some("SENTIENT's MQTT host as this gateway reaches it: localhost or 127.0.0.1 when SENTIENT runs on the same machine, else its address on this network.".into()),
+                        help: Some(if s.machine.kind == "docker" && s.machine.network.as_deref().is_some_and(|n| !matches!(n, "host" | "none")) {
+                            "SENTIENT's MQTT host as this gateway reaches it from its container: this machine's network address, or SENTIENT's container name when both are on the same Docker network (localhost is the container itself).".into()
+                        } else {
+                            "SENTIENT's MQTT host as this gateway reaches it: localhost or 127.0.0.1 when SENTIENT runs on the same machine, else its address on this network.".into()
+                        }),
                         desc: env_note.clone(),
                         restart: h_changed,
                         changed: h_changed,

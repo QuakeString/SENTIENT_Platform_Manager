@@ -120,6 +120,12 @@ fn remember(p: &Progress) {
 /// diagnosis is one `DIAG\t<json>` line the window reads (and shows in its
 /// error panel); a root copy of this program that already sent one is not
 /// diagnosed twice.
+/// Whether a failed job printed nothing but its own error: every line it
+/// printed is part of the message `error` (or it printed none).
+pub(crate) fn own_message_only(error: &str, shown: &[String]) -> bool {
+    shown.iter().map(|l| l.trim()).filter(|l| !l.is_empty()).all(|l| error.contains(l.trim_start_matches("!! ")))
+}
+
 fn report_failure(e: String, json: bool, sink: &ProgressFn) {
     use sentient_installer_core::diagnose::{self, Diagnosis, Fix};
     let lines: Vec<String> = TAIL.lock().map(|t| t.iter().cloned().collect()).unwrap_or_default();
@@ -128,7 +134,12 @@ fn report_failure(e: String, json: bool, sink: &ProgressFn) {
         None => {
             let shown: Vec<String> = lines.into_iter().filter(|l| !l.starts_with(diagnose::DIAG_PREFIX)).collect();
             let d = diagnose::diagnose_failure(&e, &shown, crate::online::downloads_dir("").parent());
-            if json {
+            // The job's own message with nothing else printed is its cause as
+            // it is: no "not a cause the Platform Manager knows" around it.
+            let own = !d.is_known() && own_message_only(&e, &shown);
+            if own {
+                None
+            } else if json {
                 sink(Progress::Log { line: d.encode() });
                 None
             } else {

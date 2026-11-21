@@ -1142,10 +1142,14 @@ fn unknown(ev: &Evidence) -> Diagnosis {
         Some(e) if !printed_error => e,
         own => last.last().cloned().filter(|l| !l.is_empty()).or(own).unwrap_or_else(|| "The step failed.".to_string()),
     };
+    // The job's own message, with no error printed beside it, says it all:
+    // no unrelated last lines under it (a progress line such as "… is up to
+    // date" is not why it stopped).
+    let last = if printed_error { last } else { Vec::new() };
     Diagnosis {
         id: "unknown".into(),
         cause: format!("The step stopped: {}", cause.trim_start_matches("!! ").trim_start_matches("E: ").trim_start_matches("error: ")),
-        why: "This is not a cause the Platform Manager knows yet. The lines below are what the step printed last.".into(),
+        why: if last.is_empty() { String::new() } else { "What the step printed last is below.".into() },
         fixes: Vec::new(),
         last_lines: last,
         details: String::new(),

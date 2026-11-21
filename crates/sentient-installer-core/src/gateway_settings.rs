@@ -66,6 +66,9 @@ pub struct Connection {
     /// Host, port or token come from the process's environment (a container
     /// started with `host`/`port`/`accessToken`).
     pub from_env: bool,
+    /// Where the host the gateway uses comes from, in words (the config
+    /// file and its path, the container's environment and the variable).
+    pub host_source: Option<String>,
 }
 
 impl Connection {
@@ -320,6 +323,7 @@ fn read_config(s: &mut GwSettings, v: &Value) {
         tls: credential.starts_with("tls") || sec.get("caCert").is_some_and(|c| c.as_str().is_some_and(|c| !c.is_empty())),
         credential,
         from_env: false,
+        host_source: None,
     };
     // The page: on by default outside a container (resolved later).
     let ui = v.get("localUi").cloned().unwrap_or(Value::Null);
@@ -488,6 +492,8 @@ pub fn apply_env(s: &mut GwSettings, env: &[String], in_container: bool) {
     if let Some(h) = env_any(env, &["host", "ST_GW_HOST", "TB_GW_HOST"]) {
         s.conn.host = Some(h.to_string());
         s.conn.from_env = true;
+        let var = ["host", "ST_GW_HOST", "TB_GW_HOST"].into_iter().find(|k| env_get(env, k).is_some()).unwrap_or("host");
+        s.conn.host_source = Some(format!("the environment variable {var}"));
     }
     if let Some(p) = env_any(env, &["port", "ST_GW_PORT", "TB_GW_PORT"]).and_then(|p| p.parse().ok()) {
         s.conn.port = Some(p);
@@ -640,6 +646,9 @@ pub fn from_read(out: &str) -> GwSettings {
         }
     };
     if !file.is_empty() {
+        if s.conn.host.is_some() {
+            s.conn.host_source = Some(format!("the gateway's config file {file}"));
+        }
         s.config_path = Some(file);
     }
     s.ui.password_set = sec.get("PW").map(|p| p.trim() == "yes");
@@ -771,7 +780,8 @@ pub fn mismatches(plan: &ApplyPlan, after: &GwSettings) -> Vec<String> {
     let mut out = Vec::new();
     if let Some(h) = &plan.conn_host {
         if after.conn.host.as_deref() != Some(h.as_str()) {
-            out.push(format!("the host is {}", after.conn.host.clone().unwrap_or_else(|| "not set".into())));
+            let from = after.conn.host_source.as_deref().map(|f| format!(", from {f}")).unwrap_or_default();
+            out.push(format!("you set the host to {h}, but the gateway still uses {}{from}", after.conn.host.clone().unwrap_or_else(|| "none".into())));
         }
     }
     if let Some(p) = plan.conn_port {

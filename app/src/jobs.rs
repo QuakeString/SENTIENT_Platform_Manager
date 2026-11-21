@@ -749,7 +749,7 @@ pub use crate::maintenance_ops::activity_log;
 /// Whether a failed job printed nothing but its own error: every line it
 /// printed is part of the message `error` (or it printed none).
 pub(crate) fn own_message_only(error: &str, shown: &[String]) -> bool {
-    shown.iter().map(|l| l.trim()).filter(|l| !l.is_empty()).all(|l| error.contains(l.trim_start_matches("!! ")))
+    crate::headless::own_message_only(error, shown)
 }
 
 fn new_log_file(label: &str) -> Option<std::path::PathBuf> {
