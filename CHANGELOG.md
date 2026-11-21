@@ -15,6 +15,10 @@ refreshes that repository's Downloads table.
 
 ## [Unreleased]
 
+## [0.9.7] - 2026-11-21
+
+A Platform Manager installed from the Arch package, the .deb or the .rpm updates itself, with the administrator password, and every job says what it is.
+
 ### Changed
 - A Platform Manager installed from a package (the Arch package, the .deb
   or the .rpm) updates itself: Update downloads that kind of package from
@@ -31,6 +35,9 @@ refreshes that repository's Downloads table.
 - A job that stopped with the Platform Manager's own message and printed
   nothing else shows that message as it is: no "This is not a cause the
   Platform Manager knows yet", and no empty "No output yet." box under it.
+- Administrator steps find the system's programs when sudo's own search
+  path leaves them out (sudo-rs: "sudo: 'pacman': command not found");
+  the package tools are called by their full path.
 
 ## [0.9.6] - 2026-11-21
 
