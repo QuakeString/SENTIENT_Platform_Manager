@@ -678,7 +678,9 @@ pub fn parse_spec(json: &str) -> Option<Spec> {
         for (inside, list) in b {
             for e in list.as_array().into_iter().flatten() {
                 let hp = e.get("HostPort").and_then(|x| x.as_str()).unwrap_or_default();
-                let ip = e.get("HostIp").and_then(|x| x.as_str()).unwrap_or_default();
+                // An IPv6 address is bracketed for `-p` (A20).
+                let raw = e.get("HostIp").and_then(|x| x.as_str()).unwrap_or_default();
+                let ip = if raw.contains(':') && !raw.starts_with('[') { format!("[{raw}]") } else { raw.to_string() };
                 if hp.is_empty() {
                     ports.push(inside.clone());
                 } else if ip.is_empty() {
@@ -1190,6 +1192,10 @@ pub fn read_settings(status: &Status) -> crate::gateway_settings::GwSettings {
         s.conn.via = Some(format!("This machine: the gateway's container reaches it as {HOST_ALIAS}."));
         s.conn.host = Some(typed);
     }
+    // A gateway that dials the machine itself for localhost: said the same way.
+    if needs_publish(&spec) && s.conn.host.as_deref().is_some_and(is_loopback) && dials_machine(status.version.as_deref()) {
+        s.conn.via = Some(format!("This machine: the gateway's container reaches it as {HOST_ALIAS}."));
+    }
     // Its own network: the page's access is the published address.
     if let Some(l) = published_ui_listen(&spec, &s.ui.listen) {
         s.ui.listen = l;
@@ -1296,7 +1302,9 @@ pub fn published_ui_listen(spec: &Spec, inner: &str) -> Option<String> {
     let (_, port) = listen_parts(inner);
     spec.ports.iter().find_map(|p| {
         let c = p.split('/').next().unwrap_or(p);
-        let parts: Vec<&str> = c.split(':').collect();
+        // `[addr:]host:container`, an IPv6 addr in brackets.
+        let mut parts: Vec<&str> = c.rsplitn(3, ':').collect();
+        parts.reverse();
         match parts.as_slice() {
             [addr, host, cont] if cont.parse() == Ok(port) => Some(format!("{}:{host}", if addr.is_empty() { "0.0.0.0" } else { addr })),
             [host, cont] if cont.parse() == Ok(port) => Some(format!("0.0.0.0:{host}")),
@@ -1311,6 +1319,20 @@ pub const HOST_ALIAS: &str = "host.docker.internal";
 pub const HOST_GATEWAY: &str = "host.docker.internal:host-gateway";
 /// The label that keeps the host typed when it is written as [`HOST_ALIAS`].
 pub const TYPED_HOST_LABEL: &str = "in.sentient.gateway.typed-host";
+
+/// The first gateway release that dials the machine itself for a loopback
+/// host when it runs in a container on its own network (the gateway's
+/// dial_host): from it on, the host is written as typed.
+pub const DIALS_MACHINE_FROM: (u32, u32, u32) = (4, 18, 3);
+
+/// Whether the gateway `version` ("4.18.3", "v4.18.3-rc1") dials the machine
+/// for localhost in a container on its own network.
+pub fn dials_machine(version: Option<&str>) -> bool {
+    let Some(v) = version else { return false };
+    let core = v.trim().trim_start_matches('v').split(['-', '+', ' ']).next().unwrap_or("");
+    let n: Vec<u32> = core.split('.').filter_map(|x| x.parse().ok()).collect();
+    n.len() >= 3 && (n[0], n[1], n[2]) >= DIALS_MACHINE_FROM
+}
 
 /// localhost, ::1 or 127.x.
 pub fn is_loopback(host: &str) -> bool {
@@ -1331,8 +1353,8 @@ pub fn ensure_host_gateway(spec: &mut Spec) -> bool {
 /// The host written to the config file for `typed`: in a container on its
 /// own network, loopback is the container itself, so this machine is
 /// reached as [`HOST_ALIAS`]; anything else as typed.
-pub fn conn_host_for(spec: &Spec, typed: &str) -> String {
-    if needs_publish(spec) && is_loopback(typed) {
+pub fn conn_host_for(spec: &Spec, typed: &str, dials: bool) -> String {
+    if needs_publish(spec) && is_loopback(typed) && !dials {
         HOST_ALIAS.to_string()
     } else {
         typed.to_string()
@@ -1550,6 +1572,12 @@ pub fn started_with_in(log: &str) -> Option<(String, u16)> {
 
 /// The container's spec with `plan` applied (crate::gateway_settings::ApplyPlan).
 pub fn planned_spec(spec: &Spec, before: &crate::gateway_settings::GwSettings, plan: &crate::gateway_settings::ApplyPlan, gid_of: &dyn Fn(&str) -> Option<u32>) -> Result<Spec, String> {
+    planned_spec_for(spec, before, plan, gid_of, false)
+}
+
+/// [`planned_spec`]; `dials`: the gateway dials the machine itself for
+/// localhost ([`dials_machine`]), so the host is written as typed.
+pub fn planned_spec_for(spec: &Spec, before: &crate::gateway_settings::GwSettings, plan: &crate::gateway_settings::ApplyPlan, gid_of: &dyn Fn(&str) -> Option<u32>, dials: bool) -> Result<Spec, String> {
     let mut s = spec.clone();
     if let Some(on) = plan.ui_enabled {
         set_env(&mut s.env, "ST_GW_UI", Some(if on { "on" } else { "off" }));
@@ -1567,7 +1595,7 @@ pub fn planned_spec(spec: &Spec, before: &crate::gateway_settings::GwSettings, p
     // to show it again (the file holds host.docker.internal).
     if let Some(h) = &plan.conn_host {
         s.labels.retain(|(k, _)| k != TYPED_HOST_LABEL);
-        if needs_publish(&s) && is_loopback(h) {
+        if needs_publish(&s) && is_loopback(h) && !dials {
             s.labels.push((TYPED_HOST_LABEL.to_string(), h.clone()));
         }
     }
@@ -1651,14 +1679,17 @@ pub fn apply_settings(sink: &ProgressFn, status: &Status, before: &crate::gatewa
     {
         let name = status.container.clone().ok_or("There is no gateway container.")?;
         let spec = inspect_spec(&name).ok_or("The gateway container could not be read.")?;
-        let new = planned_spec(&spec, before, plan, &gid_of)?;
+        // A gateway that dials the machine itself for localhost gets the
+        // host as typed; an older one gets host.docker.internal.
+        let dials = dials_machine(status.version.as_deref());
+        let new = planned_spec_for(&spec, before, plan, &gid_of, dials)?;
         let name = new.name.clone();
         let conn = plan.conn_host.is_some() || plan.conn_port.is_some();
         // localhost for a container on its own network: this machine, as
         // host.docker.internal, where SENTIENT's MQTT port has to answer.
-        let file_host = plan.conn_host.as_deref().map(|h| conn_host_for(&new, h));
-        if let (Some(typed), Some(fh)) = (plan.conn_host.as_deref(), file_host.as_deref()) {
-            if fh == HOST_ALIAS {
+        let file_host = plan.conn_host.as_deref().map(|h| conn_host_for(&new, h, dials));
+        if let Some(typed) = plan.conn_host.as_deref() {
+            if needs_publish(&new) && is_loopback(typed) {
                 let ip = host_gateway_ip();
                 let port = plan.conn_port.or(before.conn.port).unwrap_or(1883);
                 // Tried from the gateway's own container (its network is
@@ -2158,11 +2189,14 @@ mod tests {
         let bridge = Spec { network: "st_default".into(), ..Spec::default() };
         let host = Spec { network: "host".into(), ..Spec::default() };
         for h in ["localhost", "127.0.0.1", "::1", "[::1]", "LOCALHOST"] {
-            assert_eq!(conn_host_for(&bridge, h), HOST_ALIAS, "{h}");
-            assert_eq!(conn_host_for(&host, h), h, "{h}");
+            assert_eq!(conn_host_for(&bridge, h, false), HOST_ALIAS, "{h}");
+            assert_eq!(conn_host_for(&bridge, h, true), h, "{h}: a gateway that dials the machine itself");
+            assert_eq!(conn_host_for(&host, h, false), h, "{h}");
         }
-        assert_eq!(conn_host_for(&bridge, "192.168.0.20"), "192.168.0.20");
-        assert_eq!(conn_host_for(&bridge, "sentient"), "sentient");
+        assert_eq!(conn_host_for(&bridge, "192.168.0.20", false), "192.168.0.20");
+        assert_eq!(conn_host_for(&bridge, "sentient", false), "sentient");
+        assert!(dials_machine(Some("4.18.3")) && dials_machine(Some("v4.19.0-rc1")) && dials_machine(Some("5.0.0")));
+        assert!(!dials_machine(Some("4.18.2")) && !dials_machine(Some("latest")) && !dials_machine(None));
         let mut s = bridge.clone();
         assert!(ensure_host_gateway(&mut s));
         assert!(!ensure_host_gateway(&mut s));
@@ -2214,6 +2248,15 @@ mod tests {
         let legacy = Spec { env: vec![["TB", "_GW_CONFIG_DIR=/thingsboard_gateway/config"].concat()], ..Spec::default() };
         assert_eq!(config_dir_of(&legacy), "/thingsboard_gateway/config");
         assert_eq!(config_dir_of(&Spec::default()), "/sentient_gateway/config");
+    }
+
+    /// An IPv6 publish is bracketed, and read back as the page's access.
+    #[test]
+    fn an_ipv6_publish_is_bracketed() {
+        let json = r#"[{"Name":"/g","Config":{"Image":"i","Env":[]},"HostConfig":{"NetworkMode":"n","PortBindings":{"8642/tcp":[{"HostIp":"::","HostPort":"8642"}]}},"Mounts":[]}]"#;
+        let spec = parse_spec(json).unwrap();
+        assert_eq!(spec.ports, vec!["[::]:8642:8642/tcp".to_string()]);
+        assert_eq!(published_ui_listen(&spec, "0.0.0.0:8642").as_deref(), Some("[::]:8642"));
     }
 
     /// The connection is written into the config file's platform section

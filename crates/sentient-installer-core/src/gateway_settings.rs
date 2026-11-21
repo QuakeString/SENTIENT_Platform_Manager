@@ -892,7 +892,7 @@ pub fn apply(sink: &ProgressFn, status: &Status, plan: &ApplyPlan) -> Result<(),
     if conn {
         if let Some((h, p)) = platform_took_connection(status, since, 20) {
             let target = format!("{}:{}", plan.conn_host.clone().or_else(|| before.conn.host.clone()).unwrap_or_default(), plan.conn_port.or(before.conn.port).unwrap_or(1883));
-            let via = status.kind() == "docker" && plan.conn_host.as_deref().is_some_and(crate::distro::gateway_docker::is_loopback);
+            let via = status.kind() == "docker" && plan.conn_host.as_deref().is_some_and(crate::distro::gateway_docker::is_loopback) && !crate::distro::gateway_docker::dials_machine(status.version.as_deref());
             return Err(platform_owns_words(&target, &h, p, via));
         }
     }
@@ -911,9 +911,13 @@ pub fn apply(sink: &ProgressFn, status: &Status, plan: &ApplyPlan) -> Result<(),
 /// for this gateway once it connected (`via`: typed as localhost for a
 /// container, which SENTIENT must name as host.docker.internal).
 pub fn platform_owns_words(target: &str, host: &str, port: u16, via: bool) -> String {
-    let how = if via { " (there, this machine is host.docker.internal: localhost would be the gateway's own container)" } else { "" };
+    let what = if via {
+        format!("This machine's network address works there today; with the gateway updated to {}.{}.{} or later, localhost works there too.", crate::distro::gateway_docker::DIALS_MACHINE_FROM.0, crate::distro::gateway_docker::DIALS_MACHINE_FROM.1, crate::distro::gateway_docker::DIALS_MACHINE_FROM.2)
+    } else {
+        format!("Set it to {target} there to keep it.")
+    };
     format!(
-        "The gateway connected to SENTIENT at {target}, then SENTIENT sent the connection it keeps for this gateway, {host}:{port}, and the gateway switched to it. While the gateway is connected, SENTIENT's gateway configuration decides its connection. To use {target}, change it in SENTIENT › Gateways › this gateway › Configuration › General{how}."
+        "The gateway connected to SENTIENT at {target}, then switched to {host}:{port}: that is the connection SENTIENT keeps for this gateway, and while the gateway is connected, SENTIENT's saved connection decides. Change it in SENTIENT › Gateways › this gateway › Configuration › General. {what}"
     )
 }
 
@@ -1159,7 +1163,7 @@ mod tests {
         assert_eq!(super::platform_change_in(log), Some(("192.168.0.20".to_string(), 1883)));
         assert_eq!(super::platform_change_in("INFO connected to platform"), None);
         let w = super::platform_owns_words("127.0.0.1:1883", "192.168.0.20", 1883, true);
-        assert!(w.contains("192.168.0.20:1883") && w.contains("Configuration › General") && w.contains("host.docker.internal"), "{w}");
+        assert!(w.contains("192.168.0.20:1883") && w.contains("Configuration › General") && w.contains("network address works there today") && !w.contains("host.docker.internal"), "{w}");
     }
 
     use super::*;

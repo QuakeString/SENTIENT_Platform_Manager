@@ -270,10 +270,13 @@ pub fn take_private_at<T: serde::de::DeserializeOwned>(path: &std::path::Path) -
 /// `install --staged`: the plan file read (and removed: it was put there
 /// for this job), its passwords taken from where `install-secrets` kept them.
 pub fn staged_plan(path: &str) -> Result<crate::installer::InstallPlan, String> {
+    // The staged passwords are taken (and removed) first, whatever happens
+    // to the plan (I21).
+    let secrets = take_staged();
     let text = std::fs::read_to_string(path).map_err(|e| format!("read {path}: {e}"));
     let _ = std::fs::remove_file(path);
     let plan: crate::installer::InstallPlan = serde_json::from_str(&text?).map_err(|e| format!("the plan: {e}"))?;
-    Ok(plan.with_secrets(take_staged()?))
+    Ok(plan.with_secrets(secrets?))
 }
 
 // ---------------------------------------------------------------------------

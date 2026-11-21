@@ -33,6 +33,10 @@ refreshes that repository's Downloads table.
   says so and where to change it. Messages never name the gateway's legacy
   file; a test gates it.
 - A gateway install says whether the gateway connected to SENTIENT.
+- A Docker gateway from 4.18.3 (it dials the machine itself for localhost
+  in a container on its own network) gets localhost / 127.0.0.1 written
+  as typed; an older one gets host.docker.internal. When SENTIENT's saved
+  connection replaces the one set here, the job names it and what works.
 - A native (systemd) or Windows service gateway: a new connection on
   Gateway › Connection counts only once the gateway connects with it
   within 60 seconds; otherwise the previous host and port are put back
