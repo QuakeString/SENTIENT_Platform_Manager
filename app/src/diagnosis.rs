@@ -16,6 +16,7 @@
 //! - The real last error lines always show; the full log and "Copy details"
 //!   are one click away. Retry stays the host's own button.
 
+use gpui_kit::component::scroll::ScrollableElement as _;
 use std::rc::Rc;
 
 use gpui_kit::component::button::ButtonVariants as _;
@@ -207,10 +208,9 @@ impl Render for DiagnosisView {
                             .gap_1()
                             .child(div().text_xs().font_weight(FontWeight::MEDIUM).child(if d.is_known() { "What it printed last" } else { "The last lines it printed" }))
                             .child(
-                                v_flex()
+                                crate::ui::scroll_y(v_flex()
                                     .id("diag-last")
                                     .max_h(px(160.))
-                                    .overflow_y_scroll()
                                     .px_2()
                                     .py_1p5()
                                     .rounded(theme.radius)
@@ -218,15 +218,14 @@ impl Render for DiagnosisView {
                                     .font_family(theme.mono_font_family.clone())
                                     .text_size(px(12.))
                                     .text_color(theme.foreground)
-                                    .children(d.last_lines.iter().map(|l| div().child(l.clone()))),
+                                    .children(d.last_lines.iter().map(|l| div().child(l.clone())))),
                             ),
                     )
                     .when(show_log, |c| {
                         c.child(
-                            v_flex()
+                            crate::ui::scroll_y(v_flex()
                                 .id("diag-full-log")
                                 .max_h(px(260.))
-                                .overflow_y_scroll()
                                 .px_2()
                                 .py_1p5()
                                 .rounded(theme.radius)
@@ -234,7 +233,7 @@ impl Render for DiagnosisView {
                                 .font_family(theme.mono_font_family.clone())
                                 .text_size(px(12.))
                                 .text_color(theme.muted_foreground)
-                                .children(full.into_iter().map(|l| div().child(l))),
+                                .children(full.into_iter().map(|l| div().child(l)))),
                         )
                     })
                     .child(

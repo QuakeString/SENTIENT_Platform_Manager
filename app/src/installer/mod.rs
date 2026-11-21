@@ -14,6 +14,7 @@ pub(crate) use plan::{Host as PlanHost, InstallPlan, InstallSecrets, Shortcuts, 
 #[cfg(windows)]
 pub use plan::provision_clickhouse_wsl;
 
+use gpui_kit::component::scroll::ScrollableElement as _;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
@@ -1648,7 +1649,7 @@ impl Installer {
                     .id("steps-scroll")
                     .flex_1()
                     .min_h_0()
-                    .overflow_y_scroll()
+                    .overflow_y_scrollbar()
                     .gap(px(shell::ROW_GAP))
                     .pt(px(shell::NAV_TOP))
                     .pb(px(12.))
@@ -1796,15 +1797,14 @@ impl Installer {
                     .min_w_0()
                     .h_full()
                     .relative()
-                    .child(
-                        v_flex()
+                    .child({
+                        let page_box = v_flex()
                             // One id per step: a step opens at its top, not
                             // where the previous one was scrolled to.
                             .id(SharedString::from(format!("page-{}", self.step)))
                             .relative()
                             .flex_1()
                             .min_h_0()
-                            .map(|p| if fits { p.overflow_hidden() } else { p.overflow_y_scroll() })
                             .p(px(ui::PAGE_PAD))
                             .gap(px(ui::GAP))
                             .bg(theme.muted)
@@ -1821,8 +1821,11 @@ impl Installer {
                                     .child(div().text_size(px(22.)).font_weight(FontWeight::MEDIUM).child(self.title(self.step)))
                                     .when_some(subtitle, |c, s| c.child(div().text_sm().text_color(theme.muted_foreground).child(s))),
                             )
-                            .child(page),
-                    )
+                            .child(page);
+                        // Welcome fits (its licence scrolls inside: one scroll area);
+                        // every other step scrolls as a whole, with the shared bar.
+                        if fits { page_box.overflow_hidden().into_any_element() } else { page_box.overflow_y_scrollbar().into_any_element() }
+                    })
                     .child(footer)
                     // Windows: the caption over the page's top edge.
                     .children(crate::win_caption::overlay(theme.foreground, theme.muted, window)),
