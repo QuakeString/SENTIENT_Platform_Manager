@@ -69,6 +69,10 @@ pub struct Connection {
     /// Where the host the gateway uses comes from, in words (the config
     /// file and its path, the container's environment and the variable).
     pub host_source: Option<String>,
+    /// How a host the person typed is reached when it is not used as
+    /// typed (localhost in a container on its own network is reached as
+    /// host.docker.internal): a note for under the field.
+    pub via: Option<String>,
 }
 
 impl Connection {
@@ -324,6 +328,7 @@ fn read_config(s: &mut GwSettings, v: &Value) {
         credential,
         from_env: false,
         host_source: None,
+        via: None,
     };
     // The page: on by default outside a container (resolved later).
     let ui = v.get("localUi").cloned().unwrap_or(Value::Null);

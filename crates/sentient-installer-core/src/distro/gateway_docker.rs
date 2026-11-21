@@ -146,7 +146,7 @@ pub fn run_command(image: &str, env_file: &str, devices: &[SerialDevice]) -> Str
     let q = super::shell_quote;
     let volumes: String = VOLUMES.iter().map(|(v, p)| format!(" -v {v}:{p}")).collect();
     format!(
-        "docker run -d --name {CONTAINER} --restart unless-stopped --network host{volumes}{} --env-file {} {}",
+        "docker run -d --name {CONTAINER} --restart unless-stopped --network host --add-host {HOST_GATEWAY}{volumes}{} --env-file {} {}",
         device_flags(devices),
         q(env_file),
         q(image)
@@ -446,6 +446,7 @@ pub fn update_spec(current: &Spec, image: &str, old_image_env: &[String], found:
             spec.mounts.push((DATA_VOLUME.to_string(), data_dir(current), false, false));
         }
     }
+    ensure_host_gateway(&mut spec);
     if spec.devices.is_empty() {
         spec.devices = found.iter().map(|d| (d.path.clone(), d.path.clone())).collect();
         for d in found {
@@ -950,6 +951,9 @@ pub fn take_over(sink: &ProgressFn, choice: ComposeChoice, name: Option<&str>) -
         if let Some(added) = ensure_data_volume(&mut spec) {
             sink(Progress::Log { line: added });
         }
+        if ensure_host_gateway(&mut spec) {
+            sink(Progress::Log { line: format!("{HOST_ALIAS} is this machine in the container (--add-host {HOST_GATEWAY}).") });
+        }
         sink(Progress::Log { line: format!("Image {}", spec.image) });
         if !spec.network.is_empty() {
             sink(Progress::Log { line: format!("Network {}", spec.network) });
@@ -1170,6 +1174,13 @@ pub fn read_settings(status: &Status) -> crate::gateway_settings::GwSettings {
         s.connected_how = Some("the container is stopped".into());
     }
     gs::apply_env(&mut s, &spec.env, true);
+    // localhost typed for a gateway on its own network is written as
+    // host.docker.internal: shown as typed, with how it is reached.
+    if needs_publish(&spec) && s.conn.host.as_deref() == Some(HOST_ALIAS) {
+        let typed = spec.labels.iter().find(|(k, _)| k == TYPED_HOST_LABEL).map(|(_, v)| v.clone()).unwrap_or_else(|| "localhost".into());
+        s.conn.via = Some(format!("This machine: the gateway's container reaches it as {HOST_ALIAS}."));
+        s.conn.host = Some(typed);
+    }
     // Its own network: the page's access is the published address.
     if let Some(l) = published_ui_listen(&spec, &s.ui.listen) {
         s.ui.listen = l;
@@ -1285,15 +1296,68 @@ pub fn published_ui_listen(spec: &Spec, inner: &str) -> Option<String> {
     })
 }
 
-/// Why `host` cannot reach SENTIENT from this container (None: it can be
-/// tried): on a container's own network, loopback is the container itself.
-pub fn loopback_refused(spec: &Spec, host: &str) -> Option<String> {
+/// The name a gateway container reaches this machine by.
+pub const HOST_ALIAS: &str = "host.docker.internal";
+/// `--add-host` that makes [`HOST_ALIAS`] this machine (Docker's host-gateway).
+pub const HOST_GATEWAY: &str = "host.docker.internal:host-gateway";
+/// The label that keeps the host typed when it is written as [`HOST_ALIAS`].
+pub const TYPED_HOST_LABEL: &str = "in.sentient.gateway.typed-host";
+
+/// localhost, ::1 or 127.x.
+pub fn is_loopback(host: &str) -> bool {
     let h = host.trim().trim_matches(['[', ']']).to_ascii_lowercase();
-    let loopback = h == "localhost" || h == "::1" || h.starts_with("127.");
-    (loopback && needs_publish(spec)).then(|| format!(
-        "{host} is the gateway's own container here: it runs on the Docker network {}, not on this machine's. Use this machine's network address, or SENTIENT's container name when both are on the same Docker network.",
-        spec.network
-    ))
+    h == "localhost" || h == "::1" || h.starts_with("127.")
+}
+
+/// Give the container [`HOST_GATEWAY`] when it has no host.docker.internal
+/// of its own, so this machine always has a name in it. true: added.
+pub fn ensure_host_gateway(spec: &mut Spec) -> bool {
+    if spec.extra_hosts.iter().any(|h| h.split(':').next() == Some(HOST_ALIAS)) {
+        return false;
+    }
+    spec.extra_hosts.push(HOST_GATEWAY.to_string());
+    true
+}
+
+/// The host written to the config file for `typed`: in a container on its
+/// own network, loopback is the container itself, so this machine is
+/// reached as [`HOST_ALIAS`]; anything else as typed.
+pub fn conn_host_for(spec: &Spec, typed: &str) -> String {
+    if needs_publish(spec) && is_loopback(typed) {
+        HOST_ALIAS.to_string()
+    } else {
+        typed.to_string()
+    }
+}
+
+/// The address host-gateway is on this machine (the default bridge's
+/// gateway; Docker's own default when it cannot be read).
+#[cfg(not(windows))]
+fn host_gateway_ip() -> String {
+    docker(&["network", "inspect", "bridge", "--format", "{{range .IPAM.Config}}{{.Gateway}} {{end}}"])
+        .filter(|(ok, _)| *ok)
+        .and_then(|(_, o)| o.split_whitespace().find(|a| a.parse::<std::net::Ipv4Addr>().is_ok()).map(str::to_string))
+        .unwrap_or_else(|| "172.17.0.1".into())
+}
+
+/// Err: nothing on this machine answers where a container reaches it
+/// (`ip`:`port`, host.docker.internal): SENTIENT's MQTT port listens on
+/// 127.0.0.1 only, or is not there.
+pub fn host_gateway_reachable(ip: &str, port: u16, typed: &str) -> Result<(), String> {
+    let addr: std::net::SocketAddr = format!("{ip}:{port}").parse().map_err(|_| format!("{ip}:{port} is not an address"))?;
+    match std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_secs(3)) {
+        Ok(_) => Ok(()),
+        Err(_) => Err(format!(
+            "{typed} in the gateway's container is the container itself, so it reaches this machine as {HOST_ALIAS} ({ip}), and nothing answers on {ip}:{port}: SENTIENT's MQTT port listens on 127.0.0.1 only, or not on {port}. Publish it on all interfaces (\"{port}:{port}\") or on {ip}, then Apply again. Nothing was changed."
+        )),
+    }
+}
+
+/// ": <the gateway's last line about its connection>", or "".
+#[cfg(not(windows))]
+fn last_connect_line(name: &str) -> String {
+    let last = docker_all(&["logs", "--tail", "40", name]).map(|(_, o)| o).unwrap_or_default();
+    last.lines().rev().map(strip_ansi).find(|l| l.contains("uplink") || l.contains("connect")).map(|l| format!(": {}", l.trim())).unwrap_or_default()
 }
 
 /// Whether the gateway in `name` reports being connected to SENTIENT
@@ -1414,6 +1478,15 @@ pub fn planned_spec(spec: &Spec, before: &crate::gateway_settings::GwSettings, p
         set_ui_publish(&mut s, on, if listen.is_empty() { "0.0.0.0:8642" } else { &listen });
     }
     ensure_data_volume(&mut s);
+    ensure_host_gateway(&mut s);
+    // localhost typed for a container on its own network: what was typed,
+    // to show it again (the file holds host.docker.internal).
+    if let Some(h) = &plan.conn_host {
+        s.labels.retain(|(k, _)| k != TYPED_HOST_LABEL);
+        if needs_publish(&s) && is_loopback(h) {
+            s.labels.push((TYPED_HOST_LABEL.to_string(), h.clone()));
+        }
+    }
     // The connection goes to the config file (write_connection, before the
     // recreate); the environment no longer overrides it.
     if plan.conn_host.is_some() || plan.conn_port.is_some() {
@@ -1497,8 +1570,15 @@ pub fn apply_settings(sink: &ProgressFn, status: &Status, before: &crate::gatewa
         let new = planned_spec(&spec, before, plan, &gid_of)?;
         let name = new.name.clone();
         let conn = plan.conn_host.is_some() || plan.conn_port.is_some();
-        if let Some(why) = plan.conn_host.as_deref().and_then(|h| loopback_refused(&spec, h)) {
-            return Err(why);
+        // localhost for a container on its own network: this machine, as
+        // host.docker.internal, where SENTIENT's MQTT port has to answer.
+        let file_host = plan.conn_host.as_deref().map(|h| conn_host_for(&new, h));
+        if let (Some(typed), Some(fh)) = (plan.conn_host.as_deref(), file_host.as_deref()) {
+            if fh == HOST_ALIAS {
+                let ip = host_gateway_ip();
+                host_gateway_reachable(&ip, plan.conn_port.or(before.conn.port).unwrap_or(1883), typed)?;
+                sink(Progress::Log { line: format!("{typed} is this machine: the gateway's container reaches it as {HOST_ALIAS} ({ip}).") });
+            }
         }
         // An image that sets the connection itself wins over the file even
         // once the container's own variables are gone: said before anything
@@ -1513,18 +1593,31 @@ pub fn apply_settings(sink: &ProgressFn, status: &Status, before: &crate::gatewa
         let old_file = if conn { read_config_file(&spec.name) } else { None };
         if conn {
             sink(Progress::Step { name: "Writing the connection to the gateway's config file".into() });
-            write_connection(&spec.name, plan.conn_host.as_deref(), plan.conn_port)?;
+            write_connection(&spec.name, file_host.as_deref(), plan.conn_port)?;
         }
-        recreate_container(sink, &new, Some(format!("Stopping the container {name}")), &format!("Creating {name} again with the same volumes"), "with the new settings")?;
+        if let Err(e) = recreate_container(sink, &new, Some(format!("Stopping the container {name}")), &format!("Creating {name} again with the same volumes"), "with the new settings") {
+            // The previous container runs again: so does its file.
+            if conn {
+                match &old_file {
+                    Some((path, json)) => {
+                        let _ = write_config_raw(&name, path, json);
+                    }
+                    None => {
+                        let _ = docker(&["exec", &name, "sh", "-c", "rm -f \"${ST_GW_CONFIG_DIR:-/sentient_gateway/config}/st_gateway.json\""]);
+                    }
+                }
+                let _ = docker(&["restart", &name]);
+            }
+            return Err(e);
+        }
         // A new connection counts only once the gateway is connected with it;
         // otherwise the old one comes back, and the error says why.
         if conn {
             let target = format!("{}:{}", plan.conn_host.clone().or_else(|| before.conn.host.clone()).unwrap_or_default(), plan.conn_port.or(before.conn.port).unwrap_or(1883));
             sink(Progress::Step { name: format!("Checking the gateway connects to SENTIENT at {target}") });
             if !wait_connected(&name, 60) {
-                let last = docker_all(&["logs", "--tail", "40", &name]).map(|(_, o)| o).unwrap_or_default();
-                let why = last.lines().rev().map(strip_ansi).find(|l| l.contains("uplink") || l.contains("connect")).unwrap_or_default();
-                sink(Progress::Log { line: format!("Not connected within 60 seconds{}", if why.is_empty() { String::new() } else { format!(": {}", why.trim()) }) });
+                let why = last_connect_line(&name);
+                sink(Progress::Log { line: format!("Not connected within 60 seconds{why}") });
                 sink(Progress::Step { name: "Putting the previous connection back".into() });
                 match &old_file {
                     Some((path, json)) => {
@@ -1536,7 +1629,8 @@ pub fn apply_settings(sink: &ProgressFn, status: &Status, before: &crate::gatewa
                     }
                 }
                 recreate_container(sink, &spec, None, "Creating the gateway again with its previous settings", "with its previous settings")?;
-                return Err(format!("The gateway did not connect to SENTIENT at {target} within 60 seconds, so its previous connection was put back. Check the address from the gateway's machine{}.", if needs_publish(&spec) { " (in a container on its own network, use the machine's network address or SENTIENT's container name, not localhost)" } else { "" }));
+                let via = if file_host.as_deref() == Some(HOST_ALIAS) { format!(" (this machine, reached from the container as {HOST_ALIAS}: a firewall may stop containers reaching it)") } else { String::new() };
+                return Err(format!("The gateway did not connect to SENTIENT at {target}{via} within 60 seconds{why}, so its previous connection was put back. Check the address from the gateway's machine."));
             }
             sink(Progress::Log { line: format!("Connected to SENTIENT at {target}.") });
         }
@@ -1776,7 +1870,7 @@ mod tests {
     fn the_run_line_passes_serial_adapters_with_their_group() {
         let none = run_command("quakestring/sentient-gateway-rs:4.16.2", "/tmp/gw.env", &[]);
         assert!(!none.contains("--device") && !none.contains("--group-add"));
-        assert!(none.contains("--network host -v st-gw-config:/sentient_gateway/config"));
+        assert!(none.contains("--network host --add-host host.docker.internal:host-gateway -v st-gw-config:/sentient_gateway/config"));
         let devs = [
             SerialDevice { path: "/dev/serial/by-id/usb-Example_RS485_A1-if00-port0".into(), gid: 986 },
             SerialDevice { path: "/dev/ttyACM0".into(), gid: 986 },
@@ -1936,6 +2030,56 @@ mod tests {
         assert_eq!(published_ui_listen(&h, "127.0.0.1:8642"), None);
     }
 
+    /// localhost for a container on its own network is this machine as
+    /// host.docker.internal (kept as typed in a label); on the host network
+    /// and for any other host, as typed. Every container gets the name.
+    #[test]
+    fn localhost_in_a_bridge_container_is_this_machine() {
+        let bridge = Spec { network: "st_default".into(), ..Spec::default() };
+        let host = Spec { network: "host".into(), ..Spec::default() };
+        for h in ["localhost", "127.0.0.1", "::1", "[::1]", "LOCALHOST"] {
+            assert_eq!(conn_host_for(&bridge, h), HOST_ALIAS, "{h}");
+            assert_eq!(conn_host_for(&host, h), h, "{h}");
+        }
+        assert_eq!(conn_host_for(&bridge, "192.168.0.20"), "192.168.0.20");
+        assert_eq!(conn_host_for(&bridge, "sentient"), "sentient");
+        let mut s = bridge.clone();
+        assert!(ensure_host_gateway(&mut s));
+        assert!(!ensure_host_gateway(&mut s));
+        assert_eq!(s.extra_hosts, vec![HOST_GATEWAY.to_string()]);
+        let mut own = Spec { extra_hosts: vec!["host.docker.internal:10.0.0.1".into()], ..Spec::default() };
+        assert!(!ensure_host_gateway(&mut own), "its own host.docker.internal stays");
+        assert!(run_args(&s, "/e").join(" ").contains("--add-host host.docker.internal:host-gateway"));
+        assert!(run_command("img", "/e", &[]).contains("--add-host host.docker.internal:host-gateway"));
+    }
+
+    /// Apply's plan: the typed host goes in a label for a bridge container
+    /// (localhost), not for another host; the container gets the name.
+    #[test]
+    fn the_typed_host_is_kept_for_the_page() {
+        let bridge = Spec { network: "st_default".into(), ..Spec::default() };
+        let before = crate::gateway_settings::GwSettings::default();
+        let plan = crate::gateway_settings::ApplyPlan { conn_host: Some("127.0.0.1".into()), ..Default::default() };
+        let s = planned_spec(&bridge, &before, &plan, &|_| None).unwrap();
+        assert!(s.labels.contains(&(TYPED_HOST_LABEL.to_string(), "127.0.0.1".to_string())));
+        assert!(s.extra_hosts.contains(&HOST_GATEWAY.to_string()));
+        let plan = crate::gateway_settings::ApplyPlan { conn_host: Some("192.168.0.20".into()), ..Default::default() };
+        let s2 = planned_spec(&s, &before, &plan, &|_| None).unwrap();
+        assert!(!s2.labels.iter().any(|(k, _)| k == TYPED_HOST_LABEL));
+    }
+
+    /// Where nothing answers, the reason names host.docker.internal and
+    /// 127.0.0.1-only publishing; something listening passes.
+    #[test]
+    fn the_host_gateway_port_is_checked() {
+        let l = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let p = l.local_addr().unwrap().port();
+        assert!(host_gateway_reachable("127.0.0.1", p, "localhost").is_ok());
+        drop(l);
+        let e = host_gateway_reachable("127.0.0.1", p, "localhost").unwrap_err();
+        assert!(e.contains(HOST_ALIAS) && e.contains("127.0.0.1 only") && e.contains("Nothing was changed"), "{e}");
+    }
+
     /// The connection is written into the config file's platform section
     /// (an older file's too), the rest of it kept.
     #[test]
@@ -2017,7 +2161,7 @@ mod tests {
         assert_eq!((new.restart.as_str(), new.group_add.clone()), ("no", vec!["986".to_string()]));
         let args = run_args(&new, "/run/user/1000/x.env").join(" ");
         assert!(!args.contains("Q1w2E3r4"), "{args}");
-        assert!(args.contains("--network host -v st-gw-config:/sentient_gateway/config -v /srv/example/certs:/certs:ro"), "{args}");
+        assert!(args.contains("--network host --add-host host.docker.internal:host-gateway -v st-gw-config:/sentient_gateway/config -v /srv/example/certs:/certs:ro"), "{args}");
         assert!(args.contains("--device /dev/serial/by-id/usb-Example_RS485-if00:/dev/serial/by-id/usb-Example_RS485-if00 --group-add 986"));
         assert!(!args.contains("--restart"));
         assert!(args.ends_with("--env-file /run/user/1000/x.env quakestring/sentient-gateway-rs:4.16.2"));

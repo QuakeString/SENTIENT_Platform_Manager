@@ -16,6 +16,16 @@ refreshes that repository's Downloads table.
 ## [Unreleased]
 
 ### Fixed
+- Gateway › Connection accepts localhost and 127.0.0.1 for a Docker
+  gateway on its own network: it is written as host.docker.internal (this
+  machine), the page keeps showing what was typed with a note, and Apply
+  first checks SENTIENT's MQTT port answers there (published on all
+  interfaces), then waits for the gateway to connect or puts the previous
+  connection back. Every gateway container the Platform Manager creates
+  (install, take over, update, Apply) gets host.docker.internal.
+- A remote install stops when the server has data an earlier SENTIENT
+  left (its Docker volumes, /var/lib/sentient) without its containers or
+  service, naming it, instead of installing over it.
 - A job on a server that failed was shown as done (gateway install,
   update, Apply, take over, start/stop, remove; SENTIENT's update when it
   stopped early): its error went where the window did not read it. Every

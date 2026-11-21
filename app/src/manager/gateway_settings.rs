@@ -270,14 +270,6 @@ impl GatewaySettingsCard {
             if h.is_empty() || h.contains(char::is_whitespace) || h.contains("://") {
                 return Some((0, "The host is a name or an address, with no spaces and no http://.".into()));
             }
-            // In a container on its own network, loopback is the container.
-            if let Some(s) = self.settings.as_ref().and_then(|s| s.as_ref().ok()) {
-                let hl = h.trim_matches(['[', ']']).to_ascii_lowercase();
-                let own_net = s.machine.kind == "docker" && s.machine.network.as_deref().is_some_and(|n| !matches!(n, "host" | "none"));
-                if own_net && (hl == "localhost" || hl == "::1" || hl.starts_with("127.")) {
-                    return Some((0, format!("{h} is the gateway's own container: use this machine's network address, or SENTIENT's container name when both are on the same Docker network.")));
-                }
-            }
             if !Self::text(&self.conn_port, cx).parse::<u16>().is_ok_and(|p| p > 0) {
                 return Some((0, "The MQTT port needs a number from 1 to 65535.".into()));
             }
@@ -607,14 +599,18 @@ impl GatewaySettingsCard {
                     let p_changed = p_now != self.base_conn_port;
                     let bad = (p_changed && !p_now.parse::<u16>().is_ok_and(|p| p > 0)).then(|| "A number from 1 to 65535".to_string());
                     let env_note = c.from_env.then(|| "Now set in the container's environment".to_string());
+                    let host_note = match (env_note.clone(), c.via.clone()) {
+                        (Some(e), Some(v)) => Some(format!("{e}. {v}")),
+                        (e, v) => v.or(e),
+                    };
                     rows.push(SettingRow {
                         label: "Host".into(),
                         help: Some(if s.machine.kind == "docker" && s.machine.network.as_deref().is_some_and(|n| !matches!(n, "host" | "none")) {
-                            "SENTIENT's MQTT host as this gateway reaches it from its container: this machine's network address, or SENTIENT's container name when both are on the same Docker network (localhost is the container itself).".into()
+                            "SENTIENT's MQTT host as this gateway reaches it: localhost or 127.0.0.1 when SENTIENT runs on this machine (its container reaches the machine as host.docker.internal, so SENTIENT's MQTT port must be published on all interfaces), else its address on this network.".into()
                         } else {
                             "SENTIENT's MQTT host as this gateway reaches it: localhost or 127.0.0.1 when SENTIENT runs on the same machine, else its address on this network.".into()
                         }),
-                        desc: env_note.clone(),
+                        desc: host_note,
                         restart: h_changed,
                         changed: h_changed,
                         control: ui::field_input(theme, &hi, None, None, false, window, cx).into_any_element(),
@@ -635,7 +631,7 @@ impl GatewaySettingsCard {
                     });
                 }
                 _ => {
-                    rows.push(plain(theme, "Host", s.machine.not_editable.clone(), host));
+                    rows.push(plain(theme, "Host", s.machine.not_editable.clone().or_else(|| c.via.clone()), host));
                     rows.push(plain(theme, "MQTT port", None, port));
                 }
             }

@@ -693,6 +693,16 @@ pub fn run(mut plan: InstallPlan, sink: ProgressFn) -> Result<(), String> {
                 c.kind, c.location
             ));
         }
+        // Data an earlier SENTIENT left without its containers or service:
+        // never reused or overwritten without being asked.
+        let left = leftover_data(&plan);
+        if !left.is_empty() {
+            return Err(format!(
+                "This server has data an earlier SENTIENT left: {}. Nothing was installed and nothing was removed. If that data is not needed, remove it on the server first{}; to keep using it, install on the server itself, where Setup offers to keep it.",
+                left.join(", "),
+                if plan.engine == Engine::Docker { format!(" (docker volume rm {})", left.iter().filter_map(|l| l.strip_prefix("the Docker volume ")).collect::<Vec<_>>().join(" ")) } else { String::new() }
+            ));
+        }
     }
     if plan.bundle.is_none() && plan.engine == Engine::Native {
         if let Some(version) = plan.download.clone() {
@@ -1028,4 +1038,25 @@ fn admin_sign_in(sink: &ProgressFn, kept: bool, r: Result<(), String>) -> Result
         }
         Err(e) => Err(format!("The administrator sign-in could not be set ({e}).")),
     }
+}
+
+/// What an earlier SENTIENT left here without its containers or service:
+/// its Docker volumes (by this plan's names), its data folder.
+fn leftover_data(plan: &InstallPlan) -> Vec<String> {
+    let mut out = Vec::new();
+    if plan.engine == Engine::Docker {
+        let n = plan.stack.names();
+        for v in [n.vol_pg, n.vol_ch, n.vol_data] {
+            let there = sentient_installer_core::host::host_command("docker").args(["volume", "inspect", &v]).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status().is_ok_and(|s| s.success());
+            if there {
+                out.push(format!("the Docker volume {v}"));
+            }
+        }
+    } else if cfg!(target_os = "linux") {
+        let dir = std::path::Path::new("/var/lib/sentient");
+        if std::fs::read_dir(dir).is_ok_and(|mut d| d.next().is_some()) {
+            out.push(format!("the folder {}", dir.display()));
+        }
+    }
+    out
 }
