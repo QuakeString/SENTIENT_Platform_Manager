@@ -123,6 +123,10 @@ pub struct CheckRecord {
     pub ok: bool,
     /// "All 14 parts match." or what does not.
     pub summary: String,
+    /// Each part's result, by its archive path. Empty in checks made
+    /// before parts were recorded.
+    #[serde(default)]
+    pub parts: Vec<(String, bool)>,
 }
 
 /// Where checks are remembered: beside the installation record when this
@@ -176,7 +180,7 @@ pub fn check(file: &Path, passphrase: Option<&str>) -> Result<sentient_backup_co
         Err(e) if e.to_string().to_lowercase().contains("passphrase") => return Err(e.to_string()),
         Err(e) => {
             let summary = format!("Damaged: the file cannot be read through ({e}).");
-            store_check(file, CheckRecord { at: chrono::Local::now().to_rfc3339(), ok: false, summary: summary.clone() });
+            store_check(file, CheckRecord { at: chrono::Local::now().to_rfc3339(), ok: false, summary: summary.clone(), parts: Vec::new() });
             return Err(summary);
         }
     };
@@ -194,8 +198,213 @@ pub fn check(file: &Path, passphrase: Option<&str>) -> Result<sentient_backup_co
             .collect();
         format!("Damaged: {}.", bad.join(", "))
     };
-    store_check(file, CheckRecord { at: chrono::Local::now().to_rfc3339(), ok: report.ok(), summary });
+    let parts = report
+        .members
+        .iter()
+        .map(|m| (m.path.clone(), m.ok))
+        .chain(report.missing.iter().map(|p| (p.clone(), false)))
+        .collect();
+    store_check(file, CheckRecord { at: chrono::Local::now().to_rfc3339(), ok: report.ok(), summary, parts });
     Ok(report)
+}
+
+// ---------------------------------------------------------------------------
+// Details: what one backup holds (its manifest)
+// ---------------------------------------------------------------------------
+
+/// One part of a backup (an archive member), in plain words, and its size.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Content {
+    /// The archive member (`db/telemetry/2026-09.copy.zst`).
+    pub path: String,
+    pub label: String,
+    pub bytes: u64,
+}
+
+/// A part of the backup in the Details dialog's words: "Database (all but
+/// telemetry)", "Telemetry 2026-09", "ClickHouse telemetry 2026-09",
+/// "File store: Reports", "Manifest".
+pub fn part_name(path: &str) -> String {
+    use sentient_backup_core::backup::{DUMP_MEMBER, TELEMETRY_MEMBER, TELEMETRY_MONTH_PREFIX};
+    // "2026-09" from ".../2026-09.copy.zst" or ".../202609.native.zst".
+    let month = |p: &str| -> Option<String> {
+        let stem = p.rsplit('/').next()?.split('.').next()?.replace('-', "");
+        (stem.len() >= 6 && stem[..6].bytes().all(|b| b.is_ascii_digit())).then(|| format!("{}-{}", &stem[..4], &stem[4..6]))
+    };
+    if path == "manifest.json" {
+        "Manifest".into()
+    } else if path == DUMP_MEMBER {
+        "Database (all but telemetry)".into()
+    } else if path == TELEMETRY_MEMBER {
+        "Telemetry".into()
+    } else if let Some(rest) = path.strip_prefix(TELEMETRY_MONTH_PREFIX) {
+        month(rest).map(|m| format!("Telemetry {m}")).unwrap_or_else(|| "Telemetry".into())
+    } else if let Some(rest) = path.strip_prefix("clickhouse/") {
+        match rest.split_once('/') {
+            Some((_, part)) => month(part).map(|m| format!("ClickHouse telemetry {m}")).unwrap_or_else(|| "ClickHouse telemetry".into()),
+            None => "ClickHouse latest values".into(),
+        }
+    } else if let Some(store) = path.strip_prefix("files/") {
+        match store.split('.').next().unwrap_or("") {
+            "reports" => "File store: Reports".into(),
+            "vc-repos" => "File store: Version control".into(),
+            other => format!("File store: {other}"),
+        }
+    } else {
+        path.to_string()
+    }
+}
+
+/// One kind of data the backup selected or left out, as the manifest's
+/// components record it (rows and size at backup time).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DataKind {
+    pub name: String,
+    pub included: bool,
+    pub rows: i64,
+    pub bytes: i64,
+}
+
+/// The platform as the manifest recorded it (never a secret).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct PlatformFacts {
+    #[serde(default)]
+    pub address: Option<String>,
+    /// "st-dev.local, expires 12 Mar 2027".
+    #[serde(default)]
+    pub certificate: Option<String>,
+    /// "Professional, bound to st-dev".
+    #[serde(default)]
+    pub licence: Option<String>,
+    #[serde(default)]
+    pub gateways: Vec<String>,
+}
+
+/// What the Details dialog shows for a backup: the file, and what its
+/// manifest records (nothing more). An encrypted backup's manifest needs
+/// its passphrase: then only the file's own facts are known.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Details {
+    pub name: String,
+    pub folder: String,
+    pub bytes: u64,
+    /// Files it is split into (1: one file).
+    pub files: usize,
+    /// "2026-11-17 04:25", local.
+    pub made: String,
+    pub automatic: bool,
+    pub encrypted: bool,
+    /// Everything, Last N days, Configuration only, or the parts chosen.
+    #[serde(default)]
+    pub scope: Option<String>,
+    #[serde(default)]
+    pub sentient_version: Option<String>,
+    #[serde(default)]
+    pub database_type: Option<String>,
+    /// The computer it was made on.
+    #[serde(default)]
+    pub host: Option<String>,
+    #[serde(default)]
+    pub schema_version: Option<i64>,
+    #[serde(default)]
+    pub postgres_version: Option<String>,
+    /// The Platform Manager that made it.
+    #[serde(default)]
+    pub made_by: Option<String>,
+    #[serde(default)]
+    pub data: Vec<DataKind>,
+    /// Absent in backups made before it was recorded.
+    #[serde(default)]
+    pub platform: Option<PlatformFacts>,
+    /// Its parts, in the archive's order. Empty when the manifest could not
+    /// be read (`unreadable` says why).
+    #[serde(default)]
+    pub contents: Vec<Content>,
+    #[serde(default)]
+    pub unreadable: Option<String>,
+    #[serde(default)]
+    pub check: Option<CheckRecord>,
+}
+
+/// What was backed up, from the manifest: the telemetry window and whether
+/// every part was taken.
+pub fn scope_of(m: &sentient_backup_core::manifest::Manifest) -> String {
+    use sentient_backup_core::manifest::TelemetrySelection;
+    let all_parts = m.components.iter().all(|c| c.selected);
+    match (&m.telemetry, all_parts) {
+        (TelemetrySelection::None, _) => "Configuration only".into(),
+        (TelemetrySelection::Range { days }, true) => format!("Last {days} days"),
+        (TelemetrySelection::All, true) => "Everything".into(),
+        // A choice of parts (Choose…): name them.
+        _ => {
+            let chosen: Vec<&str> = m.components.iter().filter(|c| c.selected).map(|c| c.name.as_str()).collect();
+            format!("Chosen parts: {}", chosen.join(", "))
+        }
+    }
+}
+
+/// The Details of `e` (blocking: reads the manifest at the file's start).
+pub fn details(e: &Entry) -> Details {
+    let encrypted = sentient_backup_core::restore::is_encrypted(&e.path).unwrap_or(false);
+    let mut d = Details {
+        name: e.name.clone(),
+        folder: e.path.parent().map(|p| p.display().to_string()).unwrap_or_default(),
+        bytes: e.bytes,
+        files: e.parts,
+        made: e.made.clone(),
+        automatic: e.automatic,
+        encrypted,
+        scope: None,
+        sentient_version: None,
+        database_type: None,
+        host: None,
+        schema_version: None,
+        postgres_version: None,
+        made_by: None,
+        data: Vec::new(),
+        platform: None,
+        contents: Vec::new(),
+        unreadable: None,
+        check: e.check.clone(),
+    };
+    if encrypted {
+        d.unreadable = Some("The backup is encrypted: what it holds is shown when it is restored with its passphrase.".into());
+        return d;
+    }
+    match sentient_backup_core::restore::inspect(&e.path, None) {
+        Ok(m) => {
+            d.scope = Some(scope_of(&m));
+            d.sentient_version = m.source.sentient_version.clone();
+            d.database_type = m.source.database_type.clone();
+            d.host = m.source.host.clone();
+            d.schema_version = m.source.schema_version;
+            d.postgres_version = Some(m.source.postgres_version.clone()).filter(|v| !v.is_empty());
+            d.made_by = Some(m.tool_version.clone()).filter(|v| !v.is_empty());
+            d.data = m.components.iter().map(|c| DataKind { name: c.name.clone(), included: c.selected, rows: c.rows, bytes: c.bytes }).collect();
+            d.platform = m.platform.as_ref().map(|p| PlatformFacts {
+                address: p.public_url.clone(),
+                certificate: p.tls.as_ref().map(|t| match t.expires.as_deref().and_then(|e| chrono::DateTime::parse_from_rfc3339(e).ok()) {
+                    Some(at) => format!("{}, expires {}", t.name, at.format("%-d %b %Y")),
+                    None => t.name.clone(),
+                }),
+                licence: p.licence.as_ref().map(|l| match &l.bound_to {
+                    Some(b) => format!("{}, bound to {b}", l.kind),
+                    None => l.kind.clone(),
+                }),
+                gateways: p.gateways.clone(),
+            });
+            d.contents = m.files.iter().map(|f| Content { path: f.path.clone(), label: part_name(&f.path), bytes: f.bytes }).collect();
+        }
+        Err(err) => d.unreadable = Some(format!("The backup's list of contents cannot be read: {err}")),
+    }
+    d
+}
+
+/// The Details of the backup at `path` in its folder's list.
+pub fn details_of(path: &Path) -> Result<Details, String> {
+    let folder = path.parent().ok_or("Not a backup file.")?;
+    let e = list(folder).into_iter().find(|e| e.path == path).ok_or_else(|| format!("{} is not a backup in {}.", path.display(), folder.display()))?;
+    Ok(details(&e))
 }
 
 // ---------------------------------------------------------------------------
@@ -595,7 +804,7 @@ pub fn run_as(record: &InstallationRecord, prefs: &BackupPrefs, passphrase: Opti
 
     sink(Progress::Step { name: STEP_CHECK.into() });
     let report = check(&summary.output, passphrase.as_deref())?;
-    let rec = check_of(&summary.output).unwrap_or(CheckRecord { at: String::new(), ok: report.ok(), summary: String::new() });
+    let rec = check_of(&summary.output).unwrap_or(CheckRecord { at: String::new(), ok: report.ok(), summary: String::new(), parts: Vec::new() });
     if !report.ok() {
         return Err(format!("The backup was written but does not read back correctly: {}", rec.summary));
     }
@@ -750,4 +959,126 @@ mod tests {
         let none = estimate(&p, 3 << 30, 0, 2 << 30).0;
         assert!(all > none && none > 0);
     }
+}
+
+#[cfg(test)]
+mod details_tests {
+    use super::part_name;
+
+    #[test]
+    fn parts_have_plain_names() {
+        assert_eq!(part_name("manifest.json"), "Manifest");
+        assert_eq!(part_name("db/dump.pgc.zst"), "Database (all but telemetry)");
+        assert_eq!(part_name("db/telemetry.copy.zst"), "Telemetry");
+        assert_eq!(part_name("db/telemetry/2026-09.copy.zst"), "Telemetry 2026-09");
+        assert_eq!(part_name("clickhouse/ts_kv/202609.native.zst"), "ClickHouse telemetry 2026-09");
+        assert_eq!(part_name("clickhouse/ts_kv_latest.native.zst"), "ClickHouse latest values");
+        assert_eq!(part_name("files/reports.tar.zst"), "File store: Reports");
+        assert_eq!(part_name("files/vc-repos.tar.zst"), "File store: Version control");
+        assert_eq!(part_name("files/extra.tar.zst"), "File store: extra");
+    }
+}
+
+/// Screens: canned Details (SPM_DEBUG_BACKUP_DETAILS=new|old|part|long|encrypted).
+#[cfg(debug_assertions)]
+pub fn canned_details(kind: &str) -> Details {
+    let content = |path: &str, mb: u64| Content { path: path.into(), label: part_name(path), bytes: mb * 1_000_000 };
+    let kindrow = |name: &str, included: bool, rows: i64, mb: i64| DataKind { name: name.into(), included, rows, bytes: mb * 1_000_000 };
+    let check = |at: &str, parts: &[Content], bad: &[&str]| CheckRecord {
+        at: at.into(),
+        ok: bad.is_empty(),
+        summary: if bad.is_empty() { format!("All {} parts match.", parts.len()) } else { "Damaged.".into() },
+        parts: parts.iter().map(|c| (c.path.clone(), !bad.contains(&c.path.as_str()))).collect(),
+    };
+    let mut d = Details {
+        name: "sentient-2026-11-17_0425".into(),
+        folder: "/var/backups/sentient".into(),
+        bytes: 536_000_000,
+        files: 1,
+        made: "2026-11-17 04:25".into(),
+        automatic: false,
+        encrypted: false,
+        scope: Some("Everything".into()),
+        sentient_version: Some("4.4.1.0".into()),
+        database_type: Some("PostgreSQL + ClickHouse".into()),
+        host: Some("st-dev".into()),
+        schema_version: Some(37),
+        postgres_version: Some("16.4".into()),
+        made_by: Some("0.9.5".into()),
+        data: vec![
+            kindrow("Configuration (entities, dashboards, users, …)", true, 48_210, 38),
+            kindrow("Telemetry (historical)", true, 12_904_331, 412),
+            kindrow("Telemetry (latest)", true, 6_402, 2),
+            kindrow("Attributes", true, 21_877, 6),
+            kindrow("Alarms", true, 3_114, 4),
+            kindrow("Audit & event logs", true, 188_420, 52),
+            kindrow("Reports", true, 0, 9),
+            kindrow("Version control", true, 0, 3),
+        ],
+        platform: Some(PlatformFacts {
+            address: Some("https://st-dev.local".into()),
+            certificate: Some("st-dev.local, expires 12 Mar 2027".into()),
+            licence: Some("Professional, bound to st-dev".into()),
+            gateways: vec!["st-gateway → 11.11.0.3:1883".into()],
+        }),
+        contents: Vec::new(),
+        unreadable: None,
+        check: None,
+    };
+    let months = |from: u32, n: u32, start_year: i32| -> Vec<Content> {
+        (0..n).map(|i| {
+            let m0 = from - 1 + i;
+            let (y, m) = (start_year + (m0 / 12) as i32, m0 % 12 + 1);
+            content(&format!("db/telemetry/{y}-{m:02}.copy.zst"), 40 + (i as u64 * 7) % 80)
+        }).collect()
+    };
+    match kind {
+        "old" => {
+            d.name = "sentient-2026-10-02_2210".into();
+            d.made = "2026-10-02 22:10".into();
+            d.automatic = true;
+            d.bytes = 488_000_000;
+            d.host = None;
+            d.sentient_version = None;
+            d.schema_version = None;
+            d.database_type = None;
+            d.postgres_version = Some("16.2".into());
+            d.made_by = Some("0.8.0".into());
+            d.platform = None;
+            d.data.truncate(6);
+            d.contents = std::iter::once(content("db/dump.pgc.zst", 92)).chain(months(7, 4, 2026)).collect();
+            d.check = Some(check("2026-10-02T22:11:00+05:30", &d.contents, &[]));
+        }
+        "part" => {
+            d.name = "sentient-2026-11-20_0200".into();
+            d.made = "2026-11-20 02:00".into();
+            d.automatic = true;
+            d.bytes = 301_000_000;
+            d.folder = r"D:\SENTIENT\backups".into();
+            d.scope = Some("Last 90 days".into());
+            d.host = Some("saf-server".into());
+            d.sentient_version = Some("4.4.1.2".into());
+            d.database_type = Some("PostgreSQL + TimescaleDB".into());
+            d.data[5].included = false;
+            d.contents = std::iter::once(content("db/dump.pgc.zst", 112)).chain(months(8, 4, 2026)).chain(std::iter::once(content("files/reports.tar.zst", 12))).collect();
+            d.check = Some(check("2026-11-21T02:05:00+05:30", &d.contents, &["db/telemetry/2026-10.copy.zst"]));
+        }
+        "encrypted" => {
+            d.encrypted = true;
+            d.scope = None;
+            d.data.clear();
+            d.platform = None;
+            d.unreadable = Some("The backup is encrypted: what it holds is shown when it is restored with its passphrase.".into());
+        }
+        // "new", "long": every month since 2023 in "long".
+        _ => {
+            let tele = if kind == "long" { months(1, 36, 2023) } else { months(8, 4, 2026) };
+            d.contents = std::iter::once(content("db/dump.pgc.zst", 104))
+                .chain(tele)
+                .chain([content("clickhouse/ts_kv/202611.native.zst", 71), content("clickhouse/ts_kv_latest.native.zst", 1), content("files/reports.tar.zst", 9), content("files/vc-repos.tar.zst", 3)])
+                .collect();
+            d.check = Some(check("2026-11-17T04:25:00+05:30", &d.contents, &[]));
+        }
+    }
+    d
 }

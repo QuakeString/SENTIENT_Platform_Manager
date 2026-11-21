@@ -20,6 +20,15 @@ refreshes that repository's Downloads table.
   (the settings card was titled "Backup" and is now last). Restore from
   file is on the Restores card, where restores are, with a small History
   title over the list of past restores. The same on a server's page.
+- Backup details: what the backup holds, from its own record. The file
+  and its check at the top; where and with which SENTIENT, database and
+  Platform Manager it was made, what was backed up, encryption and folder
+  (a fact an older backup did not record says so); its data (rows and
+  size per kind, or Not included); its parts with each one's last check;
+  and the platform at backup time (address, certificate, licence,
+  gateways; never a secret). Restore from it. An encrypted backup shows
+  its contents only when restored with its passphrase. Checks now record
+  each part's result.
 
 ## [0.9.5] - 2026-11-20
 

@@ -3027,7 +3027,7 @@ pub(crate) mod canned {
                     parts: 1,
                     made: made.to_string(),
                     automatic: false,
-                    check: ok.map(|ok| crate::backups::CheckRecord { at: "2026-11-16T03:00:00+05:30".into(), ok, summary: String::new() }),
+                    check: ok.map(|ok| crate::backups::CheckRecord { at: "2026-11-16T03:00:00+05:30".into(), ok, summary: String::new(), parts: Vec::new() }),
                     old_folder: false,
                 })
                 .collect()

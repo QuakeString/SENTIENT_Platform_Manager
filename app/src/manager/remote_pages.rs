@@ -2366,6 +2366,23 @@ impl RemotePages {
                 e,
                 busy,
                 bk::RowActions {
+                    details: {
+                        let (inst, file, name, tw) = (self.inst.clone(), e.path.display().to_string(), e.name.clone(), this.clone());
+                        std::rc::Rc::new(move |_, cx| {
+                            let restore = (!damaged).then(|| -> std::rc::Rc<dyn Fn(&mut Window, &mut App)> {
+                                let (tw, file, name) = (tw.clone(), file.clone(), name.clone());
+                                std::rc::Rc::new(move |_, cx| {
+                                    tw.update(cx, |p, cx| {
+                                        p.restore_pending = Some(crate::manager::restore::Source { file: std::path::PathBuf::from(&file), sub: name.clone(), note: None });
+                                        cx.notify();
+                                    })
+                                    .ok();
+                                })
+                            });
+                            let (inst, file) = (inst.clone(), file.clone());
+                            bk::open_details_dialog(Box::new(move || remote::backup_details(&inst, &file)), restore, cx)
+                        })
+                    },
                     restore: (!damaged).then(|| -> std::rc::Rc<dyn Fn(&mut Window, &mut App)> {
                         std::rc::Rc::new(move |_, cx| {
                             t1.update(cx, |p, cx| {
