@@ -17,6 +17,7 @@ fn main() {
         Progress::Log { line } => println!("   {line}"),
         Progress::Done { message } => println!("✓ {message}"),
         Progress::Error { message } => eprintln!("✗ {message}"),
+        Progress::Warning { message, .. } => println!("! {message}"),
         Progress::Plan { steps } => {
             for (i, st) in steps.iter().enumerate() {
                 println!("    {}. {}", i + 1, st.name);
