@@ -15,6 +15,10 @@ refreshes that repository's Downloads table.
 
 ## [Unreleased]
 
+## [0.9.8] - 2026-11-22
+
+The gateway's connection can be set from the Platform Manager and works with localhost, a taken-over gateway keeps everything it had, Update in SENTIENT saves the connection there, and logs save with their progress.
+
 ### Fixed
 - Gateway › Connection accepts localhost and 127.0.0.1 for a Docker
   gateway on its own network: it is written as host.docker.internal (this
