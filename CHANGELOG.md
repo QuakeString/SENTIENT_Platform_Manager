@@ -23,6 +23,16 @@ refreshes that repository's Downloads table.
   interfaces), then waits for the gateway to connect or puts the previous
   connection back. Every gateway container the Platform Manager creates
   (install, take over, update, Apply) gets host.docker.internal.
+- Gateway › Connection on a Docker gateway: the new host was written
+  while the gateway still ran, and a gateway writes its connection in
+  force back to its file as it stops, so the new container started with
+  the old host (and "connected" with it). The file is now written between
+  stop and start, the gateway's own start line is checked against it, and
+  the reachability check runs inside the gateway's container. When
+  SENTIENT then sends the connection it keeps for the gateway, the job
+  says so and where to change it. Messages never name the gateway's legacy
+  file; a test gates it.
+- A gateway install says whether the gateway connected to SENTIENT.
 - A native (systemd) or Windows service gateway: a new connection on
   Gateway › Connection counts only once the gateway connects with it
   within 60 seconds; otherwise the previous host and port are put back

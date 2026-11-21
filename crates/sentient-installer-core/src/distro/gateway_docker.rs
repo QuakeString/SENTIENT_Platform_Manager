@@ -460,15 +460,27 @@ pub fn update_spec(current: &Spec, image: &str, old_image_env: &[String], found:
 }
 
 #[cfg(not(windows))]
-fn wait_running(sink: &ProgressFn, version: &str) -> Result<(), String> {
-    for _ in 0..30 {
-        if status().running {
-            sink(Progress::Done { message: format!("Sentient Gateway {version} is running.") });
-            return Ok(());
-        }
+fn wait_running(sink: &ProgressFn, version: &str, target: &str) -> Result<(), String> {
+    // Up, and still up a few seconds later (a restart loop is not up, A13).
+    let up = (0..30).any(|_| {
         std::thread::sleep(std::time::Duration::from_secs(1));
+        container_running(CONTAINER)
+    }) && {
+        std::thread::sleep(std::time::Duration::from_secs(4));
+        container_running(CONTAINER)
+    };
+    if !up {
+        return Err(format!("The gateway container did not stay up; see docker logs {CONTAINER}."));
     }
-    Err(format!("The gateway container did not stay up; see docker logs {CONTAINER}."))
+    // Installed either way; whether it reached SENTIENT is said (I16).
+    sink(Progress::Step { name: format!("Checking the gateway connects to SENTIENT at {target}") });
+    if wait_connected(CONTAINER, 60) {
+        sink(Progress::Done { message: format!("Sentient Gateway {version} is running and connected to SENTIENT.") });
+    } else {
+        let why = last_connect_line(CONTAINER);
+        sink(Progress::Done { message: format!("Sentient Gateway {version} is installed and running, but it did not connect to SENTIENT at {target} within 60 seconds{why}. Check the host, port and access token on Gateway › Connection.") });
+    }
+    Ok(())
 }
 
 fn start(sink: &ProgressFn, version: &str, host: &str, port: u16, token: &str) -> Result<(), String> {
@@ -495,7 +507,7 @@ fn start(sink: &ProgressFn, version: &str, host: &str, port: u16, token: &str) -
         let r = super::run(sink, &run_command(&image, &env.to_string_lossy(), &devices));
         let _ = std::fs::remove_file(&env);
         r?;
-        wait_running(sink, version)
+        wait_running(sink, version, &format!("{host}:{port}"))
     }
 }
 
@@ -1134,22 +1146,19 @@ fn not_editable(s: &Status) -> Option<String> {
 fn read_script_out(spec: &Spec, running: bool) -> Option<String> {
     let script = crate::gateway_settings::read_script();
     if running {
-        let line = format!("D=\"${{ST_GW_CONFIG_DIR:-/sentient_gateway/config}}\"; P=1; {script}");
+        let line = format!("D=\"${{ST_GW_CONFIG_DIR:-${{TB_GW_CONFIG_DIR:-/sentient_gateway/config}}}}\"; P=1; {script}");
         // The gateway's file capability (NET_RAW) makes its process
         // undumpable: not even root in the container lists its sockets, so
         // "connected" is known here only from --status-json.
         return docker(&["exec", &spec.name, "sh", "-c", &line]).filter(|(ok, _)| *ok).map(|(_, o)| o);
     }
-    let dir = env_value(&spec.env, "ST_GW_CONFIG_DIR").unwrap_or_else(|| VOLUMES[0].1.to_string());
+    let dir = config_dir_of(spec);
     let (src, _, _, _) = spec.mounts.iter().find(|(_, d, _, _)| *d == dir)?;
     let mount = format!("{src}:/c:ro");
     let line = format!("D=/c; P=0; {script}");
     docker(&["run", "--rm", "--pull=never", "--network", "none", "-v", &mount, "--entrypoint", "sh", &spec.image, "-c", &line]).filter(|(ok, _)| *ok).map(|(_, o)| o)
 }
 
-fn env_value(env: &[String], name: &str) -> Option<String> {
-    env.iter().find_map(|l| l.strip_prefix(&format!("{name}="))).map(str::to_string).filter(|v| !v.is_empty())
-}
 
 /// The container's settings (crate::gateway_settings::read).
 pub fn read_settings(status: &Status) -> crate::gateway_settings::GwSettings {
@@ -1351,6 +1360,21 @@ pub fn host_gateway_reachable(ip: &str, port: u16, typed: &str) -> Result<(), St
     }
 }
 
+/// Whether `ip`:`port` accepts a TCP connection from inside the running
+/// container `name` (bash's /dev/tcp, 3 seconds). None: it could not be
+/// tried there (no bash in the image, the container stopped).
+#[cfg(not(windows))]
+fn reachable_from_container(name: &str, ip: &str, port: u16) -> Option<bool> {
+    let probe = "(exec 3<>/dev/tcp/$1/$2) 2>/dev/null & p=$!; for i in 1 2 3 4 5 6; do sleep 0.5; if ! kill -0 $p 2>/dev/null; then wait $p; exit $?; fi; done; kill $p 2>/dev/null; exit 124";
+    match docker(&["exec", name, "bash", "-c", probe, "probe", ip, &port.to_string()]) {
+        Some((true, _)) => Some(true),
+        // bash ran and the connection failed or timed out (1, 124); 126/127
+        // and a stopped container read the same here: tell them apart.
+        Some((false, _)) => docker(&["exec", name, "bash", "-c", "exit 0"]).filter(|(ok, _)| *ok).map(|_| false),
+        None => None,
+    }
+}
+
 /// Why Apply stops when nothing answers where the container reaches this
 /// machine ([`host_gateway_reachable`]).
 pub fn unreachable_words(ip: &str, port: u16, typed: &str) -> String {
@@ -1369,6 +1393,12 @@ pub fn no_connect_words(target: &str, via: bool) -> String {
         "Check the address from the gateway's machine.".to_string()
     };
     format!("The gateway did not connect to SENTIENT at {target} within 60 seconds, so its previous connection was put back. {check}")
+}
+
+/// The container's log since `since` (Unix seconds), colours removed.
+#[cfg(not(windows))]
+pub fn logs_since(name: &str, since: u64) -> Option<String> {
+    docker_all(&["logs", "--since", &since.to_string(), name]).map(|(_, o)| strip_ansi(&o))
 }
 
 /// ": <the gateway's last line about its connection>", or "".
@@ -1419,7 +1449,7 @@ pub fn connected_in_log(log: &str) -> bool {
 /// (path, content) of the config file the gateway in container `name` uses.
 #[cfg(not(windows))]
 fn read_config_file(name: &str) -> Option<(String, String)> {
-    let find = "d=\"${ST_GW_CONFIG_DIR:-/sentient_gateway/config}\"; for f in st_gateway.json tb_gateway.json; do if [ -f \"$d/$f\" ]; then echo \"$d/$f\"; cat \"$d/$f\"; exit 0; fi; done; exit 3";
+    let find = "d=\"${ST_GW_CONFIG_DIR:-${TB_GW_CONFIG_DIR:-/sentient_gateway/config}}\"; for f in st_gateway.json tb_gateway.json; do if [ -f \"$d/$f\" ]; then echo \"$d/$f\"; cat \"$d/$f\"; exit 0; fi; done; exit 3";
     let (ok, out) = docker(&["exec", name, "sh", "-c", find])?;
     let (p, j) = out.split_once('\n')?;
     ok.then(|| (p.trim().to_string(), j.to_string()))
@@ -1442,35 +1472,56 @@ pub fn with_connection(json: &str, host: Option<&str>, port: Option<u16>) -> Res
     serde_json::to_string_pretty(&v).map_err(|e| e.to_string())
 }
 
-/// Write the platform connection into the config file the gateway in
-/// container `name` uses (st_gateway.json, else the older name), as the
-/// container's own user, through a temporary file and a rename.
-#[cfg(not(windows))]
-fn write_connection(name: &str, host: Option<&str>, port: Option<u16>) -> Result<(), String> {
-    // A gateway set up only by its environment has no file yet: it gets one.
-    let (path, json) = match read_config_file(name) {
-        Some(f) => f,
-        None => {
-            let dir = docker(&["exec", name, "sh", "-c", "echo \"${ST_GW_CONFIG_DIR:-/sentient_gateway/config}\""]).filter(|(ok, _)| *ok).map(|(_, o)| o.trim().to_string()).ok_or("The gateway's config folder could not be read in its container.")?;
-            (format!("{dir}/st_gateway.json"), "{}".to_string())
-        }
-    };
-    let new = with_connection(&json, host, port)?;
-    write_config_raw(name, &path, &new)
+
+/// The folder the gateway reads its config file from in the container, as
+/// the gateway resolves it (ST_GW_, then the older spelling, then the image's).
+pub fn config_dir_of(spec: &Spec) -> String {
+    let get = |k: &str| spec.env.iter().find_map(|e| e.strip_prefix(&format!("{k}=")).map(str::to_string)).filter(|v| v.starts_with('/'));
+    get("ST_GW_CONFIG_DIR").or_else(|| get(&["TB", "_GW_CONFIG_DIR"].concat())).unwrap_or_else(|| "/sentient_gateway/config".into())
 }
 
-/// Write `content` to `path` in container `name`, as its own user, through a
-/// temporary file and a rename.
+/// The volume or host folder that holds `path` in the container, and
+/// `path` under it: (source, relative path).
+pub fn mount_of(spec: &Spec, path: &str) -> Option<(String, String)> {
+    spec.mounts
+        .iter()
+        .filter_map(|(src, dest, ro, _)| {
+            let d = dest.trim_end_matches('/');
+            let rel = path.strip_prefix(&format!("{d}/"))?;
+            (!*ro).then(|| (d.len(), src.clone(), rel.to_string()))
+        })
+        .max_by_key(|(n, _, _)| *n)
+        .map(|(_, s, r)| (s, r))
+}
+
+/// Write `content` (None: remove the file) to `path` in `spec`'s volume while
+/// no gateway runs: through a throwaway container of the gateway's image,
+/// as its user, with a temporary file and a rename.
 #[cfg(not(windows))]
-fn write_config_raw(name: &str, path: &str, content: &str) -> Result<(), String> {
-    let tmp = write_env_file(&[])?;
-    std::fs::write(&tmp, content.as_bytes()).map_err(|e| format!("write {}: {e}", tmp.display()))?;
+fn write_config_offline(spec: &Spec, path: &str, content: Option<&str>) -> Result<(), String> {
+    let (src, rel) = mount_of(spec, path).ok_or_else(|| format!("The gateway's config folder ({}) has no volume, so a change to its config file would not survive the container being created again.", path.rsplit_once('/').map(|(d, _)| d).unwrap_or(path)))?;
+    // A file of its own: the recreate's env file (write_env_file) is in
+    // use while this runs.
+    let tmp = {
+        use std::io::Write as _;
+        use std::os::unix::fs::OpenOptionsExt as _;
+        let dir = std::env::var_os("XDG_RUNTIME_DIR").map(std::path::PathBuf::from).filter(|d| d.is_dir()).unwrap_or_else(std::env::temp_dir);
+        let path = dir.join(format!("spm-gateway-{}-config.json", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let mut f = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&path).map_err(|e| format!("write {}: {e}", path.display()))?;
+        f.write_all(content.unwrap_or("").as_bytes()).map_err(|e| format!("write {}: {e}", path.display()))?;
+        path
+    };
     let q = super::shell_quote;
+    let script = "f=\"/c/$1\"; if [ \"$2\" = rm ]; then rm -f \"$f\"; else cat > \"$f.spm-new\" && mv \"$f.spm-new\" \"$f\"; fi";
+    let user = if spec.user.is_empty() { String::new() } else { format!("--user {} ", q(&spec.user)) };
     let line = format!(
-        "docker exec -i {} sh -c {} sh {} < {} 2>&1",
-        q(name),
-        q("cat > \"$1.spm-new\" && mv \"$1.spm-new\" \"$1\""),
-        q(path.trim()),
+        "docker run --rm -i --network none --pull=never {user}-v {} --entrypoint sh {} -c {} sh {} {} < {} 2>&1",
+        q(&format!("{src}:/c")),
+        q(&spec.image),
+        q(script),
+        q(&rel),
+        if content.is_some() { "write" } else { "rm" },
         q(&tmp.display().to_string())
     );
     let r = super::run_output(&line);
@@ -1480,6 +1531,21 @@ fn write_config_raw(name: &str, path: &str, content: &str) -> Result<(), String>
         Some((false, o)) => Err(format!("The gateway's config file could not be written: {}", o.trim())),
         None => Err("Docker could not be run to write the gateway's config file.".into()),
     }
+}
+
+/// The host and port the gateway in `name` last started with (its
+/// "starting host=… port=…" line).
+#[cfg(not(windows))]
+fn started_with(name: &str) -> Option<(String, u16)> {
+    let log = docker_all(&["logs", "--tail", "400", name]).map(|(_, o)| strip_ansi(&o))?;
+    started_with_in(&log)
+}
+
+/// [`started_with`] on a log.
+pub fn started_with_in(log: &str) -> Option<(String, u16)> {
+    let line = log.lines().rev().find(|l| l.contains(" starting host="))?;
+    let field = |k: &str| line.split_whitespace().find_map(|w| w.strip_prefix(&format!("{k}=")).map(|v| v.trim_matches('"').to_string()));
+    Some((field("host")?, field("port")?.parse().ok()?))
 }
 
 /// The container's spec with `plan` applied (crate::gateway_settings::ApplyPlan).
@@ -1594,7 +1660,15 @@ pub fn apply_settings(sink: &ProgressFn, status: &Status, before: &crate::gatewa
         if let (Some(typed), Some(fh)) = (plan.conn_host.as_deref(), file_host.as_deref()) {
             if fh == HOST_ALIAS {
                 let ip = host_gateway_ip();
-                host_gateway_reachable(&ip, plan.conn_port.or(before.conn.port).unwrap_or(1883), typed)?;
+                let port = plan.conn_port.or(before.conn.port).unwrap_or(1883);
+                // Tried from the gateway's own container (its network is
+                // the one the new container gets); from here only when the
+                // image has no shell for it.
+                match reachable_from_container(&spec.name, &ip, port) {
+                    Some(true) => {}
+                    Some(false) => return Err(unreachable_words(&ip, port, typed)),
+                    None => host_gateway_reachable(&ip, port, typed)?,
+                }
                 sink(Progress::Log { line: format!("{typed} is this machine: the gateway's container reaches it as {HOST_ALIAS} ({ip}).") });
             }
         }
@@ -1603,51 +1677,59 @@ pub fn apply_settings(sink: &ProgressFn, status: &Status, before: &crate::gatewa
         // changes.
         if conn {
             if let Some(v) = image_env(&spec.image).into_iter().find(|e| ["host=", "ST_GW_HOST=", "TB_GW_HOST=", "port=", "ST_GW_PORT=", "TB_GW_PORT="].iter().any(|p| e.starts_with(p))) {
-                return Err(format!("The gateway's image {} sets {v} itself, which wins over its config file: nothing was changed. Use the standard image (Update the gateway), or set the connection in the image.", spec.image));
+                return Err(format!("The gateway's image {} sets the connection ({}) in its own environment, which wins over its config file: nothing was changed. Use the standard image (Update the gateway), or set the connection in the image.", spec.image, if v.to_ascii_lowercase().contains("host=") { "host" } else { "port" }));
             }
         }
-        // The config file as it was, to put back when the new connection
-        // does not connect.
+        // The config file as it is, to put back when the new connection does
+        // not connect, and the one to write. It is written while no gateway
+        // runs: a gateway writes its connection in force back to its file
+        // as it stops, over a change made while it ran.
         let old_file = if conn { read_config_file(&spec.name) } else { None };
+        let path = old_file.as_ref().map(|(p, _)| p.clone()).unwrap_or_else(|| format!("{}/st_gateway.json", config_dir_of(&spec)));
+        let new_json = if conn { Some(with_connection(old_file.as_ref().map(|(_, j)| j.as_str()).unwrap_or("{}"), file_host.as_deref(), plan.conn_port)?) } else { None };
         if conn {
-            sink(Progress::Step { name: "Writing the connection to the gateway's config file".into() });
-            write_connection(&spec.name, file_host.as_deref(), plan.conn_port)?;
+            mount_of(&spec, &path).ok_or_else(|| format!("The gateway's config folder ({}) has no volume, so its connection cannot be changed: nothing was changed.", path.rsplit_once('/').map(|(d, _)| d).unwrap_or(&path)))?;
         }
-        if let Err(e) = recreate_container(sink, &new, Some(format!("Stopping the container {name}")), &format!("Creating {name} again with the same volumes"), "with the new settings") {
-            // The previous container runs again: so does its file.
-            if conn {
-                match &old_file {
-                    Some((path, json)) => {
-                        let _ = write_config_raw(&name, path, json);
-                    }
-                    None => {
-                        let _ = docker(&["exec", &name, "sh", "-c", "rm -f \"${ST_GW_CONFIG_DIR:-/sentient_gateway/config}/st_gateway.json\""]);
-                    }
+        let write_new = || -> Result<(), String> {
+            match &new_json {
+                Some(j) => {
+                    sink(Progress::Log { line: "Writing the connection to the gateway's config file".into() });
+                    write_config_offline(&spec, &path, Some(j))
                 }
-                let _ = docker(&["restart", &name]);
+                None => Ok(()),
+            }
+        };
+        let put_back = || -> Result<(), String> { write_config_offline(&spec, &path, old_file.as_ref().map(|(_, j)| j.as_str())) };
+        if let Err(e) = recreate_with(sink, &new, Some(format!("Stopping the container {name}")), &format!("Creating {name} again with the same volumes"), "with the new settings", conn.then_some(&write_new as &dyn Fn() -> Result<(), String>)) {
+            // The previous container runs again: so does its file.
+            if conn && docker(&["inspect", "--format", "{{.State.Running}}", &name]).is_some_and(|(ok, o)| ok && o.trim() == "true") {
+                let _ = docker(&["stop", "-t", "25", &name]);
+                let _ = put_back();
+                let _ = docker(&["start", &name]);
             }
             return Err(e);
         }
-        // A new connection counts only once the gateway is connected with it;
-        // otherwise the old one comes back, and the error says why.
+        // A new connection counts only once the gateway started with it and
+        // connected with it; otherwise the old one comes back.
         if conn {
             let target = format!("{}:{}", plan.conn_host.clone().or_else(|| before.conn.host.clone()).unwrap_or_default(), plan.conn_port.or(before.conn.port).unwrap_or(1883));
             sink(Progress::Step { name: format!("Checking the gateway connects to SENTIENT at {target}") });
-            if !wait_connected(&name, 60) {
+            std::thread::sleep(std::time::Duration::from_secs(2));
+            let started = started_with(&name);
+            let wrong_start = started.as_ref().filter(|(h, p)| file_host.as_deref().is_some_and(|f| f != h) || plan.conn_port.is_some_and(|x| x != *p)).cloned();
+            let failure = if let Some((h, p)) = wrong_start {
+                Some(format!("The gateway started with {h}:{p}, not the connection written to its config file, so its previous connection was put back."))
+            } else if !wait_connected(&name, 60) {
                 let why = last_connect_line(&name);
                 sink(Progress::Log { line: format!("Not connected within 60 seconds{why}") });
+                Some(no_connect_words(&target, file_host.as_deref() == Some(HOST_ALIAS)))
+            } else {
+                None
+            };
+            if let Some(why) = failure {
                 sink(Progress::Step { name: "Putting the previous connection back".into() });
-                match &old_file {
-                    Some((path, json)) => {
-                        let _ = write_config_raw(&name, path, json);
-                    }
-                    // It had none: the one written for the new connection goes.
-                    None => {
-                        let _ = docker(&["exec", &name, "sh", "-c", "rm -f \"${ST_GW_CONFIG_DIR:-/sentient_gateway/config}/st_gateway.json\""]);
-                    }
-                }
-                recreate_container(sink, &spec, None, "Creating the gateway again with its previous settings", "with its previous settings")?;
-                return Err(no_connect_words(&target, file_host.as_deref() == Some(HOST_ALIAS)));
+                recreate_with(sink, &spec, None, "Creating the gateway again with its previous settings", "with its previous settings", Some(&put_back))?;
+                return Err(why);
             }
             sink(Progress::Log { line: format!("Connected to SENTIENT at {target}.") });
         }
@@ -1687,6 +1769,14 @@ pub fn apply_settings(sink: &ProgressFn, status: &Status, before: &crate::gatewa
 /// the job's step names; `what` ends the failure ("on <image>").
 #[cfg(not(windows))]
 pub(crate) fn recreate_container(sink: &ProgressFn, spec: &Spec, stop_step: Option<String>, start_step: &str, what: &str) -> Result<(), String> {
+    recreate_with(sink, spec, stop_step, start_step, what, None)
+}
+
+/// [`recreate_container`]; `between` runs once the old container has
+/// stopped and before the new one starts (the gateway writes its connection
+/// in force back to its file as it stops, so a file change goes here).
+#[cfg(not(windows))]
+pub(crate) fn recreate_with(sink: &ProgressFn, spec: &Spec, stop_step: Option<String>, start_step: &str, what: &str, between: Option<&dyn Fn() -> Result<(), String>>) -> Result<(), String> {
     let name = spec.name.clone();
     let old = format!("{name}-spm-previous");
     let env_file = write_env_file(&spec.env)?;
@@ -1704,10 +1794,23 @@ pub(crate) fn recreate_container(sink: &ProgressFn, spec: &Spec, stop_step: Opti
             let _ = docker(&["start", &name]);
             return Err(format!("docker rename {name} failed; the gateway was started again as it was."));
         }
+        if let Some(f) = between {
+            if let Err(e) = f() {
+                let _ = docker(&["rename", &old, &name]);
+                let _ = docker(&["start", &name]);
+                return Err(format!("{e} The previous container {name} runs again, unchanged."));
+            }
+        }
         sink(Progress::Step { name: start_step.to_string() });
         let args = run_args(spec, &file);
         let refs: Vec<&str> = args.iter().map(String::as_str).collect();
-        let started = matches!(docker(&refs), Some((true, _))) && match connect_extra_networks(spec) {
+        let run = docker_all(&refs);
+        if let Some((false, out)) = &run {
+            for l in out.lines().filter(|l| !l.trim().is_empty()).take(6) {
+                sink(Progress::Log { line: strip_ansi(l) });
+            }
+        }
+        let started = matches!(run, Some((true, _))) && match connect_extra_networks(spec) {
             Ok(()) => true,
             Err(e) => {
                 sink(Progress::Log { line: e });
@@ -1808,7 +1911,7 @@ pub fn test_creds(status: &Status) -> Option<crate::gateway_settings::TestCreds>
     let spec = inspect_spec(status.container.as_deref()?)?;
     let file = status
         .running
-        .then(|| docker(&["exec", &spec.name, "sh", "-c", "d=\"${ST_GW_CONFIG_DIR:-/sentient_gateway/config}\"; cat \"$d/st_gateway.json\" 2>/dev/null || cat \"$d/tb_gateway.json\" 2>/dev/null"]))
+        .then(|| docker(&["exec", &spec.name, "sh", "-c", "d=\"${ST_GW_CONFIG_DIR:-${TB_GW_CONFIG_DIR:-/sentient_gateway/config}}\"; cat \"$d/st_gateway.json\" 2>/dev/null || cat \"$d/tb_gateway.json\" 2>/dev/null"]))
         .flatten()
         .filter(|(ok, _)| *ok)
         .map(|(_, o)| o);
@@ -2095,6 +2198,22 @@ mod tests {
         drop(l);
         let e = host_gateway_reachable("127.0.0.1", p, "localhost").unwrap_err();
         assert!(e.contains(HOST_ALIAS) && e.contains("127.0.0.1 only") && e.contains("Nothing was changed"), "{e}");
+    }
+
+    /// The host and port a gateway started with are read from its log; the
+    /// config file is found under its volume (the longest mount).
+    #[test]
+    fn the_start_line_and_the_volume_are_read() {
+        let log = "INFO sentient_gateway: Sentient Gateway (rs) v4.18.2 starting host=172.17.0.1 port=21999 security=\"accessToken\"\nINFO x\nINFO sentient_gateway: Sentient Gateway (rs) v4.18.2 starting host=host.docker.internal port=1883 security=\"accessToken\"";
+        assert_eq!(started_with_in(log), Some(("host.docker.internal".to_string(), 1883)));
+        assert_eq!(started_with_in("nothing"), None);
+        let spec = Spec { mounts: vec![("st-gw-config".into(), "/sentient_gateway/config".into(), false, false), ("/srv/gw".into(), "/sentient_gateway".into(), false, true), ("ro".into(), "/etc/x".into(), true, false)], ..Spec::default() };
+        assert_eq!(mount_of(&spec, "/sentient_gateway/config/st_gateway.json"), Some(("st-gw-config".to_string(), "st_gateway.json".to_string())));
+        assert_eq!(mount_of(&spec, "/sentient_gateway/data/x"), Some(("/srv/gw".to_string(), "data/x".to_string())));
+        assert_eq!(mount_of(&spec, "/etc/x/y"), None, "read-only");
+        let legacy = Spec { env: vec![["TB", "_GW_CONFIG_DIR=/thingsboard_gateway/config"].concat()], ..Spec::default() };
+        assert_eq!(config_dir_of(&legacy), "/thingsboard_gateway/config");
+        assert_eq!(config_dir_of(&Spec::default()), "/sentient_gateway/config");
     }
 
     /// The connection is written into the config file's platform section

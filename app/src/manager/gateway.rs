@@ -234,6 +234,12 @@ impl GatewayPage {
                                 use sentient_installer_core::progress::Progress;
                                 match std::env::var("SPM_DEBUG_GATEWAY_APPLY_FAIL").as_deref() {
                                     Ok("refused") => return Err(gd::unreachable_words("172.17.0.1", 1883, "127.0.0.1")),
+                                    Ok("platform") => {
+                                        sink(Progress::Step { name: "Checking the gateway connects to SENTIENT at 127.0.0.1:1883".into() });
+                                        sink(Progress::Log { line: "Connected to SENTIENT at 127.0.0.1:1883.".into() });
+                                        return Err(sentient_installer_core::gateway_settings::platform_owns_words("127.0.0.1:1883", "192.168.0.20", 1883, true));
+                                    }
+                                    Ok("readback") => return Err("Applied, but the gateway reads back the host 192.168.0.20 (from the gateway's config file), not 127.0.0.1.".into()),
                                     Ok("noconnect") => {
                                         sink(Progress::Log { line: "127.0.0.1 is this machine: the gateway's container reaches it as host.docker.internal (172.17.0.1).".into() });
                                         sink(Progress::Step { name: "Checking the gateway connects to SENTIENT at 127.0.0.1:1883".into() });
@@ -799,7 +805,7 @@ impl Render for GatewayPage {
                 })
                 .child(ui::fact(&theme, "Runs as", runs_as(status.kind(), &RemoveTarget::of(&status, None).name, status.managed, recorded)))
                 .children(self.settings.as_ref().and_then(|s| s.as_ref().ok()).and_then(|s| {
-                    let path = s.config_path.clone()?;
+                    let path = shown_config_path(&s.config_path.clone()?);
                     let n = s.connectors.len();
                     Some(ui::fact(&theme, "Configuration", format!("{path} · {n} connector{}", if n == 1 { "" } else { "s" })))
                 }))
@@ -1659,5 +1665,15 @@ mod tests {
         let w = update_plan(false, true, "4.16.3");
         assert!(w[0].matches("Downloading Sentient Gateway 4.16.3 (24 MB)") && w[1].matches("Installing Sentient Gateway 4.16.3"));
         assert_eq!(update_plan(false, false, "4.16.3").len(), 2);
+    }
+}
+
+/// The gateway's config file as the card shows it: an older file's name
+/// (the legacy one) is never shown, its folder is.
+pub fn shown_config_path(path: &str) -> String {
+    let legacy = ["tb", "_gateway.json"].concat();
+    match path.strip_suffix(&legacy) {
+        Some(dir) => format!("{} (the gateway's config file there)", dir.trim_end_matches(['/', '\\'])),
+        None => path.to_string(),
     }
 }

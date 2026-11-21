@@ -497,8 +497,7 @@ pub fn apply_env(s: &mut GwSettings, env: &[String], in_container: bool) {
     if let Some(h) = env_any(env, &["host", "ST_GW_HOST", "TB_GW_HOST"]) {
         s.conn.host = Some(h.to_string());
         s.conn.from_env = true;
-        let var = ["host", "ST_GW_HOST", "TB_GW_HOST"].into_iter().find(|k| env_get(env, k).is_some()).unwrap_or("host");
-        s.conn.host_source = Some(format!("the environment variable {var}"));
+        s.conn.host_source = Some(if in_container { "the container's environment".into() } else { "the service's environment".into() });
     }
     if let Some(p) = env_any(env, &["port", "ST_GW_PORT", "TB_GW_PORT"]).and_then(|p| p.parse().ok()) {
         s.conn.port = Some(p);
@@ -652,7 +651,7 @@ pub fn from_read(out: &str) -> GwSettings {
     };
     if !file.is_empty() {
         if s.conn.host.is_some() {
-            s.conn.host_source = Some(format!("the gateway's config file {file}"));
+            s.conn.host_source = Some("the gateway's config file".into());
         }
         s.config_path = Some(file);
     }
@@ -785,13 +784,13 @@ pub fn mismatches(plan: &ApplyPlan, after: &GwSettings) -> Vec<String> {
     let mut out = Vec::new();
     if let Some(h) = &plan.conn_host {
         if after.conn.host.as_deref() != Some(h.as_str()) {
-            let from = after.conn.host_source.as_deref().map(|f| format!(", from {f}")).unwrap_or_default();
-            out.push(format!("you set the host to {h}, but the gateway still uses {}{from}", after.conn.host.clone().unwrap_or_else(|| "none".into())));
+            let from = after.conn.host_source.as_deref().map(|f| format!(" (from {f})")).unwrap_or_default();
+            out.push(format!("the host {}{from}, not {h}", after.conn.host.clone().unwrap_or_else(|| "none".into())));
         }
     }
     if let Some(p) = plan.conn_port {
         if after.conn.port != Some(p) {
-            out.push(format!("the MQTT port is {}", after.conn.port.map(|p| p.to_string()).unwrap_or_else(|| "not set".into())));
+            out.push(format!("the MQTT port {}, not {p}", after.conn.port.map(|p| p.to_string()).unwrap_or_else(|| "not set".into())));
         }
     }
 
@@ -887,15 +886,65 @@ pub fn apply(sink: &ProgressFn, status: &Status, plan: &ApplyPlan) -> Result<(),
             sink(Progress::Log { line: format!("Connected to SENTIENT at {target}.") });
         }
     }
+    // Connected, the gateway takes the connection SENTIENT keeps for it
+    // (its gateway configuration) and writes it to its file: the one typed
+    // here is then not kept, and the reason is SENTIENT, not this Apply.
+    if conn {
+        if let Some((h, p)) = platform_took_connection(status, since, 20) {
+            let target = format!("{}:{}", plan.conn_host.clone().or_else(|| before.conn.host.clone()).unwrap_or_default(), plan.conn_port.or(before.conn.port).unwrap_or(1883));
+            let via = status.kind() == "docker" && plan.conn_host.as_deref().is_some_and(crate::distro::gateway_docker::is_loopback);
+            return Err(platform_owns_words(&target, &h, p, via));
+        }
+    }
     sink(Progress::Step { name: "Reading the settings back".into() });
     let status = crate::gateway::status();
     let after = read(&status);
     let wrong = mismatches(plan, &after);
     if !wrong.is_empty() {
-        return Err(format!("Applied, but reading back shows {}.", wrong.join("; ")));
+        return Err(format!("Applied, but the gateway reads back {}.", wrong.join("; ")));
     }
     sink(Progress::Done { message: format!("Applied and read back: {}.", plan.names().join(", ")) });
     Ok(())
+}
+
+/// Why a connection set here was not kept: SENTIENT sent the one it keeps
+/// for this gateway once it connected (`via`: typed as localhost for a
+/// container, which SENTIENT must name as host.docker.internal).
+pub fn platform_owns_words(target: &str, host: &str, port: u16, via: bool) -> String {
+    let how = if via { " (there, this machine is host.docker.internal: localhost would be the gateway's own container)" } else { "" };
+    format!(
+        "The gateway connected to SENTIENT at {target}, then SENTIENT sent the connection it keeps for this gateway, {host}:{port}, and the gateway switched to it. While the gateway is connected, SENTIENT's gateway configuration decides its connection. To use {target}, change it in SENTIENT › Gateways › this gateway › Configuration › General{how}."
+    )
+}
+
+/// (host, port) when the gateway's log since `since` says SENTIENT changed
+/// its connection ("the platform changed this gateway's connection"),
+/// watched for `secs` seconds.
+fn platform_took_connection(status: &Status, since: u64, secs: u64) -> Option<(String, u16)> {
+    for _ in 0..secs / 4 {
+        std::thread::sleep(std::time::Duration::from_secs(4));
+        let log: Option<String> = match status.kind() {
+            #[cfg(not(windows))]
+            "docker" => status.container.as_deref().and_then(|n| crate::distro::gateway_docker::logs_since(n, since)),
+            #[cfg(not(windows))]
+            "service" => status.service.as_deref().and_then(|u| {
+                crate::sys::host_command("journalctl").args(["-u", u, "--since", &format!("@{since}"), "-o", "cat", "--no-pager"]).output().ok().map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+            }),
+            _ => None,
+        };
+        if let Some(found) = log.as_deref().and_then(platform_change_in) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+/// The last "the platform changed this gateway's connection" line's host
+/// and port.
+pub fn platform_change_in(log: &str) -> Option<(String, u16)> {
+    let line = log.lines().rev().find(|l| l.contains("the platform changed this gateway's connection"))?;
+    let field = |k: &str| line.split_whitespace().find_map(|w| w.strip_prefix(&format!("{k}=")).map(|v| v.trim_matches('"').to_string()));
+    Some((field("host")?, field("port")?.parse().ok()?))
 }
 
 /// The settings applied by the way the gateway runs.
@@ -1102,6 +1151,17 @@ pub fn test_connection(status: &Status) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
+    /// SENTIENT's push of its own connection is found in the gateway's log,
+    /// and said as SENTIENT's, with host.docker.internal for a container.
+    #[test]
+    fn sentients_own_connection_is_found_and_said() {
+        let log = "2026-11-21T17:23:38Z  INFO gateway_core::remote_config: the platform changed this gateway's connection host=192.168.0.20 port=1883";
+        assert_eq!(super::platform_change_in(log), Some(("192.168.0.20".to_string(), 1883)));
+        assert_eq!(super::platform_change_in("INFO connected to platform"), None);
+        let w = super::platform_owns_words("127.0.0.1:1883", "192.168.0.20", 1883, true);
+        assert!(w.contains("192.168.0.20:1883") && w.contains("Configuration › General") && w.contains("host.docker.internal"), "{w}");
+    }
+
     use super::*;
 
     const FILE: &str = r#"{"sentient":{"host":"sentient.example.local","port":1883,"remoteShell":false,

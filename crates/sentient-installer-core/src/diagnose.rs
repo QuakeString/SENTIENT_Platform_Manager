@@ -567,6 +567,11 @@ pub fn diagnose(ev: &Evidence) -> Diagnosis {
     let text = ev.text();
     let mut d = RULES.iter().find_map(|r| (r.matches)(ev, &text)).unwrap_or_else(|| unknown(ev));
     d.last_lines = last_error_lines(ev);
+    // A cause not known here, and nothing the step printed reads as an
+    // error: no lines under it (a progress line is not why it stopped).
+    if d.id == "unknown" && !d.last_lines.iter().any(|l| is_error_line(l)) {
+        d.last_lines.clear();
+    }
     d.details = details(ev, &d);
     d
 }
@@ -1192,7 +1197,10 @@ pub fn human(bytes: u64) -> String {
 
 /// Everything, for "Copy details".
 fn details(ev: &Evidence, d: &Diagnosis) -> String {
-    let mut s = format!("Cause: {}\nWhy: {}\n", d.cause, d.why);
+    let mut s = format!("Cause: {}\n", d.cause);
+    if !d.why.trim().is_empty() {
+        s.push_str(&format!("Why: {}\n", d.why));
+    }
     for f in &d.fixes {
         match f {
             Fix::Action { label, .. } => s.push_str(&format!("Fix: {label}\n")),

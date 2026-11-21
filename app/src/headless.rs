@@ -153,7 +153,10 @@ fn report_failure(e: String, json: bool, sink: &ProgressFn) {
     }
     failed(format!("{e}"));
     if let Some(d) = d {
-        eprintln!("  Cause: {}\n  Why:   {}", d.cause, d.why);
+        eprintln!("  Cause: {}", d.cause);
+        if !d.why.trim().is_empty() {
+            eprintln!("  Why:   {}", d.why);
+        }
         for f in &d.fixes {
             match f {
                 Fix::Action { label, action } => eprintln!("  Fix:   {label}  (--job diagnose-fix '{}')", serde_json::to_string(action).unwrap_or_default()),
