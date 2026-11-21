@@ -38,6 +38,24 @@ refreshes that repository's Downloads table.
   container's environment no longer overrides it; a service: through the
   gateway's own --install. Not knowing whether it is connected no longer
   locks it.
+- Setup keeps the settings chosen in it (PostgreSQL tuning, licence
+  server, extra variables) in the installation's record: Settings shows
+  them, and Apply, Repair or an update no longer put the defaults back.
+- Setup with a kept database: when its administrator is no longer
+  admin@sentient.local, Setup says the new sign-in was not set and the
+  kept one stays; a new database that does not take it is an error.
+- An install on a server that already has SENTIENT stops and says so, so
+  its database is never reused or taken over by chance.
+- Native Linux: SENTIENT's web, MQTT and CoAP ports are opened in firewalld
+  or ufw when one is active, so other computers reach it.
+- A server's gateway form starts with 127.0.0.1 (the same machine as
+  SENTIENT), not an empty host that invited its public name.
+- Passwords no longer show in the process list (root steps run from a
+  private file; the schema installer reads DATABASE_URL from its
+  environment; Windows registers its task through PowerShell with the
+  password on standard input), and the files holding them are private: the
+  Docker compose file (0600), and on Windows conf\sentient.env, the
+  service descriptor and ClickHouse's config (Administrators and SYSTEM).
 
 ## [0.9.7] - 2026-11-21
 

@@ -796,15 +796,23 @@ fn write_host_file(sink: &ProgressFn, path: &str, content: &str) -> Result<(), S
     #[cfg(windows)]
     {
         let dir = path.rsplit_once('/').map(|(d, _)| d).unwrap_or(".");
-        run(sink, &format!("mkdir -p {dir} && cat > {path} <<'SENTIENTEOF'\n{content}\nSENTIENTEOF\n"))
+        // Only its owner reads it: the compose file holds the database
+        // passwords (audit I6).
+        run(sink, &format!("mkdir -p {dir} && (umask 077; cat > {path} <<'SENTIENTEOF'\n{content}\nSENTIENTEOF\n) && chmod 600 {path}\n"))
     }
     #[cfg(not(windows))]
     {
+        use std::io::Write as _;
+        use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
         let _ = sink;
         if let Some(dir) = Path::new(path).parent() {
             std::fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
         }
-        std::fs::write(path, content).map_err(|e| format!("write {path}: {e}"))
+        // Only its owner reads it: the compose file holds the database
+        // passwords (audit I6); an existing file is made private too.
+        let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(path).map_err(|e| format!("write {path}: {e}"))?;
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+        f.write_all(content.as_bytes()).map_err(|e| format!("write {path}: {e}"))
     }
 }
 

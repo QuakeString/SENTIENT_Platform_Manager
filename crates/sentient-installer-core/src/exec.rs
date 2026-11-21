@@ -35,6 +35,46 @@ pub(crate) fn stream(sink: &ProgressFn, program: &str, args: &[&str]) -> Result<
     }
 }
 
+/// A root script in a private file (0600, the account's runtime folder),
+/// deleted when dropped: bash runs the file, so the script and the secrets
+/// in it never show on a command line.
+#[cfg(unix)]
+struct ScriptFile(std::path::PathBuf, String);
+
+#[cfg(unix)]
+impl ScriptFile {
+    fn new(script: &str) -> Result<ScriptFile, String> {
+        // Inside a Flatpak the root helper runs on the host and cannot read
+        // the sandbox's files: the script goes on its command line there.
+        if crate::sys::in_flatpak() {
+            return Ok(ScriptFile(std::path::PathBuf::new(), script.to_string()));
+        }
+        use std::io::Write as _;
+        use std::os::unix::fs::OpenOptionsExt as _;
+        static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let dir = std::env::var_os("XDG_RUNTIME_DIR").map(std::path::PathBuf::from).filter(|d| d.is_dir()).unwrap_or_else(std::env::temp_dir);
+        let path = dir.join(format!("spm-root-{}-{}.sh", std::process::id(), N.fetch_add(1, std::sync::atomic::Ordering::SeqCst)));
+        let _ = std::fs::remove_file(&path);
+        let mut f = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&path).map_err(|e| format!("write {}: {e}", path.display()))?;
+        f.write_all(script.as_bytes()).and_then(|_| f.write_all(b"\n")).map_err(|e| format!("write {}: {e}", path.display()))?;
+        Ok(ScriptFile(path, String::new()))
+    }
+
+    /// bash's arguments: the file, or `-c <script>` (a Flatpak).
+    fn args(&self) -> Vec<&str> {
+        if self.0.as_os_str().is_empty() { vec!["-c", self.1.as_str()] } else { vec![self.0.to_str().unwrap_or_default()] }
+    }
+}
+
+#[cfg(unix)]
+impl Drop for ScriptFile {
+    fn drop(&mut self) {
+        if !self.0.as_os_str().is_empty() {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+}
+
 /// Forward lines to the sink at a bounded rate. `docker compose pull` and
 /// package managers emit hundreds of transient progress lines a second;
 /// forwarding every one floods the IPC channel and spikes the UI's CPU. Lines
@@ -110,8 +150,11 @@ pub(crate) fn is_root() -> bool {
 /// user action it never asks; it runs only when a helper is already alive.
 #[cfg(unix)]
 pub(crate) fn run_privileged(sink: &ProgressFn, script: &str) -> Result<(), String> {
+    // The script in a private file, never on bash's command line: the
+    // passwords and secrets in it would be in every account's `ps` (audit I5).
+    let file = ScriptFile::new(script)?;
     if is_root() {
-        return stream(sink, "bash", &["-c", script]);
+        return stream(sink, "bash", &file.args());
     }
     // The password dialog can open behind the window that asked for it, and
     // the job then waits with nothing to show. Say so when it opens.
@@ -122,7 +165,7 @@ pub(crate) fn run_privileged(sink: &ProgressFn, script: &str) -> Result<(), Stri
             sink(Progress::Log { line });
         }
     };
-    let argv = ["bash".to_string(), "-c".to_string(), script.to_string()];
+    let argv: Vec<String> = std::iter::once("bash".to_string()).chain(file.args().into_iter().map(str::to_string)).collect();
     let cancelled_before = crate::cancel::is_cancelled();
     let code = crate::elevation::run(&argv, None, true, &mut on_line, &hint).map_err(|e| e.to_string())?;
     if !cancelled_before && crate::cancel::is_cancelled() {
@@ -140,12 +183,15 @@ pub(crate) fn run_privileged(sink: &ProgressFn, script: &str) -> Result<(), Stri
 /// stderr saying why).
 #[cfg(unix)]
 pub(crate) fn privileged_output(script: &str) -> Option<(bool, String, String)> {
+    let file = match ScriptFile::new(script) {
+        Ok(f) => f,
+        Err(e) => return Some((false, String::new(), e)),
+    };
     if is_root() {
-        return sys::output("bash", &["-c", script]).map(|(ok, out, err)| {
-            (ok, String::from_utf8_lossy(&out).into_owned(), String::from_utf8_lossy(&err).into_owned())
-        });
+        return sys::output("bash", &file.args()).map(|(ok, out, err)| (ok, String::from_utf8_lossy(&out).into_owned(), String::from_utf8_lossy(&err).into_owned()));
     }
-    match crate::elevation::output(&["bash".to_string(), "-c".to_string(), script.to_string()]) {
+    let argv: Vec<String> = std::iter::once("bash".to_string()).chain(file.args().into_iter().map(str::to_string)).collect();
+    match crate::elevation::output(&argv) {
         Ok(r) => Some(r),
         Err(e) => Some((false, String::new(), e.to_string())),
     }
@@ -155,4 +201,22 @@ pub(crate) fn privileged_output(script: &str) -> Option<(bool, String, String)> 
 #[cfg(unix)]
 pub(crate) fn shq(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+#[cfg(all(test, unix))]
+mod script_file_tests {
+    /// A root script goes in a file only its account reads, bash runs it from
+    /// there (never from its command line), and it is gone afterwards.
+    #[test]
+    fn a_root_script_is_a_private_file_removed_after() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let f = super::ScriptFile::new("echo secret-$((1+1))").unwrap();
+        let path = std::path::PathBuf::from(f.args()[0]);
+        assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        let out = std::process::Command::new("bash").args(f.args()).output().unwrap();
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "secret-2");
+        assert!(!f.args().iter().any(|a| a.contains("secret")));
+        drop(f);
+        assert!(!path.exists());
+    }
 }

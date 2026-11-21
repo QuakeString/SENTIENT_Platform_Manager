@@ -1266,7 +1266,9 @@ pub(crate) fn admin_account_sql(email: &str, password_hash: &str) -> String {
     format!(
         "UPDATE user_credentials SET password = {hash} WHERE user_id = \
            (SELECT id FROM tb_user WHERE authority = 'SYS_ADMIN' AND email = 'admin@sentient.local'); \
-         UPDATE tb_user SET email = {email} WHERE authority = 'SYS_ADMIN' AND email = 'admin@sentient.local';",
+         UPDATE tb_user SET email = {email} WHERE authority = 'SYS_ADMIN' AND email = 'admin@sentient.local'; \
+         DO $sa$ BEGIN IF NOT EXISTS (SELECT 1 FROM tb_user WHERE authority = 'SYS_ADMIN' AND email = {email}) THEN \
+           RAISE EXCEPTION 'no system administrator has the new sign-in'; END IF; END $sa$;",
         hash = lit(password_hash),
         email = lit(email),
     )
@@ -1365,7 +1367,32 @@ fn write_env_file(cfg: &NativeConfig) -> Result<(), String> {
         format!("# Effective SENTIENT configuration (read-only reference).\n\
                  # The service reads these from its descriptor in services\\, not from here.\n{body}"),
     )
-    .map_err(|e| format!("write env file: {e}"))
+    .map_err(|e| format!("write env file: {e}"))?;
+    // It holds the database password and the JWT secret (audit I7).
+    private_file(&cfg.env_file(), None)
+}
+
+/// Let only Administrators and SYSTEM (and `reader`, when named) open
+/// `path`: a file holding passwords under Program Files or ProgramData
+/// otherwise inherits read access for every user (audit I7, I9).
+#[cfg(windows)]
+pub fn private_file(path: &Path, reader: Option<&str>) -> Result<(), String> {
+    let p = path.display().to_string();
+    let extra = reader.map(|r| format!("{r}:(R)"));
+    let mut args: Vec<&str> = vec![&p, "/inheritance:r", "/grant:r", "*S-1-5-32-544:(F)", "*S-1-5-18:(F)"];
+    if let Some(e) = &extra {
+        args.extend(["/grant:r", e.as_str()]);
+    }
+    match sys::output("icacls.exe", &args) {
+        Some((true, _, _)) => Ok(()),
+        Some((false, out, err)) => Err(format!("could not make {p} private: {} {}", sys::decode(&err).trim(), sys::decode(&out).trim())),
+        None => Err("could not run icacls.exe".into()),
+    }
+}
+
+#[cfg(not(windows))]
+pub fn private_file(_path: &Path, _reader: Option<&str>) -> Result<(), String> {
+    Ok(())
 }
 
 /// Register the server as a Windows service via the bundled WinSW wrapper.
@@ -1420,6 +1447,8 @@ fn register_app_service(cfg: &NativeConfig) -> Result<(), String> {
     std::fs::create_dir_all(cfg.install_dir.join("logs")).ok();
     std::fs::write(svc_dir.join(format!("{APP_SERVICE}.xml")), xml)
         .map_err(|e| format!("write service descriptor: {e}"))?;
+    // The descriptor carries the service's environment, passwords included.
+    private_file(&svc_dir.join(format!("{APP_SERVICE}.xml")), None)?;
 
     if !service_exists(APP_SERVICE) {
         match sys::output_tracked(&winsw.to_string_lossy(), &["install"]) {

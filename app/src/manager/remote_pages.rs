@@ -547,7 +547,10 @@ impl RemotePages {
         });
         let vars_search = cx.new(|cx| InputState::new(_window, cx).placeholder("Search settings and variables"));
         let vars_sub = cx.subscribe(&vars_search, |_, _, _: &InputEvent, cx| cx.notify());
-        let gw_form = crate::manager::gateway::InstallForm::new("", 1883, _window, cx);
+        // A gateway on the same server as SENTIENT reaches it on this
+        // machine: 127.0.0.1, never the server's own (public) name, whose
+        // MQTT would go out through the router and back (audit I17).
+        let gw_form = crate::manager::gateway::InstallForm::new("127.0.0.1", 1883, _window, cx);
         let gw_form_subs: Vec<Subscription> = gw_form.inputs().into_iter().map(|i| cx.subscribe(i, |_, _, _: &InputEvent, cx| cx.notify())).collect();
         // The gateway's "Update to <v>" follows the newest release found.
         let updates_sub = cx.observe(&updates, |_, _, cx| cx.notify());

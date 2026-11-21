@@ -520,7 +520,7 @@ pub fn deploy(sink: ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
            echo '>> Installing the SENTIENT schema (one-time)'\n\
          fi\n\
          set -a; . {ENV_FILE}; set +a\n\
-         if ! {inst}/bin/sentient-install --database-url {url} --data-dir {inst}/data{demo} 2>&1 | tail -n 3; then\n\
+         if ! DATABASE_URL={url} {inst}/bin/sentient-install --data-dir {inst}/data{demo} 2>&1 | tail -n 3; then\n\
            echo '>> note: the schema installer returned an error. If the database was already installed this is expected. Continuing.'\n\
          fi\n\
          {stock_fix}\
@@ -551,7 +551,13 @@ pub fn deploy(sink: ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
     for _ in 0..90 {
         bail_if_cancelled()?;
         if crate::native::is_running(cfg.http_port) {
-            sink(Progress::Done { message: format!("SENTIENT is serving on http://localhost:{}", cfg.http_port) });
+            // Other computers reach it only through the firewall (audit I4).
+            match open_firewall(cfg) {
+                Ok(Some(which)) => log(&sink, format!("Opened ports {}/tcp, {}/tcp and {}/udp in {which}.", cfg.http_port, cfg.mqtt_port, cfg.coap_port)),
+                Ok(None) => {}
+                Err(e) => sink(Progress::Log { line: format!("!! The firewall was not opened, so other computers may not reach SENTIENT: {e}") }),
+            }
+            sink(Progress::Done { message: format!("SENTIENT is serving on port {}", cfg.http_port) });
             return Ok(());
         }
         std::thread::sleep(std::time::Duration::from_secs(1));
@@ -1389,5 +1395,42 @@ mod start_tests {
         assert!(setup_error("pkexec exited with 43", 5433).contains("5433"));
         assert!(setup_error("x exited with 41", 5432).contains("stopped while starting"));
         assert_eq!(setup_error("x exited with 1", 5432), "x exited with 1");
+    }
+}
+
+/// The script that opens SENTIENT's ports (web and MQTT over TCP, CoAP over
+/// UDP) in the firewall that is active: firewalld (permanent, reloaded) or
+/// ufw; prints which, or nothing when neither runs.
+pub fn firewall_script(tcp: &[u16], udp: &[u16]) -> String {
+    let fw_ports: String = tcp.iter().map(|p| format!(" --add-port={p}/tcp")).chain(udp.iter().map(|p| format!(" --add-port={p}/udp"))).collect();
+    let ufw: String = tcp.iter().map(|p| format!("ufw allow {p}/tcp >/dev/null && ")).chain(udp.iter().map(|p| format!("ufw allow {p}/udp >/dev/null && "))).collect();
+    format!(
+        "if command -v firewall-cmd >/dev/null && firewall-cmd --state >/dev/null 2>&1; then \
+           firewall-cmd --permanent{fw_ports} >/dev/null && firewall-cmd --reload >/dev/null && echo firewalld; \
+         elif command -v ufw >/dev/null && ufw status 2>/dev/null | grep -q '^Status: active'; then \
+           {ufw}echo ufw; \
+         fi"
+    )
+}
+
+/// Open SENTIENT's ports in the active firewall (None: there is none).
+pub fn open_firewall(cfg: &NativeConfig) -> Result<Option<String>, String> {
+    let script = firewall_script(&[cfg.http_port, cfg.mqtt_port], &[cfg.coap_port]);
+    match exec::privileged_output(&script) {
+        Some((true, out, _)) => Ok(Some(out.trim().to_string()).filter(|w| !w.is_empty())),
+        Some((false, _, err)) => Err(err.trim().to_string()),
+        None => Err("could not run the firewall's command".into()),
+    }
+}
+
+#[cfg(test)]
+mod firewall_tests {
+    /// firewalld and ufw get every port; nothing runs when neither is active.
+    #[test]
+    fn the_firewall_script_opens_every_port() {
+        let s = super::firewall_script(&[8080, 1883], &[5683]);
+        assert!(s.contains("firewall-cmd --permanent --add-port=8080/tcp --add-port=1883/tcp --add-port=5683/udp"), "{s}");
+        assert!(s.contains("ufw allow 8080/tcp") && s.contains("ufw allow 1883/tcp") && s.contains("ufw allow 5683/udp"), "{s}");
+        assert!(s.contains("firewall-cmd --state") && s.contains("Status: active"), "{s}");
     }
 }
