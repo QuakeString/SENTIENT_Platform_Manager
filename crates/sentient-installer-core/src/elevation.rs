@@ -597,10 +597,15 @@ mod unix {
 
     /// [`run`] capturing the output: (success, stdout, stderr).
     pub fn output(argv: &[String]) -> Result<(bool, String, String), ElevationError> {
+        output_with_input(argv, None)
+    }
+
+    /// [`output`] with `input` on the step's standard input.
+    pub fn output_with_input(argv: &[String], input: Option<&str>) -> Result<(bool, String, String), ElevationError> {
         let (mut out, mut err) = (String::new(), String::new());
         let code = run(
             argv,
-            None,
+            input,
             false,
             &mut |s, line| {
                 let buf = if s == Stream::Out { &mut out } else { &mut err };

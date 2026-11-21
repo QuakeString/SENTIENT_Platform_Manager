@@ -891,6 +891,8 @@ mod windows {
             return Err("This gateway is older than 4.12: update it first to change its web page here.".into());
         }
         let mut env = service_environment();
+        let conn = plan.conn_host.is_some() || plan.conn_port.is_some();
+        let conn_env = conn && env.iter().any(|l| ["host=", "ST_GW_HOST=", "TB_GW_HOST=", "port=", "ST_GW_PORT=", "TB_GW_PORT="].iter().any(|p| l.starts_with(p)));
         let mut set = |n: &str, v: Option<String>| {
             env.retain(|l| !l.starts_with(&format!("{n}=")));
             if let Some(v) = v {
@@ -898,6 +900,14 @@ mod windows {
             }
         };
         let mut env_changed = false;
+        // The connection: written by the gateway's own --install (below);
+        // an override of it in the service's environment goes.
+        if conn_env {
+            for k in ["host", "ST_GW_HOST", "TB_GW_HOST", "port", "ST_GW_PORT", "TB_GW_PORT"] {
+                set(k, None);
+            }
+            env_changed = true;
+        }
         if page && before.machine.ui_env {
             if let Some(on) = plan.ui_enabled {
                 set("ST_GW_UI", Some(if on { "on" } else { "off" }.into()));
@@ -934,9 +944,17 @@ mod windows {
                 return Err("sc.exe failure could not set the restart policy.".into());
             }
         }
-        if page {
-            step(sink, "Setting the web page and restarting the gateway once (its own --install)");
+        if page || conn {
+            step(sink, "Writing the settings and restarting the gateway once (its own --install)");
             let mut args = vec!["--install".to_string()];
+            if let Some(h) = &plan.conn_host {
+                args.push("--host".into());
+                args.push(h.clone());
+            }
+            if let Some(p) = plan.conn_port {
+                args.push("--port".into());
+                args.push(p.to_string());
+            }
             match plan.ui_enabled {
                 Some(true) => args.push("--ui".into()),
                 Some(false) => args.push("--no-ui".into()),

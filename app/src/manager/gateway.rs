@@ -228,7 +228,29 @@ impl GatewayPage {
                         move |sink| {
                             sink(sentient_installer_core::progress::Progress::Step { name: "Applying the settings".into() });
                             if canned {
-                                sink(sentient_installer_core::progress::Progress::Done { message: "Screens: a canned gateway; nothing was changed.".into() });
+                                // Screens: SPM_DEBUG_GATEWAY_APPLY_FAIL=refused|noconnect,
+                                // the words of the two ways a new connection fails.
+                                use sentient_installer_core::distro::gateway_docker as gd;
+                                use sentient_installer_core::progress::Progress;
+                                match std::env::var("SPM_DEBUG_GATEWAY_APPLY_FAIL").as_deref() {
+                                    Ok("refused") => return Err(gd::unreachable_words("172.17.0.1", 1883, "127.0.0.1")),
+                                    Ok("platform") => {
+                                        sink(Progress::Step { name: "Checking the gateway connects to SENTIENT at 127.0.0.1:1883".into() });
+                                        sink(Progress::Log { line: "Connected to SENTIENT at 127.0.0.1:1883.".into() });
+                                        return Err(sentient_installer_core::gateway_settings::platform_owns_words("127.0.0.1:1883", "192.168.0.20", 1883, true));
+                                    }
+                                    Ok("readback") => return Err("Applied, but the gateway reads back the host 192.168.0.20 (from the gateway's config file), not 127.0.0.1.".into()),
+                                    Ok("noconnect") => {
+                                        sink(Progress::Log { line: "127.0.0.1 is this machine: the gateway's container reaches it as host.docker.internal (172.17.0.1).".into() });
+                                        sink(Progress::Step { name: "Checking the gateway connects to SENTIENT at 127.0.0.1:1883".into() });
+                                        let why = ": 2026-11-21T16:40:54.258393Z  WARN gateway_core::uplink: uplink connection error; retrying in 30s error=I/O: Connection refused (os error 111)";
+                                        sink(Progress::Log { line: format!("Not connected within 60 seconds{why}") });
+                                        sink(Progress::Step { name: "Putting the previous connection back".into() });
+                                        return Err(gd::no_connect_words("127.0.0.1:1883", true));
+                                    }
+                                    _ => {}
+                                }
+                                sink(Progress::Done { message: "Screens: a canned gateway; nothing was changed.".into() });
                                 return Ok(());
                             }
                             if as_root {
@@ -783,7 +805,7 @@ impl Render for GatewayPage {
                 })
                 .child(ui::fact(&theme, "Runs as", runs_as(status.kind(), &RemoveTarget::of(&status, None).name, status.managed, recorded)))
                 .children(self.settings.as_ref().and_then(|s| s.as_ref().ok()).and_then(|s| {
-                    let path = s.config_path.clone()?;
+                    let path = shown_config_path(&s.config_path.clone()?);
                     let n = s.connectors.len();
                     Some(ui::fact(&theme, "Configuration", format!("{path} · {n} connector{}", if n == 1 { "" } else { "s" })))
                 }))
@@ -1468,6 +1490,7 @@ fn test_here(status: &Status, as_root: bool) -> Result<String, String> {
 pub(crate) fn debug_fixture(name: &str) -> Option<&'static str> {
     Some(match name {
         "docker" => "installed=true version=4.16.1 running=true host=127.0.0.1 port=1883 page=off container=sentient-gateway managed=true kind=docker image=quakestring/sentient-gateway-rs:4.16.1 volumes=st-gw-config,st-gw-data,st-gw-logs",
+        "docker-via" | "docker-via-off" => "installed=true version=4.18.2 running=true host=127.0.0.1 port=1883 page=off container=sentient-gateway managed=true kind=docker image=quakestring/sentient-gateway-rs:4.18.2 volumes=st-gw-config,st-gw-data",
         "compose" => "installed=true version=4.16.1 running=true host=10.0.0.5 port=1883 page=off container=plant-gw managed=false kind=docker image=quakestring/sentient-gateway-rs:4.16.1 compose=/srv/example-site/gateway project=gateway volumes=gw-config,gw-data",
         "legacy" => "installed=false legacy=example-old-gw legacy_image=quakestring/sentient-gateway:3.7.10",
         "legacy-running" => "installed=false legacy=example-old-gw legacy_image=quakestring/sentient-gateway:latest",
@@ -1642,5 +1665,15 @@ mod tests {
         let w = update_plan(false, true, "4.16.3");
         assert!(w[0].matches("Downloading Sentient Gateway 4.16.3 (24 MB)") && w[1].matches("Installing Sentient Gateway 4.16.3"));
         assert_eq!(update_plan(false, false, "4.16.3").len(), 2);
+    }
+}
+
+/// The gateway's config file as the card shows it: an older file's name
+/// (the legacy one) is never shown, its folder is.
+pub fn shown_config_path(path: &str) -> String {
+    let legacy = ["tb", "_gateway.json"].concat();
+    match path.strip_suffix(&legacy) {
+        Some(dir) => format!("{} (the gateway's config file there)", dir.trim_end_matches(['/', '\\'])),
+        None => path.to_string(),
     }
 }

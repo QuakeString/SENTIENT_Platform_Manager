@@ -2061,8 +2061,14 @@ mod info_tests {
         let (head, rest) = info_lines(m);
         assert_eq!(head, "SENTIENT now runs from /opt/sentient/docker-compose.yml.");
         assert!(rest.unwrap().starts_with("Start and stop it"));
-        // The error reading of the same text is what the dialog showed before.
+        // The error reading of the same text (it names a docker command).
         assert_eq!(crate::remote::split_failure(m).0, "The action did not finish on the server.");
+        // A long error written as sentences stays whole.
+        let plain = "127.0.0.1 in the gateway's container is the container itself, so it reaches this machine as host.docker.internal (172.17.0.1), and nothing answers on 172.17.0.1:1883. Publish it on all interfaces, then Apply again. Nothing was changed.";
+        assert!(plain.len() > 200);
+        assert_eq!(crate::remote::split_failure(plain).0, plain);
+        let raw = format!("{} {}", "x".repeat(210), "exit status 1");
+        assert_eq!(crate::remote::split_failure(&raw).0, "The action did not finish on the server.");
         assert_eq!(info_lines("Backup finished."), ("Backup finished.".to_string(), None));
     }
 }

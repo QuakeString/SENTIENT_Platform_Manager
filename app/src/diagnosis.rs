@@ -202,7 +202,7 @@ impl Render for DiagnosisView {
                     })
                     .children(commands)
                     .children(notes.into_iter().map(|n| div().child(n)))
-                    .child(
+                    .when(!d.last_lines.is_empty(), |c| c.child(
                         v_flex()
                             .gap_1()
                             .child(div().text_xs().font_weight(FontWeight::MEDIUM).child(if d.is_known() { "What it printed last" } else { "The last lines it printed" }))
@@ -220,7 +220,7 @@ impl Render for DiagnosisView {
                                     .text_color(theme.foreground)
                                     .children(d.last_lines.iter().map(|l| div().child(l.clone()))),
                             ),
-                    )
+                    ))
                     .when(show_log, |c| {
                         c.child(
                             v_flex()

@@ -792,19 +792,41 @@ pub(crate) fn shell_output(prog: &str, args: &[&str], limit: std::time::Duration
 }
 
 /// Write `content` to `path` on the Docker host.
+/// Write a file on the Docker host (in the WSL distro on Windows) readable
+/// by others: a container's own config (ClickHouse reads its config.d as
+/// its own user, not root), a script.
 fn write_host_file(sink: &ProgressFn, path: &str, content: &str) -> Result<(), String> {
+    write_host_file_as(sink, path, content, false)
+}
+
+/// [`write_host_file`] that only its owner reads: the compose file holds
+/// the database passwords (audit I6); an existing file is made private too.
+fn write_private_host_file(sink: &ProgressFn, path: &str, content: &str) -> Result<(), String> {
+    write_host_file_as(sink, path, content, true)
+}
+
+fn write_host_file_as(sink: &ProgressFn, path: &str, content: &str, private: bool) -> Result<(), String> {
     #[cfg(windows)]
     {
         let dir = path.rsplit_once('/').map(|(d, _)| d).unwrap_or(".");
-        run(sink, &format!("mkdir -p {dir} && cat > {path} <<'SENTIENTEOF'\n{content}\nSENTIENTEOF\n"))
+        if private {
+            run(sink, &format!("mkdir -p {dir} && (umask 077; cat > {path} <<'SENTIENTEOF'\n{content}\nSENTIENTEOF\n) && chmod 600 {path}\n"))
+        } else {
+            run(sink, &format!("mkdir -p {dir} && cat > {path} <<'SENTIENTEOF'\n{content}\nSENTIENTEOF\nchmod 644 {path}\n"))
+        }
     }
     #[cfg(not(windows))]
     {
+        use std::io::Write as _;
+        use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
         let _ = sink;
         if let Some(dir) = Path::new(path).parent() {
             std::fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
         }
-        std::fs::write(path, content).map_err(|e| format!("write {path}: {e}"))
+        let mode = if private { 0o600 } else { 0o644 };
+        let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(mode).open(path).map_err(|e| format!("write {path}: {e}"))?;
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode));
+        f.write_all(content.as_bytes()).map_err(|e| format!("write {path}: {e}"))
     }
 }
 
@@ -833,7 +855,7 @@ fn write_stack_files_exact(sink: &ProgressFn, cfg: &DeployConfig) -> Result<(), 
     if cfg.external.is_some() {
         return Err(EXTERNAL_COMPOSE.into());
     }
-    write_host_file(sink, &cfg.compose_path(), &compose(cfg))?;
+    write_private_host_file(sink, &cfg.compose_path(), &compose(cfg))?;
     if cfg.flavor.uses_clickhouse() {
         write_host_file(sink, &cfg.ch_config_path(), &stack::clickhouse_config_xml(&cfg.ch, None, None))?;
     }
@@ -910,7 +932,7 @@ pub fn deploy_clickhouse(sink: ProgressFn, cfg: &DeployConfig) -> Result<(), Str
         return Err("Docker is not reachable. Run the Docker setup step first.".into());
     }
     sink(Progress::Step { name: "Writing the ClickHouse configuration".into() });
-    write_host_file(&sink, &cfg.compose_path(), &compose_clickhouse_only(cfg))?;
+    write_private_host_file(&sink, &cfg.compose_path(), &compose_clickhouse_only(cfg))?;
     write_host_file(&sink, &cfg.ch_config_path(), &stack::clickhouse_config_xml(&cfg.ch, None, None))?;
     bail_if_cancelled!();
     sink(Progress::Step { name: "Pulling the ClickHouse image".into() });

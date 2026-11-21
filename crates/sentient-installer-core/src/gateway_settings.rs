@@ -66,6 +66,13 @@ pub struct Connection {
     /// Host, port or token come from the process's environment (a container
     /// started with `host`/`port`/`accessToken`).
     pub from_env: bool,
+    /// Where the host the gateway uses comes from, in words (the config
+    /// file and its path, the container's environment and the variable).
+    pub host_source: Option<String>,
+    /// How a host the person typed is reached when it is not used as
+    /// typed (localhost in a container on its own network is reached as
+    /// host.docker.internal): a note for under the field.
+    pub via: Option<String>,
 }
 
 impl Connection {
@@ -98,6 +105,9 @@ pub struct LocalUi {
     pub hostnames: Vec<String>,
     /// The administrator password is set (None: not known).
     pub password_set: Option<bool>,
+    /// On, but not reachable as it runs (a container that does not publish
+    /// its port): why, for the card.
+    pub unreachable: Option<String>,
 }
 
 /// A connector as SENTIENT configured it.
@@ -160,6 +170,25 @@ pub struct Machine {
     pub rust_log: Option<String>,
     /// ST_GW_UI / ST_GW_UI_LISTEN set in the environment (they win over the file).
     pub ui_env: bool,
+    /// A container's network (host, bridge, a compose network): on its own
+    /// network the web page's port is published; on the host's it is not.
+    pub network: Option<String>,
+}
+
+impl Machine {
+    /// How the gateway runs, in words, for the card: the web page is set up
+    /// differently for each.
+    pub fn kind_words(&self) -> String {
+        match (self.kind.as_str(), self.network.as_deref()) {
+            ("docker", Some("host")) => "In Docker, on the host network: the web page listens on this machine directly.".into(),
+            ("docker", Some(n)) => format!("In Docker, on the {n} network: the web page's port is published on this machine."),
+            ("docker", None) => "In Docker.".into(),
+            ("service", _) => "As a systemd service: the web page listens on this machine directly (a firewall may need the port open).".into(),
+            ("windows-service", _) => "As a Windows service: the web page listens on this machine directly (Windows Firewall may need the port open).".into(),
+            ("process", _) => "As a program started by hand.".into(),
+            _ => String::new(),
+        }
+    }
 }
 
 /// What the installed gateway's program can do (from its `--help`).
@@ -298,6 +327,8 @@ fn read_config(s: &mut GwSettings, v: &Value) {
         tls: credential.starts_with("tls") || sec.get("caCert").is_some_and(|c| c.as_str().is_some_and(|c| !c.is_empty())),
         credential,
         from_env: false,
+        host_source: None,
+        via: None,
     };
     // The page: on by default outside a container (resolved later).
     let ui = v.get("localUi").cloned().unwrap_or(Value::Null);
@@ -466,6 +497,7 @@ pub fn apply_env(s: &mut GwSettings, env: &[String], in_container: bool) {
     if let Some(h) = env_any(env, &["host", "ST_GW_HOST", "TB_GW_HOST"]) {
         s.conn.host = Some(h.to_string());
         s.conn.from_env = true;
+        s.conn.host_source = Some(if in_container { "the container's environment".into() } else { "the service's environment".into() });
     }
     if let Some(p) = env_any(env, &["port", "ST_GW_PORT", "TB_GW_PORT"]).and_then(|p| p.parse().ok()) {
         s.conn.port = Some(p);
@@ -618,6 +650,9 @@ pub fn from_read(out: &str) -> GwSettings {
         }
     };
     if !file.is_empty() {
+        if s.conn.host.is_some() {
+            s.conn.host_source = Some("the gateway's config file".into());
+        }
         s.config_path = Some(file);
     }
     s.ui.password_set = sec.get("PW").map(|p| p.trim() == "yes");
@@ -683,6 +718,10 @@ pub struct ApplyPlan {
     pub env: Option<Vec<(String, String)>>,
     /// RUST_LOG: "" removes it.
     pub rust_log: Option<String>,
+    /// The platform connection, written to the gateway's config file (a
+    /// container's environment override of it is removed): host, port.
+    pub conn_host: Option<String>,
+    pub conn_port: Option<u16>,
 }
 
 impl ApplyPlan {
@@ -694,7 +733,7 @@ impl ApplyPlan {
     /// `kind`: a Windows service's restart policy alone does not.
     pub fn restarts(&self, kind: &str) -> bool {
         if kind == "windows-service" {
-            return self.ui_enabled.is_some() || self.ui_listen.is_some() || self.env.is_some() || self.rust_log.is_some();
+            return self.ui_enabled.is_some() || self.ui_listen.is_some() || self.env.is_some() || self.rust_log.is_some() || self.conn_host.is_some() || self.conn_port.is_some();
         }
         !self.is_empty()
     }
@@ -714,6 +753,9 @@ impl ApplyPlan {
     /// What changes, in words, for the job's steps and its last line.
     pub fn names(&self) -> Vec<&'static str> {
         let mut n = Vec::new();
+        if self.conn_host.is_some() || self.conn_port.is_some() {
+            n.push("Connection to SENTIENT");
+        }
         if self.ui_enabled.is_some() {
             n.push("Web page");
         }
@@ -740,6 +782,18 @@ impl ApplyPlan {
 /// is as asked).
 pub fn mismatches(plan: &ApplyPlan, after: &GwSettings) -> Vec<String> {
     let mut out = Vec::new();
+    if let Some(h) = &plan.conn_host {
+        if after.conn.host.as_deref() != Some(h.as_str()) {
+            let from = after.conn.host_source.as_deref().map(|f| format!(" (from {f})")).unwrap_or_default();
+            out.push(format!("the host {}{from}, not {h}", after.conn.host.clone().unwrap_or_else(|| "none".into())));
+        }
+    }
+    if let Some(p) = plan.conn_port {
+        if after.conn.port != Some(p) {
+            out.push(format!("the MQTT port {}, not {p}", after.conn.port.map(|p| p.to_string()).unwrap_or_else(|| "not set".into())));
+        }
+    }
+
     if let Some(on) = plan.ui_enabled {
         if after.ui.enabled != on {
             out.push(format!("the web page is {}", if after.ui.enabled { "on" } else { "off" }));
@@ -799,23 +853,138 @@ pub fn apply(sink: &ProgressFn, status: &Status, plan: &ApplyPlan) -> Result<(),
     if let Some(why) = &before.machine.not_editable {
         return Err(why.clone());
     }
-    match status.kind() {
-        "docker" => crate::distro::gateway_docker::apply_settings(sink, status, &before, plan)?,
-        #[cfg(not(windows))]
-        "service" => crate::distro::gateway_native::apply_settings(sink, status, &before, plan)?,
-        #[cfg(windows)]
-        "windows-service" => crate::gateway::windows_apply_settings(sink, &before, plan)?,
-        _ => return Err("This gateway's settings cannot be changed from here.".into()),
+    let since = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    apply_kind(sink, status, &before, plan)?;
+    // A new connection counts only once the gateway is connected with it,
+    // else the previous one comes back (a container does this itself).
+    let conn = plan.conn_host.is_some() || plan.conn_port.is_some();
+    if conn && status.kind() != "docker" {
+        let target = format!("{}:{}", plan.conn_host.clone().or_else(|| before.conn.host.clone()).unwrap_or_default(), plan.conn_port.or(before.conn.port).unwrap_or(1883));
+        sink(Progress::Step { name: format!("Checking the gateway connects to SENTIENT at {target}") });
+        let ok = wait_connected(status, since, 60);
+        if ok.is_none() {
+            sink(Progress::Log { line: "This gateway does not say whether it is connected, so the connection could not be checked: see Connected on the card.".into() });
+        }
+        if ok == Some(false) {
+            sink(Progress::Log { line: "Not connected within 60 seconds.".into() });
+            sink(Progress::Step { name: "Putting the previous connection back".into() });
+            let back = ApplyPlan {
+                conn_host: before.conn.host.clone().filter(|_| plan.conn_host.is_some()),
+                conn_port: before.conn.port.filter(|_| plan.conn_port.is_some()),
+                ..ApplyPlan::default()
+            };
+            if !back.is_empty() {
+                let now = crate::gateway::status();
+                let current = read(&now);
+                if let Err(e) = apply_kind(sink, &now, &current, &back) {
+                    sink(Progress::Log { line: format!("The previous connection could not be put back: {e}") });
+                }
+            }
+            return Err(crate::distro::gateway_docker::no_connect_words(&target, false));
+        }
+        if ok == Some(true) {
+            sink(Progress::Log { line: format!("Connected to SENTIENT at {target}.") });
+        }
+    }
+    // Connected, the gateway takes the connection SENTIENT keeps for it
+    // (its gateway configuration) and writes it to its file: the one typed
+    // here is then not kept, and the reason is SENTIENT, not this Apply.
+    if conn {
+        if let Some((h, p)) = platform_took_connection(status, since, 20) {
+            let target = format!("{}:{}", plan.conn_host.clone().or_else(|| before.conn.host.clone()).unwrap_or_default(), plan.conn_port.or(before.conn.port).unwrap_or(1883));
+            let via = status.kind() == "docker" && plan.conn_host.as_deref().is_some_and(crate::distro::gateway_docker::is_loopback);
+            return Err(platform_owns_words(&target, &h, p, via));
+        }
     }
     sink(Progress::Step { name: "Reading the settings back".into() });
     let status = crate::gateway::status();
     let after = read(&status);
     let wrong = mismatches(plan, &after);
     if !wrong.is_empty() {
-        return Err(format!("Applied, but reading back shows {}.", wrong.join("; ")));
+        return Err(format!("Applied, but the gateway reads back {}.", wrong.join("; ")));
     }
     sink(Progress::Done { message: format!("Applied and read back: {}.", plan.names().join(", ")) });
     Ok(())
+}
+
+/// Why a connection set here was not kept: SENTIENT sent the one it keeps
+/// for this gateway once it connected (`via`: typed as localhost for a
+/// container, which SENTIENT must name as host.docker.internal).
+pub fn platform_owns_words(target: &str, host: &str, port: u16, via: bool) -> String {
+    let how = if via { " (there, this machine is host.docker.internal: localhost would be the gateway's own container)" } else { "" };
+    format!(
+        "The gateway connected to SENTIENT at {target}, then SENTIENT sent the connection it keeps for this gateway, {host}:{port}, and the gateway switched to it. While the gateway is connected, SENTIENT's gateway configuration decides its connection. To use {target}, change it in SENTIENT › Gateways › this gateway › Configuration › General{how}."
+    )
+}
+
+/// (host, port) when the gateway's log since `since` says SENTIENT changed
+/// its connection ("the platform changed this gateway's connection"),
+/// watched for `secs` seconds.
+fn platform_took_connection(status: &Status, since: u64, secs: u64) -> Option<(String, u16)> {
+    for _ in 0..secs / 4 {
+        std::thread::sleep(std::time::Duration::from_secs(4));
+        let log: Option<String> = match status.kind() {
+            #[cfg(not(windows))]
+            "docker" => status.container.as_deref().and_then(|n| crate::distro::gateway_docker::logs_since(n, since)),
+            #[cfg(not(windows))]
+            "service" => status.service.as_deref().and_then(|u| {
+                crate::sys::host_command("journalctl").args(["-u", u, "--since", &format!("@{since}"), "-o", "cat", "--no-pager"]).output().ok().map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+            }),
+            _ => None,
+        };
+        if let Some(found) = log.as_deref().and_then(platform_change_in) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+/// The last "the platform changed this gateway's connection" line's host
+/// and port.
+pub fn platform_change_in(log: &str) -> Option<(String, u16)> {
+    let line = log.lines().rev().find(|l| l.contains("the platform changed this gateway's connection"))?;
+    let field = |k: &str| line.split_whitespace().find_map(|w| w.strip_prefix(&format!("{k}=")).map(|v| v.trim_matches('"').to_string()));
+    Some((field("host")?, field("port")?.parse().ok()?))
+}
+
+/// The settings applied by the way the gateway runs.
+fn apply_kind(sink: &ProgressFn, status: &Status, before: &GwSettings, plan: &ApplyPlan) -> Result<(), String> {
+    match status.kind() {
+        "docker" => crate::distro::gateway_docker::apply_settings(sink, status, before, plan),
+        #[cfg(not(windows))]
+        "service" => crate::distro::gateway_native::apply_settings(sink, status, before, plan),
+        #[cfg(windows)]
+        "windows-service" => crate::gateway::windows_apply_settings(sink, before, plan),
+        _ => Err("This gateway's settings cannot be changed from here.".into()),
+    }
+}
+
+/// Whether the service gateway connects within `secs` seconds of `since`
+/// (Unix seconds): its log since then says so (systemd), or its own open
+/// connections do. None: it cannot be known (no log here, and the gateway
+/// does not say).
+fn wait_connected(status: &Status, since: u64, secs: u64) -> Option<bool> {
+    let journal = cfg!(not(windows)) && status.service.is_some();
+    for _ in 0..secs / 3 {
+        std::thread::sleep(std::time::Duration::from_secs(3));
+        #[cfg(not(windows))]
+        if let Some(unit) = &status.service {
+            let at = format!("@{since}");
+            if let Ok(o) = crate::sys::host_command("journalctl").args(["-u", unit, "--since", &at, "-o", "cat", "--no-pager"]).output() {
+                if crate::distro::gateway_docker::connected_in_log(&crate::distro::gateway_docker::strip_ansi(&String::from_utf8_lossy(&o.stdout))) {
+                    return Some(true);
+                }
+            }
+        }
+        #[cfg(windows)]
+        let _ = since;
+        match read(&crate::gateway::status()).connected {
+            Some(true) => return Some(true),
+            None if !journal => return None,
+            _ => {}
+        }
+    }
+    Some(false)
 }
 
 /// Set the local page's administrator password through the gateway's own
@@ -982,6 +1151,17 @@ pub fn test_connection(status: &Status) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
+    /// SENTIENT's push of its own connection is found in the gateway's log,
+    /// and said as SENTIENT's, with host.docker.internal for a container.
+    #[test]
+    fn sentients_own_connection_is_found_and_said() {
+        let log = "2026-11-21T17:23:38Z  INFO gateway_core::remote_config: the platform changed this gateway's connection host=192.168.0.20 port=1883";
+        assert_eq!(super::platform_change_in(log), Some(("192.168.0.20".to_string(), 1883)));
+        assert_eq!(super::platform_change_in("INFO connected to platform"), None);
+        let w = super::platform_owns_words("127.0.0.1:1883", "192.168.0.20", 1883, true);
+        assert!(w.contains("192.168.0.20:1883") && w.contains("Configuration › General") && w.contains("host.docker.internal"), "{w}");
+    }
+
     use super::*;
 
     const FILE: &str = r#"{"sentient":{"host":"sentient.example.local","port":1883,"remoteShell":false,

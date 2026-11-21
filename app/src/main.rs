@@ -110,6 +110,8 @@ mod timing;
 mod ui;
 #[cfg(all(test, feature = "gui"))]
 mod popup_gate;
+#[cfg(all(test, feature = "gui"))]
+mod text_gate;
 mod uninstall;
 mod updates;
 mod updating;

@@ -580,8 +580,15 @@ pub fn native_steps(before: &crate::gateway_settings::GwSettings, plan: &crate::
     if let Some(l) = &plan.rust_log {
         set(&mut env, "RUST_LOG", (!l.is_empty()).then(|| l.clone()));
     }
+    // The connection: written by the gateway's own --install (below) into
+    // its config file; an override of it in our drop-in goes.
+    let conn = plan.conn_host.is_some() || plan.conn_port.is_some();
+    let conn_env = conn && env.iter().any(|(k, _)| matches!(k.as_str(), "host" | "ST_GW_HOST" | "TB_GW_HOST" | "port" | "ST_GW_PORT" | "TB_GW_PORT"));
+    if conn_env {
+        env.retain(|(k, _)| !matches!(k.as_str(), "host" | "ST_GW_HOST" | "TB_GW_HOST" | "port" | "ST_GW_PORT" | "TB_GW_PORT"));
+    }
     let restart_policy = plan.restart_always.or_else(|| restart_before.map(|r| r != "no"));
-    let dropin = (plan.env.is_some() || plan.rust_log.is_some() || plan.restart_always.is_some() || page_env).then(|| dropin_text(restart_policy, &env));
+    let dropin = (plan.env.is_some() || plan.rust_log.is_some() || plan.restart_always.is_some() || page_env || conn_env).then(|| dropin_text(restart_policy, &env));
     let serial = match plan.serial_group {
         None => None,
         Some(join) => match (&before.machine.serial.account, &before.machine.serial.group) {
@@ -589,8 +596,16 @@ pub fn native_steps(before: &crate::gateway_settings::GwSettings, plan: &crate::
             _ => return Err("No serial group was found on this computer (dialout or uucp).".into()),
         },
     };
-    let restart = if page {
+    let restart = if page || conn {
         let mut args = vec!["--install".to_string()];
+        if let Some(h) = &plan.conn_host {
+            args.push("--host".into());
+            args.push(h.clone());
+        }
+        if let Some(p) = plan.conn_port {
+            args.push("--port".into());
+            args.push(p.to_string());
+        }
         match plan.ui_enabled {
             Some(true) => args.push("--ui".into()),
             Some(false) => args.push("--no-ui".into()),
@@ -633,7 +648,7 @@ pub fn apply_settings(sink: &ProgressFn, status: &Status, before: &crate::gatewa
     }
     match &steps.restart {
         Restart::ByInstall(args) => {
-            sink(Progress::Step { name: "Setting the web page and restarting the gateway once (its own --install)".into() });
+            sink(Progress::Step { name: "Writing the settings and restarting the gateway once (its own --install)".into() });
             let refs: Vec<&str> = args.iter().map(String::as_str).collect();
             let o = crate::sys::host_command(&program).args(&refs).output().map_err(|e| format!("{program}: {e}"))?;
             crate::exec::emit(sink, &o.stdout);

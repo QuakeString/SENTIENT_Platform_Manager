@@ -1738,7 +1738,7 @@ pub fn start_job_as(inst: &Instance, args: &[&str], tag: Option<&str>) -> Result
         sudo_run(
             inst,
             &format!(
-                "mkdir -p {REMOTE_JOBS} && systemd-run --unit=spm-job-{id} --collect --property=StandardOutput=file:{REMOTE_JOBS}/{id}.log --property=StandardError=file:{REMOTE_JOBS}/{id}.err {system} --job --json {}",
+                "mkdir -p {REMOTE_JOBS} && systemd-run --unit=spm-job-{id} --collect --property=StandardOutput=file:{REMOTE_JOBS}/{id}.log --property=StandardError=file:{REMOTE_JOBS}/{id}.err /bin/sh -c \"{system} --job --json {} && echo 0 > {REMOTE_JOBS}/{id}.code || echo 1 > {REMOTE_JOBS}/{id}.code\"",
                 quoted.join(" ")
             ),
             None,
@@ -1749,13 +1749,26 @@ pub fn start_job_as(inst: &Instance, args: &[&str], tag: Option<&str>) -> Result
         run(
             inst,
             &format!(
-                "mkdir -p \"{USER_JOBS}\" && cd \"{USER_JOBS}\" && (setsid nohup \"{USER_SPM}\" --job --json {} > {id}.log 2> {id}.err < /dev/null & echo $! > {id}.pid)",
+                "mkdir -p \"{USER_JOBS}\" && cd \"{USER_JOBS}\" && (setsid nohup sh -c \"\\\"{USER_SPM}\\\" --job --json {} && echo 0 > {id}.code || echo 1 > {id}.code\" > {id}.log 2> {id}.err < /dev/null & echo $! > {id}.pid)",
                 quoted.join(" ")
             ),
             None,
         )?;
     }
     Ok(id)
+}
+
+/// How a job ended, from its exit code file and the end of its standard
+/// error (`<code>\n@@ERR\n<lines>`): Ok for 0 or no code (a job started
+/// by an older Platform Manager has none), else its last error line.
+pub(crate) fn ended_as(out: &str) -> Result<(), String> {
+    let (code, err) = out.split_once("@@ERR").unwrap_or((out, ""));
+    let code = code.trim();
+    if code.is_empty() || code == "0" {
+        return Ok(());
+    }
+    let why = err.lines().map(|l| l.trim().trim_start_matches("✗ ").trim()).filter(|l| !l.is_empty()).last().map(str::to_string);
+    Err(why.unwrap_or_else(|| format!("The job stopped (exit code {code}).")))
 }
 
 /// Follow a job's progress until it ends, reconnecting when the connection
@@ -1792,7 +1805,12 @@ pub fn follow(inst: &Instance, id: &str, sink: &ProgressFn) -> Result<(), String
         if ended {
             return match failure {
                 Some(e) => Err(e),
-                None => Ok(()),
+                // No Error line: how it ended (an agent from before failures
+                // were answered as JSON, or one that was killed or crashed).
+                None => match run(inst, &format!("cat {REMOTE_JOBS}/{id}.code 2>/dev/null || cat \"{USER_JOBS}/{id}.code\" 2>/dev/null; echo @@ERR; tail -n 20 {REMOTE_JOBS}/{id}.err 2>/dev/null || tail -n 20 \"{USER_JOBS}/{id}.err\" 2>/dev/null"), None) {
+                    Ok(out) => ended_as(&out),
+                    Err(_) => Ok(()),
+                },
             };
         }
         drops += 1;
@@ -2210,7 +2228,10 @@ pub fn split_failure(m: &str) -> (String, Option<String>) {
     if let Some((h, d)) = m.split_once(DETAILS) {
         return (h.to_string(), Some(d.to_string()));
     }
-    let raw = m.contains("docker ") || m.contains("exit status") || m.contains("exited") || m.lines().count() > 2 || m.len() > 200;
+    // Long but written as sentences (a step's own explanation, ending with a
+    // full stop) stays whole; long raw output gets a headline.
+    let sentences = m.trim_end().ends_with('.') && m.lines().count() == 1;
+    let raw = m.contains("docker ") || m.contains("exit status") || m.contains("exited") || m.lines().count() > 2 || (m.len() > 200 && !sentences);
     if !raw {
         return (m.to_string(), None);
     }
@@ -2775,6 +2796,14 @@ mod win {
                                 }
                             }
                         }
+                        // No Error line: how it ended (its exit code, the end of its errors).
+                        if failure.is_none() {
+                            if let Ok(out) = ps(inst, &format!("if (Test-Path '{JOBS}\\{id}.done') {{ Get-Content '{JOBS}\\{id}.done' }}; '@@ERR'; if (Test-Path '{JOBS}\\{id}.err') {{ Get-Content -Tail 20 '{JOBS}\\{id}.err' }}")) {
+                                if let Err(e) = super::ended_as(&out) {
+                                    failure = Some(e);
+                                }
+                            }
+                        }
                         let _ = ps(
                             inst,
                             &format!(
@@ -2882,6 +2911,17 @@ mod tests {
     }
 
     use super::*;
+
+    /// A server's job that printed no Error line ended as its exit code
+    /// says: 0 or none (a job of an older Platform Manager) is success; any
+    /// other is a failure with its last error line, never success.
+    #[test]
+    fn a_job_ends_as_its_exit_code_says() {
+        assert_eq!(ended_as("0\n@@ERR\n"), Ok(()));
+        assert_eq!(ended_as("@@ERR\nsomething\n"), Ok(()));
+        assert_eq!(ended_as("1\n@@ERR\nwarning: x\n✗ docker stop gw failed.\n\n"), Err("docker stop gw failed.".into()));
+        assert_eq!(ended_as("1\n@@ERR\n"), Err("The job stopped (exit code 1).".into()));
+    }
 
     /// The built-in terminal's ssh: a terminal requested, and the kept
     /// password only in a variable for the askpass helper, never on the

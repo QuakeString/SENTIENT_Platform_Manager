@@ -567,6 +567,11 @@ pub fn diagnose(ev: &Evidence) -> Diagnosis {
     let text = ev.text();
     let mut d = RULES.iter().find_map(|r| (r.matches)(ev, &text)).unwrap_or_else(|| unknown(ev));
     d.last_lines = last_error_lines(ev);
+    // A cause not known here, and nothing the step printed reads as an
+    // error: no lines under it (a progress line is not why it stopped).
+    if d.id == "unknown" && !d.last_lines.iter().any(|l| is_error_line(l)) {
+        d.last_lines.clear();
+    }
     d.details = details(ev, &d);
     d
 }
@@ -1138,14 +1143,18 @@ fn unknown(ev: &Evidence) -> Diagnosis {
     // unless that is only a wrapper's "exited with N".
     let printed_error = last.iter().any(|l| is_error_line(l));
     let own = ev.error.lines().map(str::trim).find(|l| !l.is_empty()).filter(|_| ev.exit_code.is_none()).map(str::to_string);
-    let cause = match own {
-        Some(e) if !printed_error => e,
-        own => last.last().cloned().filter(|l| !l.is_empty()).or(own).unwrap_or_else(|| "The step failed.".to_string()),
-    };
+    // The job's own message leads when it is one (not a wrapper's exit
+    // code): it says what stopped and what was done about it; the printed
+    // error lines stay under it.
+    let cause = own.clone().or_else(|| last.last().cloned().filter(|l| !l.is_empty())).unwrap_or_else(|| "The step failed.".to_string());
+    // The job's own message, with no error printed beside it, says it all:
+    // no unrelated last lines under it (a progress line such as "… is up to
+    // date" is not why it stopped).
+    let last = if printed_error { last } else { Vec::new() };
     Diagnosis {
         id: "unknown".into(),
         cause: format!("The step stopped: {}", cause.trim_start_matches("!! ").trim_start_matches("E: ").trim_start_matches("error: ")),
-        why: "This is not a cause the Platform Manager knows yet. The lines below are what the step printed last.".into(),
+        why: if last.is_empty() { String::new() } else { "What the step printed last is below.".into() },
         fixes: Vec::new(),
         last_lines: last,
         details: String::new(),
@@ -1188,7 +1197,10 @@ pub fn human(bytes: u64) -> String {
 
 /// Everything, for "Copy details".
 fn details(ev: &Evidence, d: &Diagnosis) -> String {
-    let mut s = format!("Cause: {}\nWhy: {}\n", d.cause, d.why);
+    let mut s = format!("Cause: {}\n", d.cause);
+    if !d.why.trim().is_empty() {
+        s.push_str(&format!("Why: {}\n", d.why));
+    }
     for f in &d.fixes {
         match f {
             Fix::Action { label, .. } => s.push_str(&format!("Fix: {label}\n")),
@@ -1611,6 +1623,17 @@ mod tests {
         assert_eq!(d.id, "unknown");
         assert_eq!(d.cause, "The step stopped: tar: sentient.tar: Cannot open: Input/output error");
         assert!(d.details.contains("pkexec exited with 3"));
+    }
+
+    #[test]
+    fn unknown_leads_with_the_jobs_own_message() {
+        let d = diagnose(&Evidence::from_text(
+            "The gateway did not connect to SENTIENT at 127.0.0.1:1883 within 60 seconds, so its previous connection was put back.",
+            &[">> Checking".into(), "Not connected within 60 seconds: WARN uplink connection error; retrying".into()],
+        ));
+        assert_eq!(d.id, "unknown");
+        assert!(d.cause.starts_with("The step stopped: The gateway did not connect"), "{}", d.cause);
+        assert_eq!(d.last_lines, vec!["Not connected within 60 seconds: WARN uplink connection error; retrying".to_string()]);
     }
 
     #[test]
