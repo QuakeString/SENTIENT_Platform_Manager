@@ -426,12 +426,26 @@ pub fn update(sink: &ProgressFn, version: &str) -> Result<(), String> {
 pub fn update_spec(current: &Spec, image: &str, old_image_env: &[String], found: &[SerialDevice]) -> Spec {
     let image_owned = |kv: &str| {
         let Some((k, _)) = kv.split_once('=') else { return true };
-        let dir = k.strip_prefix("TB_GW_").or_else(|| k.strip_prefix("ST_GW_")).is_some_and(|r| matches!(r, "CONFIG_DIR" | "DATA_DIR" | "LOGS_PATH" | "EXTENSIONS_DIR"));
+        // A folder setting the image itself gives (its default path) goes,
+        // so the new image's comes in; one given for this container stays.
+        let dir = k.strip_prefix("TB_GW_").or_else(|| k.strip_prefix("ST_GW_")).is_some_and(|r| matches!(r, "CONFIG_DIR" | "DATA_DIR" | "LOGS_PATH" | "EXTENSIONS_DIR"))
+            && kv.split_once('=').is_some_and(|(_, v)| v.starts_with("/sentient_gateway/") || v.starts_with("/thingsboard_gateway/"));
         k == "PATH" || dir || old_image_env.iter().any(|e| e == kv)
     };
     let mut spec = current.clone();
     spec.image = image.to_string();
     spec.env = current.env.iter().filter(|kv| !image_owned(kv)).cloned().collect();
+    // A new image brings its own command and entry point.
+    spec.cmd.clear();
+    spec.entrypoint.clear();
+    // Its data folder as the old container had it (an image-owned
+    // ST_GW_DATA_DIR is gone from env by now: read it from the old spec).
+    if !spec.mounts.iter().any(|m| m.1 == data_dir(current)) {
+        let mut probe = current.clone();
+        if ensure_data_volume(&mut probe).is_some() {
+            spec.mounts.push((DATA_VOLUME.to_string(), data_dir(current), false, false));
+        }
+    }
     if spec.devices.is_empty() {
         spec.devices = found.iter().map(|d| (d.path.clone(), d.path.clone())).collect();
         for d in found {
@@ -595,6 +609,26 @@ pub struct Spec {
     /// Other names on its network (a compose service's name, kept when the
     /// container is taken over).
     pub aliases: Vec<String>,
+    /// Its fixed IPv4 address on its network (empty: Docker picks one).
+    pub ip: String,
+    /// The other networks it is on: (network, aliases, fixed IPv4 or "").
+    pub extra_networks: Vec<(String, Vec<String>, String)>,
+    /// A command and entry point given when it was created, when they
+    /// differ from the image's (empty: the image's).
+    pub cmd: Vec<String>,
+    pub entrypoint: Vec<String>,
+    pub user: String,
+    pub privileged: bool,
+    /// Labels given when it was created (not the image's, not compose's).
+    pub labels: Vec<(String, String)>,
+    /// A log driver other than the default, and its options.
+    pub log_driver: String,
+    pub log_opts: Vec<(String, String)>,
+    /// tmpfs mounts: (path, options).
+    pub tmpfs: Vec<(String, String)>,
+    /// Memory limit in bytes and CPUs in billionths (0: none).
+    pub memory: u64,
+    pub nano_cpus: u64,
 }
 
 /// One container's `docker inspect` (an array of one).
@@ -658,7 +692,39 @@ pub fn parse_spec(json: &str) -> Option<Spec> {
         .filter(|a| *a != name && !(a.len() >= 12 && id.starts_with(a.as_str())))
         .collect();
     aliases.dedup();
+    let nets = c.get("NetworkSettings").and_then(|n| n.get("Networks")).and_then(|n| n.as_object()).cloned().unwrap_or_default();
+    let ipv4 = |n: &serde_json::Value| n.get("IPAMConfig").and_then(|i| i.get("IPv4Address")).and_then(|x| x.as_str()).unwrap_or_default().to_string();
+    let ip = nets.get(network).map(ipv4).unwrap_or_default();
+    let extra_networks: Vec<(String, Vec<String>, String)> = nets
+        .iter()
+        .filter(|(k, _)| k.as_str() != network && !matches!(network, "host" | "none"))
+        .map(|(k, n)| {
+            let al: Vec<String> = strs(n.get("Aliases")).into_iter().filter(|a| *a != name && !(a.len() >= 12 && id.starts_with(a.as_str()))).collect();
+            (k.clone(), al, ipv4(n))
+        })
+        .collect();
+    let config = c.get("Config").cloned().unwrap_or_default();
+    let kv = |v: Option<&serde_json::Value>| -> Vec<(String, String)> {
+        let mut out: Vec<(String, String)> = v.and_then(|x| x.as_object()).map(|o| o.iter().map(|(k, v)| (k.clone(), v.as_str().unwrap_or_default().to_string())).collect()).unwrap_or_default();
+        out.sort();
+        out
+    };
+    let log = host.get("LogConfig").cloned().unwrap_or_default();
+    let log_driver = log.get("Type").and_then(|x| x.as_str()).unwrap_or_default().to_string();
+    let log_opts = kv(log.get("Config"));
     Some(Spec {
+        ip,
+        extra_networks,
+        cmd: strs(config.get("Cmd")),
+        entrypoint: strs(config.get("Entrypoint")),
+        user: config.get("User").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+        privileged: host.get("Privileged").and_then(|x| x.as_bool()).unwrap_or(false),
+        labels: kv(config.get("Labels")).into_iter().filter(|(k, _)| !k.starts_with("com.docker.compose.")).collect(),
+        log_driver: if log_driver == "json-file" && log_opts.is_empty() { String::new() } else { log_driver },
+        log_opts,
+        tmpfs: kv(host.get("Tmpfs")),
+        memory: host.get("Memory").and_then(|x| x.as_u64()).unwrap_or(0),
+        nano_cpus: host.get("NanoCpus").and_then(|x| x.as_u64()).unwrap_or(0),
         ports,
         extra_hosts: strs(host.get("ExtraHosts")),
         aliases,
@@ -712,7 +778,42 @@ pub fn run_args(spec: &Spec, env_file: &str) -> Vec<String> {
     for c in &spec.cap_add {
         a.extend(["--cap-add".into(), c.clone()]);
     }
+    if !spec.ip.is_empty() && !matches!(spec.network.as_str(), "" | "default" | "bridge" | "host" | "none") {
+        a.extend(["--ip".into(), spec.ip.clone()]);
+    }
+    if !spec.user.is_empty() {
+        a.extend(["--user".into(), spec.user.clone()]);
+    }
+    if spec.privileged {
+        a.push("--privileged".into());
+    }
+    for (k, v) in &spec.labels {
+        a.extend(["--label".into(), format!("{k}={v}")]);
+    }
+    if !spec.log_driver.is_empty() {
+        a.extend(["--log-driver".into(), spec.log_driver.clone()]);
+    }
+    for (k, v) in &spec.log_opts {
+        a.extend(["--log-opt".into(), format!("{k}={v}")]);
+    }
+    for (p, o) in &spec.tmpfs {
+        a.extend(["--tmpfs".into(), if o.is_empty() { p.clone() } else { format!("{p}:{o}") }]);
+    }
+    if spec.memory > 0 {
+        a.extend(["--memory".into(), spec.memory.to_string()]);
+    }
+    if spec.nano_cpus > 0 {
+        a.extend(["--cpus".into(), format!("{}", spec.nano_cpus as f64 / 1e9)]);
+    }
+    if let Some((first, _)) = spec.entrypoint.split_first() {
+        a.extend(["--entrypoint".into(), first.clone()]);
+    }
     a.extend(["--env-file".into(), env_file.to_string(), spec.image.clone()]);
+    // The rest of a given entry point, then a given command.
+    if spec.entrypoint.len() > 1 {
+        a.extend(spec.entrypoint[1..].iter().cloned());
+    }
+    a.extend(spec.cmd.iter().cloned());
     a
 }
 
@@ -841,6 +942,14 @@ pub fn take_over(sink: &ProgressFn, choice: ComposeChoice, name: Option<&str>) -
         if let Some(s) = &service {
             spec.aliases.push(s.clone());
         }
+        // Its old name stays a name on its network: other containers that
+        // reach the gateway by it still do.
+        if !spec.aliases.contains(&old) {
+            spec.aliases.push(old.clone());
+        }
+        if let Some(added) = ensure_data_volume(&mut spec) {
+            sink(Progress::Log { line: added });
+        }
         sink(Progress::Log { line: format!("Image {}", spec.image) });
         if !spec.network.is_empty() {
             sink(Progress::Log { line: format!("Network {}", spec.network) });
@@ -877,7 +986,11 @@ pub fn take_over(sink: &ProgressFn, choice: ComposeChoice, name: Option<&str>) -
             let args = run_args(&spec, &file);
             let refs: Vec<&str> = args.iter().map(String::as_str).collect();
             match docker_all(&refs) {
-                Some((true, _)) => {}
+                Some((true, _)) => {
+                    if let Err(e) = connect_extra_networks(&spec) {
+                        return put_back(format!("{e} {old} runs again, unchanged."));
+                    }
+                }
                 Some((false, out)) => {
                     for l in out.lines().filter(|l| !l.trim().is_empty()).take(6) {
                         sink(Progress::Log { line: strip_ansi(l) });
@@ -945,7 +1058,52 @@ pub fn take_over(sink: &ProgressFn, choice: ComposeChoice, name: Option<&str>) -
 
 /// `docker inspect <name>` read as a Spec.
 pub fn inspect_spec(name: &str) -> Option<Spec> {
-    docker(&["inspect", name]).filter(|(ok, _)| *ok).and_then(|(_, o)| parse_spec(&o))
+    let mut spec = docker(&["inspect", name]).filter(|(ok, _)| *ok).and_then(|(_, o)| parse_spec(&o))?;
+    let image = docker(&["image", "inspect", &spec.image]).filter(|(ok, _)| *ok).map(|(_, o)| o).unwrap_or_default();
+    without_image_defaults(&mut spec, &image);
+    Some(spec)
+}
+
+/// Leave out of `spec` what its image sets itself (command, entry point,
+/// user, labels): what remains was given when the container was created,
+/// and a recreate gives it again.
+pub fn without_image_defaults(spec: &mut Spec, image_inspect: &str) {
+    let v: serde_json::Value = serde_json::from_str(image_inspect).unwrap_or_default();
+    let c = v.as_array().and_then(|a| a.first()).cloned().unwrap_or(v);
+    let cfg = c.get("Config").cloned().unwrap_or_default();
+    let strs = |x: Option<&serde_json::Value>| -> Vec<String> { x.and_then(|x| x.as_array()).map(|a| a.iter().filter_map(|s| s.as_str().map(str::to_string)).collect()).unwrap_or_default() };
+    if spec.cmd == strs(cfg.get("Cmd")) {
+        spec.cmd.clear();
+    }
+    if spec.entrypoint == strs(cfg.get("Entrypoint")) {
+        spec.entrypoint.clear();
+    }
+    if Some(spec.user.as_str()) == cfg.get("User").and_then(|x| x.as_str()) {
+        spec.user.clear();
+    }
+    let image_labels = cfg.get("Labels").and_then(|l| l.as_object()).cloned().unwrap_or_default();
+    spec.labels.retain(|(k, v)| image_labels.get(k).and_then(|x| x.as_str()) != Some(v.as_str()));
+}
+
+/// Put a recreated container on its other networks, with their names and
+/// fixed addresses (`docker run` takes one network). Err: which failed.
+#[cfg(not(windows))]
+fn connect_extra_networks(spec: &Spec) -> Result<(), String> {
+    for (net, aliases, ip) in &spec.extra_networks {
+        let mut a: Vec<String> = vec!["network".into(), "connect".into()];
+        for al in aliases {
+            a.extend(["--alias".into(), al.clone()]);
+        }
+        if !ip.is_empty() {
+            a.extend(["--ip".into(), ip.clone()]);
+        }
+        a.extend([net.clone(), spec.name.clone()]);
+        let refs: Vec<&str> = a.iter().map(String::as_str).collect();
+        if !matches!(docker_all(&refs), Some((true, _))) {
+            return Err(format!("{} could not be put on its network {net} again.", spec.name));
+        }
+    }
+    Ok(())
 }
 
 /// The image's own environment (PATH, the gateway's folders): kept, not listed.
@@ -1012,6 +1170,12 @@ pub fn read_settings(status: &Status) -> crate::gateway_settings::GwSettings {
         s.connected_how = Some("the container is stopped".into());
     }
     gs::apply_env(&mut s, &spec.env, true);
+    // Its own network: the page's access is the published address.
+    if let Some(l) = published_ui_listen(&spec, &s.ui.listen) {
+        s.ui.listen = l;
+    } else if needs_publish(&spec) && s.ui.enabled {
+        s.ui.unreachable = Some(format!("The web page is on inside the container, but its port is not published on the {} network: it cannot be reached. Apply the web page again to publish it.", spec.network));
+    }
     if let Some(out) = &out {
         gs::connected_from_read(&mut s, out);
     }
@@ -1019,6 +1183,7 @@ pub fn read_settings(status: &Status) -> crate::gateway_settings::GwSettings {
     let why = not_editable(status);
     let editable = why.is_none();
     s.machine.not_editable = why;
+    s.machine.network = Some(if spec.network.is_empty() || spec.network == "default" { "bridge".into() } else { spec.network.clone() });
     s.machine.restart_always = Some(matches!(spec.restart.as_str(), "always" | "unless-stopped" | "on-failure"));
     s.machine.restart_word = Some(if spec.restart.is_empty() { "no".into() } else { spec.restart.clone() });
     s.machine.serial.mode = "devices".into();
@@ -1039,14 +1204,155 @@ fn set_env(env: &mut Vec<String>, name: &str, value: Option<&str>) {
     }
 }
 
+/// Where the gateway keeps its buffer (data.db) and logs inside the
+/// container: ST_GW_DATA_DIR (TB_GW_DATA_DIR), else the image's default.
+pub fn data_dir(spec: &Spec) -> String {
+    let get = |k: &str| spec.env.iter().find_map(|e| e.strip_prefix(&format!("{k}=")).map(str::to_string));
+    get("ST_GW_DATA_DIR").or_else(|| get("TB_GW_DATA_DIR")).filter(|d| d.starts_with('/')).unwrap_or_else(|| "/sentient_gateway/data".into())
+}
+
+/// Give the data folder a volume when none keeps it ([`DATA_VOLUME`]): a
+/// container created without one loses its buffered data and its logs each
+/// time it is created again (a take-over, an update, Apply). Returns what
+/// was added, for the job's log and the review.
+pub fn ensure_data_volume(spec: &mut Spec) -> Option<String> {
+    let dir = data_dir(spec);
+    let kept = spec.mounts.iter().any(|(_, dest, _, _)| {
+        let d = dest.trim_end_matches('/');
+        dir == d || dir.starts_with(&format!("{d}/")) || d == ""
+    });
+    if kept {
+        return None;
+    }
+    spec.mounts.push((DATA_VOLUME.to_string(), dir.clone(), false, false));
+    Some(format!("A volume {DATA_VOLUME} keeps {dir} (the gateway's buffer and logs), which had none."))
+}
+
+/// The volume [`ensure_data_volume`] adds.
+pub const DATA_VOLUME: &str = "st-gw-data";
+
+/// (address, port) of a listen value such as `0.0.0.0:8642`.
+fn listen_parts(l: &str) -> (String, u16) {
+    match l.rsplit_once(':') {
+        Some((a, p)) => (a.trim_matches(['[', ']']).to_string(), p.parse().unwrap_or(crate::gateway::UI_PORT)),
+        None => ("0.0.0.0".into(), crate::gateway::UI_PORT),
+    }
+}
+
+/// Whether the container has its own network (a bridge): its ports must be
+/// published to be reached from outside it. `host` shares the machine's.
+pub fn needs_publish(spec: &Spec) -> bool {
+    !matches!(spec.network.as_str(), "host" | "none")
+}
+
+/// The web page on a container with its own network: the page listens on
+/// every address inside it, and the access choice (`listen`: all
+/// interfaces `0.0.0.0:P`, this machine only `127.0.0.1:P`) becomes the
+/// published address `ADDR:P:P`; off, the port is no longer published.
+/// On the host network the gateway's own listen value decides.
+pub fn set_ui_publish(spec: &mut Spec, enabled: bool, listen: &str) {
+    let (addr, port) = listen_parts(listen);
+    if !needs_publish(spec) {
+        set_env(&mut spec.env, "ST_GW_UI_LISTEN", Some(listen));
+        return;
+    }
+    set_env(&mut spec.env, "ST_GW_UI_LISTEN", Some(&format!("0.0.0.0:{port}")));
+    spec.ports.retain(|p| {
+        let c = p.split('/').next().unwrap_or(p);
+        c.rsplit(':').next() != Some(&port.to_string())
+    });
+    if enabled {
+        spec.ports.push(format!("{addr}:{port}:{port}"));
+    }
+}
+
+/// The web page's access as published (`ADDR:P`), when the container has
+/// its own network and publishes the page's port: what the card shows as
+/// "Listen on" (the value inside the container is always every address).
+pub fn published_ui_listen(spec: &Spec, inner: &str) -> Option<String> {
+    if !needs_publish(spec) {
+        return None;
+    }
+    let (_, port) = listen_parts(inner);
+    spec.ports.iter().find_map(|p| {
+        let c = p.split('/').next().unwrap_or(p);
+        let parts: Vec<&str> = c.split(':').collect();
+        match parts.as_slice() {
+            [addr, host, cont] if cont.parse() == Ok(port) => Some(format!("{}:{host}", if addr.is_empty() { "0.0.0.0" } else { addr })),
+            [host, cont] if cont.parse() == Ok(port) => Some(format!("0.0.0.0:{host}")),
+            _ => None,
+        }
+    })
+}
+
+/// `json` (the gateway's config file) with the platform host and port set:
+/// under `sentient`, or `thingsboard` in an older file that has only that.
+pub fn with_connection(json: &str, host: Option<&str>, port: Option<u16>) -> Result<String, String> {
+    let mut v: serde_json::Value = serde_json::from_str(json).map_err(|e| format!("the gateway's config file is not valid JSON ({e})"))?;
+    let obj = v.as_object_mut().ok_or("the gateway's config file is not a JSON object")?;
+    let key = if obj.contains_key("sentient") || !obj.contains_key("thingsboard") { "sentient" } else { "thingsboard" };
+    let section = obj.entry(key).or_insert_with(|| serde_json::json!({}));
+    let section = section.as_object_mut().ok_or("the platform section of the config file is not an object")?;
+    if let Some(h) = host {
+        section.insert("host".into(), serde_json::Value::String(h.to_string()));
+    }
+    if let Some(p) = port {
+        section.insert("port".into(), serde_json::Value::from(p));
+    }
+    serde_json::to_string_pretty(&v).map_err(|e| e.to_string())
+}
+
+/// Write the platform connection into the config file the gateway in
+/// container `name` uses (st_gateway.json, else the older name), as the
+/// container's own user, through a temporary file and a rename.
+#[cfg(not(windows))]
+fn write_connection(name: &str, host: Option<&str>, port: Option<u16>) -> Result<(), String> {
+    let find = "d=\"${ST_GW_CONFIG_DIR:-/sentient_gateway/config}\"; for f in st_gateway.json tb_gateway.json; do if [ -f \"$d/$f\" ]; then echo \"$d/$f\"; cat \"$d/$f\"; exit 0; fi; done; exit 3";
+    let out = match docker(&["exec", name, "sh", "-c", find]) {
+        Some((true, o)) => o,
+        _ => return Err("The gateway's config file could not be read in its container.".into()),
+    };
+    let (path, json) = out.split_once('\n').ok_or("The gateway's config file could not be read in its container.")?;
+    let new = with_connection(json, host, port)?;
+    let tmp = write_env_file(&[])?;
+    std::fs::write(&tmp, new.as_bytes()).map_err(|e| format!("write {}: {e}", tmp.display()))?;
+    let q = super::shell_quote;
+    let line = format!(
+        "docker exec -i {} sh -c {} sh {} < {} 2>&1",
+        q(name),
+        q("cat > \"$1.spm-new\" && mv \"$1.spm-new\" \"$1\""),
+        q(path.trim()),
+        q(&tmp.display().to_string())
+    );
+    let r = super::run_output(&line);
+    let _ = std::fs::remove_file(&tmp);
+    match r {
+        Some((true, _)) => Ok(()),
+        Some((false, o)) => Err(format!("The gateway's config file could not be written: {}", o.trim())),
+        None => Err("Docker could not be run to write the gateway's config file.".into()),
+    }
+}
+
 /// The container's spec with `plan` applied (crate::gateway_settings::ApplyPlan).
 pub fn planned_spec(spec: &Spec, before: &crate::gateway_settings::GwSettings, plan: &crate::gateway_settings::ApplyPlan, gid_of: &dyn Fn(&str) -> Option<u32>) -> Result<Spec, String> {
     let mut s = spec.clone();
     if let Some(on) = plan.ui_enabled {
         set_env(&mut s.env, "ST_GW_UI", Some(if on { "on" } else { "off" }));
     }
-    if let Some(l) = &plan.ui_listen {
-        set_env(&mut s.env, "ST_GW_UI_LISTEN", Some(l));
+    // The page's access: published on a container with its own network
+    // (set_ui_publish), else the gateway's listen value.
+    if plan.ui_enabled.is_some() || plan.ui_listen.is_some() {
+        let on = plan.ui_enabled.unwrap_or(before.ui.enabled);
+        let listen = plan.ui_listen.clone().unwrap_or_else(|| before.ui.listen.clone());
+        set_ui_publish(&mut s, on, if listen.is_empty() { "0.0.0.0:8642" } else { &listen });
+    }
+    ensure_data_volume(&mut s);
+    // The connection goes to the config file (write_connection, before the
+    // recreate); the environment no longer overrides it.
+    if plan.conn_host.is_some() || plan.conn_port.is_some() {
+        for k in ["host", "ST_GW_HOST", "TB_GW_HOST", "port", "ST_GW_PORT", "TB_GW_PORT"] {
+            set_env(&mut s.env, k, None);
+        }
     }
     if let Some(l) = &plan.rust_log {
         set_env(&mut s.env, "RUST_LOG", (!l.is_empty()).then_some(l.as_str()));
@@ -1123,7 +1429,34 @@ pub fn apply_settings(sink: &ProgressFn, status: &Status, before: &crate::gatewa
         let spec = inspect_spec(&name).ok_or("The gateway container could not be read.")?;
         let new = planned_spec(&spec, before, plan, &gid_of)?;
         let name = new.name.clone();
-        recreate_container(sink, &new, Some(format!("Stopping the container {name}")), &format!("Creating {name} again with the same volumes"), "with the new settings")
+        if plan.conn_host.is_some() || plan.conn_port.is_some() {
+            sink(Progress::Step { name: "Writing the connection to the gateway's config file".into() });
+            write_connection(&spec.name, plan.conn_host.as_deref(), plan.conn_port)?;
+        }
+        recreate_container(sink, &new, Some(format!("Stopping the container {name}")), &format!("Creating {name} again with the same volumes"), "with the new settings")?;
+        // The real effect, not the setting: the page answers where it is
+        // published (or on the host network, where it listens).
+        if plan.ui_enabled.is_some() || plan.ui_listen.is_some() {
+            let on = plan.ui_enabled.unwrap_or(before.ui.enabled);
+            let inner = new.env.iter().find_map(|e| e.strip_prefix("ST_GW_UI_LISTEN=")).unwrap_or("0.0.0.0:8642").to_string();
+            let (_, port) = listen_parts(&inner);
+            if on {
+                sink(Progress::Step { name: format!("Checking the web page answers on port {port}") });
+                if needs_publish(&new) && !matches!(docker(&["port", &name, &port.to_string()]), Some((true, o)) if !o.trim().is_empty()) {
+                    return Err(format!("The container runs, but Docker does not publish port {port}: the web page cannot be reached."));
+                }
+                let up = (0..20).any(|_| {
+                    std::thread::sleep(std::time::Duration::from_secs(1));
+                    std::net::TcpStream::connect_timeout(&std::net::SocketAddr::from(([127, 0, 0, 1], port)), std::time::Duration::from_secs(1)).is_ok()
+                });
+                if !up {
+                    return Err(format!("The gateway runs with its web page on, but nothing answers on port {port} of this machine within 20 seconds."));
+                }
+                let (addr, _) = listen_parts(&published_ui_listen(&new, &inner).unwrap_or(inner.clone()));
+                sink(Progress::Log { line: format!("The web page answers: https://{}:{port}/", if addr == "0.0.0.0" { "<this machine's address>".to_string() } else { addr }) });
+            }
+        }
+        Ok(())
     }
 }
 
@@ -1157,7 +1490,13 @@ pub(crate) fn recreate_container(sink: &ProgressFn, spec: &Spec, stop_step: Opti
         sink(Progress::Step { name: start_step.to_string() });
         let args = run_args(spec, &file);
         let refs: Vec<&str> = args.iter().map(String::as_str).collect();
-        let started = matches!(docker(&refs), Some((true, _)));
+        let started = matches!(docker(&refs), Some((true, _))) && match connect_extra_networks(spec) {
+            Ok(()) => true,
+            Err(e) => {
+                sink(Progress::Log { line: e });
+                false
+            }
+        };
         let up = started && (0..30).any(|_| {
             std::thread::sleep(std::time::Duration::from_secs(1));
             container_running(&name)
@@ -1444,7 +1783,91 @@ mod tests {
         assert_eq!((spec.restart.as_str(), spec.network.as_str()), ("no", "host"));
         // Its own device, not every adapter found now.
         assert_eq!(spec.devices, vec![("/dev/ttyUSB0".to_string(), "/dev/ttyUSB0".to_string())]);
-        assert_eq!(spec.mounts.len(), 2);
+        // Its two mounts, and a volume for the data folder, which had none.
+        assert_eq!(spec.mounts.len(), 3);
+        assert_eq!(spec.mounts[2], (DATA_VOLUME.to_string(), "/sentient_gateway/data".to_string(), false, false));
+    }
+
+    /// A container with no volume for the gateway's data folder gets one;
+    /// one that has it (or a parent of it) keeps its own.
+    #[test]
+    fn the_data_folder_gets_a_volume() {
+        let mut s = Spec { mounts: vec![("st-gw-config".into(), "/sentient_gateway/config".into(), false, false)], ..Spec::default() };
+        assert!(ensure_data_volume(&mut s).is_some());
+        assert_eq!(s.mounts[1], (DATA_VOLUME.to_string(), "/sentient_gateway/data".to_string(), false, false));
+        assert!(ensure_data_volume(&mut s).is_none());
+        let mut custom = Spec { env: vec!["ST_GW_DATA_DIR=/data/gw".into()], mounts: vec![("/srv/gw".into(), "/data".into(), false, true)], ..Spec::default() };
+        assert!(ensure_data_volume(&mut custom).is_none(), "a parent folder's mount keeps it");
+    }
+
+    /// The web page on a container's own network is published per the
+    /// access choice and inside listens on every address; off, it is no
+    /// longer published; on the host network nothing is published.
+    #[test]
+    fn the_web_page_is_published_on_a_bridge_only() {
+        let mut s = Spec { network: "st_default".into(), ports: vec!["5000:5000".into()], ..Spec::default() };
+        set_ui_publish(&mut s, true, "127.0.0.1:8642");
+        assert_eq!(s.ports, vec!["5000:5000", "127.0.0.1:8642:8642"]);
+        assert!(s.env.contains(&"ST_GW_UI_LISTEN=0.0.0.0:8642".to_string()));
+        assert_eq!(published_ui_listen(&s, "0.0.0.0:8642").as_deref(), Some("127.0.0.1:8642"));
+        set_ui_publish(&mut s, true, "0.0.0.0:8642");
+        assert_eq!(s.ports, vec!["5000:5000", "0.0.0.0:8642:8642"]);
+        set_ui_publish(&mut s, false, "0.0.0.0:8642");
+        assert_eq!(s.ports, vec!["5000:5000"]);
+        let mut h = Spec { network: "host".into(), ..Spec::default() };
+        set_ui_publish(&mut h, true, "127.0.0.1:8642");
+        assert!(h.ports.is_empty());
+        assert!(h.env.contains(&"ST_GW_UI_LISTEN=127.0.0.1:8642".to_string()));
+        assert_eq!(published_ui_listen(&h, "127.0.0.1:8642"), None);
+    }
+
+    /// The connection is written into the config file's platform section
+    /// (an older file's too), the rest of it kept.
+    #[test]
+    fn the_connection_goes_into_the_config_file() {
+        let st = with_connection(r#"{"sentient":{"host":"saf.example.in","port":1883,"security":{"type":"accessToken"}},"localUi":{"enabled":false}}"#, Some("localhost"), None).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&st).unwrap();
+        assert_eq!(v["sentient"]["host"], "localhost");
+        assert_eq!(v["sentient"]["port"], 1883);
+        assert_eq!(v["sentient"]["security"]["type"], "accessToken");
+        assert_eq!(v["localUi"]["enabled"], false);
+        let tb = with_connection(r#"{"thingsboard":{"host":"a","port":1883}}"#, Some("192.168.0.20"), Some(1884)).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&tb).unwrap();
+        assert_eq!((v["thingsboard"]["host"].as_str(), v["thingsboard"]["port"].as_u64()), (Some("192.168.0.20"), Some(1884)));
+        assert!(v.get("sentient").is_none());
+        assert!(with_connection("not json", Some("h"), None).is_err());
+    }
+
+    /// Everything a recreate must give again is read and given: every
+    /// network with its names and fixed address, a given command, user,
+    /// privileged, labels (not compose's, not the image's), log driver,
+    /// tmpfs, limits.
+    #[test]
+    fn a_recreate_keeps_the_whole_container() {
+        let inspect = r#"[{"Name":"/gw","Id":"abcdef0123456789","Config":{"Image":"img:1","Env":[],"Cmd":["--verbose"],"Entrypoint":["/bin/gw"],"User":"1000","Labels":{"com.docker.compose.service":"gw","site":"saf","org.image":"x"}},
+            "HostConfig":{"NetworkMode":"st_default","Privileged":true,"LogConfig":{"Type":"local","Config":{"max-size":"10m"}},"Tmpfs":{"/run":"size=64m"},"Memory":268435456,"NanoCpus":1500000000,"RestartPolicy":{"Name":"always"}},
+            "NetworkSettings":{"Networks":{"st_default":{"Aliases":["gw","abcdef012345"],"IPAMConfig":{"IPv4Address":"172.30.0.9"}},"plant":{"Aliases":["gateway"],"IPAMConfig":null}}},"Mounts":[]}]"#;
+        let mut spec = parse_spec(inspect).unwrap();
+        without_image_defaults(&mut spec, r#"[{"Config":{"Cmd":null,"Entrypoint":["/bin/gw"],"User":"","Labels":{"org.image":"x"}}}]"#);
+        assert_eq!(spec.ip, "172.30.0.9");
+        assert_eq!(spec.extra_networks, vec![("plant".to_string(), vec!["gateway".to_string()], String::new())]);
+        assert_eq!((spec.cmd.clone(), spec.entrypoint.clone()), (vec!["--verbose".to_string()], Vec::<String>::new()));
+        assert_eq!(spec.labels, vec![("site".to_string(), "saf".to_string())]);
+        let args = run_args(&spec, "/tmp/e.env").join(" ");
+        for want in ["--network st_default", "--ip 172.30.0.9", "--user 1000", "--privileged", "--label site=saf", "--log-driver local", "--log-opt max-size=10m", "--tmpfs /run:size=64m", "--memory 268435456", "--cpus 1.5", "img:1 --verbose"] {
+            assert!(args.contains(want), "{want} missing in {args}");
+        }
+        assert!(!args.contains("compose"), "{args}");
+    }
+
+    /// An update keeps a data or config folder given for this container,
+    /// and lets the image's default ones go.
+    #[test]
+    fn an_update_keeps_custom_folders() {
+        let current = Spec { image: "img:1".into(), env: vec!["ST_GW_CONFIG_DIR=/etc/gw".into(), "ST_GW_DATA_DIR=/sentient_gateway/data".into()], mounts: vec![("/srv/gw".into(), "/etc/gw".into(), false, true)], ..Spec::default() };
+        let spec = update_spec(&current, "img:2", &[], &[]);
+        assert!(spec.env.contains(&"ST_GW_CONFIG_DIR=/etc/gw".to_string()));
+        assert!(!spec.env.iter().any(|e| e.starts_with("ST_GW_DATA_DIR=")));
     }
 
     const INSPECT: &str = r#"[{"Name":"/sentient-gateway","Config":{"Image":"quakestring/sentient-gateway-rs:4.16.2","Env":["host=127.0.0.1","port=1883","accessToken=Q1w2E3r4T5y6U7i8O9p0","PATH=/usr/bin","ST_GW_CONFIG_DIR=/sentient_gateway/config"]},

@@ -98,6 +98,9 @@ pub struct LocalUi {
     pub hostnames: Vec<String>,
     /// The administrator password is set (None: not known).
     pub password_set: Option<bool>,
+    /// On, but not reachable as it runs (a container that does not publish
+    /// its port): why, for the card.
+    pub unreachable: Option<String>,
 }
 
 /// A connector as SENTIENT configured it.
@@ -160,6 +163,25 @@ pub struct Machine {
     pub rust_log: Option<String>,
     /// ST_GW_UI / ST_GW_UI_LISTEN set in the environment (they win over the file).
     pub ui_env: bool,
+    /// A container's network (host, bridge, a compose network): on its own
+    /// network the web page's port is published; on the host's it is not.
+    pub network: Option<String>,
+}
+
+impl Machine {
+    /// How the gateway runs, in words, for the card: the web page is set up
+    /// differently for each.
+    pub fn kind_words(&self) -> String {
+        match (self.kind.as_str(), self.network.as_deref()) {
+            ("docker", Some("host")) => "In Docker, on the host network: the web page listens on this machine directly.".into(),
+            ("docker", Some(n)) => format!("In Docker, on the {n} network: the web page's port is published on this machine."),
+            ("docker", None) => "In Docker.".into(),
+            ("service", _) => "As a systemd service: the web page listens on this machine directly (a firewall may need the port open).".into(),
+            ("windows-service", _) => "As a Windows service: the web page listens on this machine directly (Windows Firewall may need the port open).".into(),
+            ("process", _) => "As a program started by hand.".into(),
+            _ => String::new(),
+        }
+    }
 }
 
 /// What the installed gateway's program can do (from its `--help`).
@@ -683,6 +705,10 @@ pub struct ApplyPlan {
     pub env: Option<Vec<(String, String)>>,
     /// RUST_LOG: "" removes it.
     pub rust_log: Option<String>,
+    /// The platform connection, written to the gateway's config file (a
+    /// container's environment override of it is removed): host, port.
+    pub conn_host: Option<String>,
+    pub conn_port: Option<u16>,
 }
 
 impl ApplyPlan {
@@ -694,7 +720,7 @@ impl ApplyPlan {
     /// `kind`: a Windows service's restart policy alone does not.
     pub fn restarts(&self, kind: &str) -> bool {
         if kind == "windows-service" {
-            return self.ui_enabled.is_some() || self.ui_listen.is_some() || self.env.is_some() || self.rust_log.is_some();
+            return self.ui_enabled.is_some() || self.ui_listen.is_some() || self.env.is_some() || self.rust_log.is_some() || self.conn_host.is_some() || self.conn_port.is_some();
         }
         !self.is_empty()
     }
@@ -714,6 +740,9 @@ impl ApplyPlan {
     /// What changes, in words, for the job's steps and its last line.
     pub fn names(&self) -> Vec<&'static str> {
         let mut n = Vec::new();
+        if self.conn_host.is_some() || self.conn_port.is_some() {
+            n.push("Connection to SENTIENT");
+        }
         if self.ui_enabled.is_some() {
             n.push("Web page");
         }
@@ -740,6 +769,17 @@ impl ApplyPlan {
 /// is as asked).
 pub fn mismatches(plan: &ApplyPlan, after: &GwSettings) -> Vec<String> {
     let mut out = Vec::new();
+    if let Some(h) = &plan.conn_host {
+        if after.conn.host.as_deref() != Some(h.as_str()) {
+            out.push(format!("the host is {}", after.conn.host.clone().unwrap_or_else(|| "not set".into())));
+        }
+    }
+    if let Some(p) = plan.conn_port {
+        if after.conn.port != Some(p) {
+            out.push(format!("the MQTT port is {}", after.conn.port.map(|p| p.to_string()).unwrap_or_else(|| "not set".into())));
+        }
+    }
+
     if let Some(on) = plan.ui_enabled {
         if after.ui.enabled != on {
             out.push(format!("the web page is {}", if after.ui.enabled { "on" } else { "off" }));

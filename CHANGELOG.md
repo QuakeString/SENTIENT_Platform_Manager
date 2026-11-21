@@ -15,6 +15,30 @@ refreshes that repository's Downloads table.
 
 ## [Unreleased]
 
+### Fixed
+- A job on a server that failed was shown as done (gateway install,
+  update, Apply, take over, start/stop, remove; SENTIENT's update when it
+  stopped early): its error went where the window did not read it. Every
+  failure now reaches the window, and a job that ended badly without a
+  word (killed, crashed) says it stopped.
+- Gateway in Docker: its buffer and logs folder gets a volume when it had
+  none (a take-over, an update or Apply created it again and lost them).
+- Gateway in Docker: the web page on a container with its own network is
+  published on this machine (this machine only or all interfaces, as
+  chosen), no longer published when it is off, and Apply checks that the
+  page answers. The page says how the gateway runs (Docker on its own
+  network, Docker on the host network, a service).
+- Gateway in Docker: taking over, updating or applying keeps every network
+  and its names, a fixed address, a given command, user, privileged mode,
+  labels, log driver, tmpfs and limits. A taken-over container keeps its
+  old name on its network. An update keeps a config or data folder given
+  for this container.
+- Gateway: the connection to SENTIENT (host, MQTT port) can be changed from
+  the Gateway page. Docker: written to the gateway's config file, and the
+  container's environment no longer overrides it; a service: through the
+  gateway's own --install. Not knowing whether it is connected no longer
+  locks it.
+
 ## [0.9.7] - 2026-11-21
 
 A Platform Manager installed from the Arch package, the .deb or the .rpm updates itself, with the administrator password, and every job says what it is.

@@ -140,7 +140,7 @@ fn report_failure(e: String, json: bool, sink: &ProgressFn) {
         sink(Progress::Error { message: e });
         return;
     }
-    eprintln!("✗ {e}");
+    failed(format!("{e}"));
     if let Some(d) = d {
         eprintln!("  Cause: {}\n  Why:   {}", d.cause, d.why);
         for f in &d.fixes {
@@ -191,8 +191,27 @@ fn print_plain(p: Progress) {
 /// The start of `gateway-settings-json`'s one line (the JSON follows).
 pub const GW_SETTINGS_LINE: &str = "@@GW-SETTINGS ";
 
+/// The error a job ended with, as it was told on standard error (for the
+/// --json answer when the job printed none on standard output).
+static LAST_FAILURE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+/// A --json job printed its Error line already.
+static ERROR_SENT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// A job's failure: on standard error (a person reads it), and remembered
+/// for [`run`], which also answers it as JSON for a window on another
+/// computer (its follower reads only the job's standard output).
+fn failed(message: String) {
+    eprintln!("✗ {message}");
+    if let Ok(mut f) = LAST_FAILURE.lock() {
+        *f = Some(message);
+    }
+}
+
 fn json_printer() -> ProgressFn {
     Arc::new(|p| {
+        if matches!(p, Progress::Error { .. }) {
+            ERROR_SENT.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
         remember(&p);
         if let Ok(line) = serde_json::to_string(&p) {
             println!("{line}");
@@ -202,6 +221,15 @@ fn json_printer() -> ProgressFn {
 
 pub fn run(args: &[String]) -> i32 {
     let code = run_job(args);
+    // A --json job that failed answers its failure as JSON, always: a window
+    // on another computer follows only the job's standard output, and a
+    // failure told only on standard error looked like success there.
+    if code != 0 && args.first().is_some_and(|a| a == "--json") && !ERROR_SENT.load(std::sync::atomic::Ordering::SeqCst) {
+        let message = LAST_FAILURE.lock().ok().and_then(|f| f.clone()).unwrap_or_else(|| format!("The job stopped (exit code {code})."));
+        if let Ok(line) = serde_json::to_string(&Progress::Error { message }) {
+            println!("{line}");
+        }
+    }
     // Tests count the password prompts a job causes.
     if std::env::var_os("SPM_ELEVATION_STATS").is_some() {
         use sentient_installer_core::elevation;
@@ -522,7 +550,7 @@ fn run_job(args: &[String]) -> i32 {
         return match result {
             Ok(()) => 0,
             Err(e) => {
-                eprintln!("✗ {e}");
+                failed(format!("{e}"));
                 1
             }
         };
@@ -554,7 +582,7 @@ fn run_job(args: &[String]) -> i32 {
         return match result {
             Ok(()) => 0,
             Err(e) => {
-                eprintln!("✗ {e}");
+                failed(format!("{e}"));
                 1
             }
         };
@@ -659,7 +687,7 @@ fn run_job(args: &[String]) -> i32 {
                 if json {
                     sink(Progress::Error { message: e });
                 } else {
-                    eprintln!("✗ {e}");
+                    failed(format!("{e}"));
                 }
                 1
             }
@@ -1084,7 +1112,7 @@ fn run_job(args: &[String]) -> i32 {
             // the same dry run, which refuses a database it cannot run on.
             let version = args.windows(2).find(|w| w[0] == "--version").map(|w| w[1].clone());
             if args.iter().any(|a| a == "--version") && version.as_deref().is_none_or(|v| v.starts_with("--")) {
-                eprintln!("✗ --version needs a release number, e.g. --version 4.4.0.1");
+                failed(format!("--version needs a release number, e.g. --version 4.4.0.1"));
                 return 1;
             }
             let record = record;
@@ -1099,7 +1127,7 @@ fn run_job(args: &[String]) -> i32 {
                     let newest = match crate::online::versions(false) {
                         Ok(list) => list.first().map(|v| v.version.clone()),
                         Err(e) => {
-                            eprintln!("✗ The releases could not be read ({e}). Choose one with --version.");
+                            failed(format!("The releases could not be read ({e}). Choose one with --version."));
                             return 1;
                         }
                     };
@@ -1108,7 +1136,7 @@ fn run_job(args: &[String]) -> i32 {
                     match crate::updating::plain_update(tag, false, running.as_deref(), newest.as_deref()) {
                         crate::updating::PlainUpdate::To(v) => Some(v),
                         crate::updating::PlainUpdate::UpToDate => {
-                            eprintln!("✗ SENTIENT {} is the newest release: nothing to update.", running.as_deref().unwrap_or(tag));
+                            failed(format!("SENTIENT {} is the newest release: nothing to update.", running.as_deref().unwrap_or(tag)));
                             return 1;
                         }
                         crate::updating::PlainUpdate::Pull => None,
@@ -1127,7 +1155,7 @@ fn run_job(args: &[String]) -> i32 {
                 // the version it runs under another tag is pinned to it.
                 if let Some(installed) = Some(record.sentient_version.as_str()).filter(|s| !s.is_empty() && record.platform().needs_package()) {
                     if sentient_installer_core::releases::movement(v, installed) == sentient_installer_core::releases::Move::Same {
-                        eprintln!("✗ SENTIENT {v} is already installed.");
+                        failed(format!("SENTIENT {v} is already installed."));
                         return 1;
                     }
                 }
@@ -1135,7 +1163,7 @@ fn run_job(args: &[String]) -> i32 {
                     match crate::online::download(Some(v), &sink) {
                         Ok((_, dir)) => package = Some(dir),
                         Err(e) => {
-                            eprintln!("✗ {e}");
+                            failed(format!("{e}"));
                             return 1;
                         }
                     }
@@ -1150,7 +1178,7 @@ fn run_job(args: &[String]) -> i32 {
                 match crate::online::download(None, &sink) {
                     Ok((_, dir)) => package = Some(dir),
                     Err(e) => {
-                        eprintln!("✗ {e}");
+                        failed(format!("{e}"));
                         return 1;
                     }
                 }

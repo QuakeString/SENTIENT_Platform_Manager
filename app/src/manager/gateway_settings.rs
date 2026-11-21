@@ -89,6 +89,12 @@ pub struct GatewaySettingsCard {
     port: Option<Entity<InputState>>,
     base_addr: String,
     base_port: String,
+    /// The connection to SENTIENT (host, MQTT port), editable while the
+    /// gateway is not connected or its container's environment overrides it.
+    conn_host: Option<Entity<InputState>>,
+    conn_port: Option<Entity<InputState>>,
+    base_conn_host: String,
+    base_conn_port: String,
     env: Vec<EnvRow>,
     removed: usize,
     new_name: Option<Entity<InputState>>,
@@ -115,6 +121,10 @@ impl GatewaySettingsCard {
             port: None,
             base_addr: String::new(),
             base_port: String::new(),
+            conn_host: None,
+            conn_port: None,
+            base_conn_host: String::new(),
+            base_conn_port: String::new(),
             env: Vec::new(),
             removed: 0,
             new_name: None,
@@ -175,6 +185,10 @@ impl GatewaySettingsCard {
         self.base_port = port.to_string();
         self.addr = Some(self.input(addr, "192.168.1.20", window, cx));
         self.port = Some(self.input(port.to_string(), "8642", window, cx));
+        self.base_conn_host = s.conn.host.clone().unwrap_or_default();
+        self.base_conn_port = s.conn.port.map(|p| p.to_string()).unwrap_or_default();
+        self.conn_host = Some(self.input(self.base_conn_host.clone(), "localhost", window, cx));
+        self.conn_port = Some(self.input(self.base_conn_port.clone(), "1883", window, cx));
         self.env = Vec::new();
         for e in &s.machine.env {
             let name = self.input(e.name.clone(), "", window, cx);
@@ -239,13 +253,27 @@ impl GatewaySettingsCard {
         (page, log, adv)
     }
 
+    /// Changes to the connection (host, MQTT port).
+    fn conn_changes(&self, cx: &App) -> usize {
+        (Self::text(&self.conn_host, cx) != self.base_conn_host) as usize + (Self::text(&self.conn_port, cx) != self.base_conn_port) as usize
+    }
+
     fn changes(&self, cx: &App) -> usize {
         let (a, b, c) = self.counts(cx);
-        a + b + c
+        a + b + c + self.conn_changes(cx)
     }
 
     /// What is not valid: (tab, the bar's words).
     fn invalid(&self, cx: &App) -> Option<(usize, String)> {
+        if self.conn_changes(cx) > 0 {
+            let h = Self::text(&self.conn_host, cx);
+            if h.is_empty() || h.contains(char::is_whitespace) || h.contains("://") {
+                return Some((0, "The host is a name or an address, with no spaces and no http://.".into()));
+            }
+            if !Self::text(&self.conn_port, cx).parse::<u16>().is_ok_and(|p| p > 0) {
+                return Some((0, "The MQTT port needs a number from 1 to 65535.".into()));
+            }
+        }
         if self.edit.ui_on {
             let port = Self::text(&self.port, cx);
             if !port.parse::<u16>().is_ok_and(|p| p > 0) {
@@ -290,6 +318,14 @@ impl GatewaySettingsCard {
         if self.env_changed(cx) {
             p.env = Some(self.env_now(cx));
         }
+        let h = Self::text(&self.conn_host, cx);
+        if h != self.base_conn_host {
+            p.conn_host = Some(h);
+        }
+        let port = Self::text(&self.conn_port, cx);
+        if port != self.base_conn_port {
+            p.conn_port = port.parse().ok();
+        }
         p
     }
 
@@ -330,9 +366,12 @@ pub fn connected_pill(theme: &gpui_kit::component::Theme, s: Option<&Result<GwSe
     running.then(|| if c { ui::pill(theme, Tone::Good, "Connected to SENTIENT") } else { ui::pill(theme, Tone::Bad, "Not connected to SENTIENT") })
 }
 
-/// Whether the connection is SENTIENT's now: connected, or not known.
+/// Whether the connection is SENTIENT's now: connected, and set in the
+/// gateway's own file. Not known never locks (that is when a wrong host
+/// needs fixing), and a container environment that overrides the file is
+/// the Platform Manager's to change.
 pub fn connection_locked(s: &GwSettings) -> bool {
-    s.connected != Some(false)
+    s.connected == Some(true) && !s.conn.from_env
 }
 
 /// SENTIENT's Gateways page for a gateway that sends to `host`, when that
@@ -449,6 +488,7 @@ impl Render for GatewaySettingsCard {
         let (page_n, log_n, adv_n) = self.counts(cx);
         let invalid = self.invalid(cx);
         let mut badges = vec![(0usize, false); 7];
+        badges[0] = (self.conn_changes(cx), invalid.as_ref().is_some_and(|(t, _)| *t == 0));
         badges[1] = (page_n, invalid.as_ref().is_some_and(|(t, _)| *t == 1));
         badges[4] = (log_n, false);
         badges[6] = (adv_n, invalid.as_ref().is_some_and(|(t, _)| *t == 6));
@@ -463,7 +503,7 @@ impl Render for GatewaySettingsCard {
             .ok();
         }));
         let body: Vec<AnyElement> = match self.tab {
-            0 => self.connection(&theme, &s, cx),
+            0 => self.connection(&theme, &s, window, cx),
             1 => self.page(&theme, &s, window, cx),
             2 => self.connectors(&theme, &s),
             3 => self.owned(&theme, &s, "storage", "SENTIENT manages storage for this gateway. A change there takes effect at once, with no restart.", "Buffer", &s.storage, cx),
@@ -471,7 +511,7 @@ impl Render for GatewaySettingsCard {
             5 => self.owned(&theme, &s, "statistics", "SENTIENT manages statistics for this gateway.", "Sent to SENTIENT", &s.statistics, cx),
             _ => self.advanced(&theme, &s, window, cx),
         };
-        let changes = page_n + log_n + adv_n;
+        let changes = page_n + log_n + adv_n + self.conn_changes(cx);
         let editable = s.machine.not_editable.is_none();
         let plan = self.plan(cx);
         let restarts = plan.restarts(&s.machine.kind);
@@ -519,7 +559,7 @@ impl Render for GatewaySettingsCard {
 }
 
 impl GatewaySettingsCard {
-    fn connection(&mut self, theme: &gpui_kit::component::Theme, s: &GwSettings, cx: &mut Context<Self>) -> Vec<AnyElement> {
+    fn connection(&mut self, theme: &gpui_kit::component::Theme, s: &GwSettings, window: &mut Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let c = &s.conn;
         let locked_now = connection_locked(s);
         let host = c.host.clone().unwrap_or_else(|| "Not commissioned".into());
@@ -539,17 +579,57 @@ impl GatewaySettingsCard {
             vec![locked(theme, "host", "Host", host, &why), locked(theme, "port", "MQTT port", port, &why), locked(theme, "cred", "Credential", cred, &why), locked(theme, "tls", "TLS", tls, &why)]
         } else {
             let how = s.connected_how.clone().map(|h| format!(" (from {h})")).unwrap_or_default();
-            out.push(
-                info_line(
-                    theme,
-                    "conn",
-                    &format!("Not connected to SENTIENT{how}."),
-                    Some("The gateway lets its connection be changed only while it is not connected. Changing it from the Platform Manager comes in a later version; until then use the gateway's own page or its --install command."),
-                )
-                .into_any_element(),
-            );
-            let env = if c.from_env { Some("Set in the container's environment: it is created again to change it.".to_string()) } else { None };
-            vec![plain(theme, "Host", env.clone(), host), plain(theme, "MQTT port", env, port), plain(theme, "Credential", Some("Never shown in full: \"set\" or its last four characters at most.".into()), cred), plain(theme, "TLS", None, tls)]
+            let state = match s.connected {
+                Some(false) => format!("Not connected to SENTIENT{how}."),
+                Some(true) => "Connected, with the connection set in the container's environment.".to_string(),
+                None => "Not known whether it is connected.".to_string(),
+            };
+            let what = if c.from_env {
+                "The container's environment sets this connection and overrides the gateway's config file. Apply writes the host and port to the config file and removes the override; the gateway restarts once."
+            } else {
+                "Apply writes the host and port to the gateway's config file; the gateway restarts once. Use the address SENTIENT has on this network (localhost when it runs on this machine), not a public name that goes out through the router."
+            };
+            out.push(info_line(theme, "conn", &state, Some(what)).into_any_element());
+            let editable = s.machine.not_editable.is_none() && !self.busy;
+            let mut rows = Vec::new();
+            match (editable, self.conn_host.clone(), self.conn_port.clone()) {
+                (true, Some(hi), Some(pi)) => {
+                    let h_changed = Self::text(&self.conn_host, cx) != self.base_conn_host;
+                    let p_now = Self::text(&self.conn_port, cx);
+                    let p_changed = p_now != self.base_conn_port;
+                    let bad = (p_changed && !p_now.parse::<u16>().is_ok_and(|p| p > 0)).then(|| "A number from 1 to 65535".to_string());
+                    let env_note = c.from_env.then(|| "Now set in the container's environment".to_string());
+                    rows.push(SettingRow {
+                        label: "Host".into(),
+                        help: Some("SENTIENT's MQTT host as this gateway reaches it: localhost or 127.0.0.1 when SENTIENT runs on the same machine, else its address on this network.".into()),
+                        desc: env_note.clone(),
+                        restart: h_changed,
+                        changed: h_changed,
+                        control: ui::field_input(theme, &hi, None, None, false, window, cx).into_any_element(),
+                        wide: false,
+                        current: Some(if self.base_conn_host.is_empty() { "not set".into() } else { self.base_conn_host.clone() }),
+                        first: false,
+                    });
+                    rows.push(SettingRow {
+                        label: "MQTT port".into(),
+                        help: None,
+                        desc: env_note,
+                        restart: p_changed,
+                        changed: p_changed,
+                        control: ui::field_input(theme, &pi, Some(ui::Slot::Unit("port".into())), bad, false, window, cx).into_any_element(),
+                        wide: false,
+                        current: Some(if self.base_conn_port.is_empty() { "not set".into() } else { self.base_conn_port.clone() }),
+                        first: false,
+                    });
+                }
+                _ => {
+                    rows.push(plain(theme, "Host", s.machine.not_editable.clone(), host));
+                    rows.push(plain(theme, "MQTT port", None, port));
+                }
+            }
+            rows.push(plain(theme, "Credential", Some("Never shown in full: \"set\" or its last four characters at most.".into()), cred));
+            rows.push(plain(theme, "TLS", None, tls));
+            rows
         };
         out.push(ui::group(theme, "Platform", rows, vec![], cx).into_any_element());
         let busy = self.busy || self.testing;
@@ -578,6 +658,15 @@ impl GatewaySettingsCard {
 
     fn page(&mut self, theme: &gpui_kit::component::Theme, s: &GwSettings, window: &mut Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let mut out: Vec<AnyElement> = Vec::new();
+        // How it runs decides how the page is reached (published port,
+        // host network, a service): said first; on but unreachable, why.
+        let kind = s.machine.kind_words();
+        if !kind.is_empty() {
+            out.push(info_line(theme, "page-kind", &format!("Runs {}", kind.trim_start_matches("In ").trim_start_matches("As ").to_string()).replacen("Runs Docker", "Runs in Docker", 1).replacen("Runs a ", "Runs as a ", 1), None).into_any_element());
+        }
+        if let Some(why) = &s.ui.unreachable {
+            out.push(notice(theme, "page-unreachable", "The web page is on but cannot be reached.", why, None).into_any_element());
+        }
         let editable = s.machine.not_editable.is_none();
         if let Some(why) = &s.machine.not_editable {
             out.push(info_line(theme, "page", "Shown as it is: these settings are not changed from here.", Some(why)).into_any_element());
@@ -1103,11 +1192,16 @@ mod tests {
     use sentient_installer_core::gateway_settings::GwSettings;
 
     #[test]
-    fn the_connection_is_sentients_unless_known_offline() {
+    fn the_connection_is_sentients_only_when_connected_from_its_file() {
         let mut s = GwSettings::default();
-        assert!(connection_locked(&s));
+        // Not known: never locked (a wrong host is exactly when it is fixed).
+        assert!(!connection_locked(&s));
         s.connected = Some(true);
         assert!(connection_locked(&s));
+        // Set by the container's environment: the Platform Manager's to change.
+        s.conn.from_env = true;
+        assert!(!connection_locked(&s));
+        s.conn.from_env = false;
         s.connected = Some(false);
         assert!(!connection_locked(&s));
     }
