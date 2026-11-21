@@ -2228,7 +2228,10 @@ pub fn split_failure(m: &str) -> (String, Option<String>) {
     if let Some((h, d)) = m.split_once(DETAILS) {
         return (h.to_string(), Some(d.to_string()));
     }
-    let raw = m.contains("docker ") || m.contains("exit status") || m.contains("exited") || m.lines().count() > 2 || m.len() > 200;
+    // Long but written as sentences (a step's own explanation, ending with a
+    // full stop) stays whole; long raw output gets a headline.
+    let sentences = m.trim_end().ends_with('.') && m.lines().count() == 1;
+    let raw = m.contains("docker ") || m.contains("exit status") || m.contains("exited") || m.lines().count() > 2 || (m.len() > 200 && !sentences);
     if !raw {
         return (m.to_string(), None);
     }

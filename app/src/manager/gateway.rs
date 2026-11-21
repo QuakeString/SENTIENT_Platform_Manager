@@ -228,7 +228,23 @@ impl GatewayPage {
                         move |sink| {
                             sink(sentient_installer_core::progress::Progress::Step { name: "Applying the settings".into() });
                             if canned {
-                                sink(sentient_installer_core::progress::Progress::Done { message: "Screens: a canned gateway; nothing was changed.".into() });
+                                // Screens: SPM_DEBUG_GATEWAY_APPLY_FAIL=refused|noconnect,
+                                // the words of the two ways a new connection fails.
+                                use sentient_installer_core::distro::gateway_docker as gd;
+                                use sentient_installer_core::progress::Progress;
+                                match std::env::var("SPM_DEBUG_GATEWAY_APPLY_FAIL").as_deref() {
+                                    Ok("refused") => return Err(gd::unreachable_words("172.17.0.1", 1883, "127.0.0.1")),
+                                    Ok("noconnect") => {
+                                        sink(Progress::Log { line: "127.0.0.1 is this machine: the gateway's container reaches it as host.docker.internal (172.17.0.1).".into() });
+                                        sink(Progress::Step { name: "Checking the gateway connects to SENTIENT at 127.0.0.1:1883".into() });
+                                        let why = ": 2026-11-21T16:40:54.258393Z  WARN gateway_core::uplink: uplink connection error; retrying in 30s error=I/O: Connection refused (os error 111)";
+                                        sink(Progress::Log { line: format!("Not connected within 60 seconds{why}") });
+                                        sink(Progress::Step { name: "Putting the previous connection back".into() });
+                                        return Err(gd::no_connect_words("127.0.0.1:1883", true));
+                                    }
+                                    _ => {}
+                                }
+                                sink(Progress::Done { message: "Screens: a canned gateway; nothing was changed.".into() });
                                 return Ok(());
                             }
                             if as_root {
@@ -1468,6 +1484,7 @@ fn test_here(status: &Status, as_root: bool) -> Result<String, String> {
 pub(crate) fn debug_fixture(name: &str) -> Option<&'static str> {
     Some(match name {
         "docker" => "installed=true version=4.16.1 running=true host=127.0.0.1 port=1883 page=off container=sentient-gateway managed=true kind=docker image=quakestring/sentient-gateway-rs:4.16.1 volumes=st-gw-config,st-gw-data,st-gw-logs",
+        "docker-via" | "docker-via-off" => "installed=true version=4.18.2 running=true host=127.0.0.1 port=1883 page=off container=sentient-gateway managed=true kind=docker image=quakestring/sentient-gateway-rs:4.18.2 volumes=st-gw-config,st-gw-data",
         "compose" => "installed=true version=4.16.1 running=true host=10.0.0.5 port=1883 page=off container=plant-gw managed=false kind=docker image=quakestring/sentient-gateway-rs:4.16.1 compose=/srv/example-site/gateway project=gateway volumes=gw-config,gw-data",
         "legacy" => "installed=false legacy=example-old-gw legacy_image=quakestring/sentient-gateway:3.7.10",
         "legacy-running" => "installed=false legacy=example-old-gw legacy_image=quakestring/sentient-gateway:latest",

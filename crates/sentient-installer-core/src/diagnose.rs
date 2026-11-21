@@ -1138,10 +1138,10 @@ fn unknown(ev: &Evidence) -> Diagnosis {
     // unless that is only a wrapper's "exited with N".
     let printed_error = last.iter().any(|l| is_error_line(l));
     let own = ev.error.lines().map(str::trim).find(|l| !l.is_empty()).filter(|_| ev.exit_code.is_none()).map(str::to_string);
-    let cause = match own {
-        Some(e) if !printed_error => e,
-        own => last.last().cloned().filter(|l| !l.is_empty()).or(own).unwrap_or_else(|| "The step failed.".to_string()),
-    };
+    // The job's own message leads when it is one (not a wrapper's exit
+    // code): it says what stopped and what was done about it; the printed
+    // error lines stay under it.
+    let cause = own.clone().or_else(|| last.last().cloned().filter(|l| !l.is_empty())).unwrap_or_else(|| "The step failed.".to_string());
     // The job's own message, with no error printed beside it, says it all:
     // no unrelated last lines under it (a progress line such as "… is up to
     // date" is not why it stopped).
@@ -1615,6 +1615,17 @@ mod tests {
         assert_eq!(d.id, "unknown");
         assert_eq!(d.cause, "The step stopped: tar: sentient.tar: Cannot open: Input/output error");
         assert!(d.details.contains("pkexec exited with 3"));
+    }
+
+    #[test]
+    fn unknown_leads_with_the_jobs_own_message() {
+        let d = diagnose(&Evidence::from_text(
+            "The gateway did not connect to SENTIENT at 127.0.0.1:1883 within 60 seconds, so its previous connection was put back.",
+            &[">> Checking".into(), "Not connected within 60 seconds: WARN uplink connection error; retrying".into()],
+        ));
+        assert_eq!(d.id, "unknown");
+        assert!(d.cause.starts_with("The step stopped: The gateway did not connect"), "{}", d.cause);
+        assert_eq!(d.last_lines, vec!["Not connected within 60 seconds: WARN uplink connection error; retrying".to_string()]);
     }
 
     #[test]

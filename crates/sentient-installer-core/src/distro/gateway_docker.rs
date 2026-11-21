@@ -1347,10 +1347,28 @@ pub fn host_gateway_reachable(ip: &str, port: u16, typed: &str) -> Result<(), St
     let addr: std::net::SocketAddr = format!("{ip}:{port}").parse().map_err(|_| format!("{ip}:{port} is not an address"))?;
     match std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_secs(3)) {
         Ok(_) => Ok(()),
-        Err(_) => Err(format!(
-            "{typed} in the gateway's container is the container itself, so it reaches this machine as {HOST_ALIAS} ({ip}), and nothing answers on {ip}:{port}: SENTIENT's MQTT port listens on 127.0.0.1 only, or not on {port}. Publish it on all interfaces (\"{port}:{port}\") or on {ip}, then Apply again. Nothing was changed."
-        )),
+        Err(_) => Err(unreachable_words(ip, port, typed)),
     }
+}
+
+/// Why Apply stops when nothing answers where the container reaches this
+/// machine ([`host_gateway_reachable`]).
+pub fn unreachable_words(ip: &str, port: u16, typed: &str) -> String {
+    format!(
+        "{typed} in the gateway's container is the container itself, so it reaches this machine as {HOST_ALIAS} ({ip}), and nothing answers on {ip}:{port}: SENTIENT's MQTT port listens on 127.0.0.1 only, or not on {port}. Publish it on all interfaces (\"{port}:{port}\") or on {ip}, then Apply again. Nothing was changed."
+    )
+}
+
+/// Why Apply put the previous connection back: `target` did not connect
+/// within 60 seconds; `via`: reached as host.docker.internal. The gateway's
+/// own last line about it is in the job's log, under this.
+pub fn no_connect_words(target: &str, via: bool) -> String {
+    let check = if via {
+        format!("It is this machine, which the gateway's container reaches as {HOST_ALIAS}: check SENTIENT's MQTT port is published on all interfaces and no firewall stops containers reaching it.")
+    } else {
+        "Check the address from the gateway's machine.".to_string()
+    };
+    format!("The gateway did not connect to SENTIENT at {target} within 60 seconds, so its previous connection was put back. {check}")
 }
 
 /// ": <the gateway's last line about its connection>", or "".
@@ -1629,8 +1647,7 @@ pub fn apply_settings(sink: &ProgressFn, status: &Status, before: &crate::gatewa
                     }
                 }
                 recreate_container(sink, &spec, None, "Creating the gateway again with its previous settings", "with its previous settings")?;
-                let via = if file_host.as_deref() == Some(HOST_ALIAS) { format!(" (this machine, reached from the container as {HOST_ALIAS}: a firewall may stop containers reaching it)") } else { String::new() };
-                return Err(format!("The gateway did not connect to SENTIENT at {target}{via} within 60 seconds{why}, so its previous connection was put back. Check the address from the gateway's machine."));
+                return Err(no_connect_words(&target, file_host.as_deref() == Some(HOST_ALIAS)));
             }
             sink(Progress::Log { line: format!("Connected to SENTIENT at {target}.") });
         }

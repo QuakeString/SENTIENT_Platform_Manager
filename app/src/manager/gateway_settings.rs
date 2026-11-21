@@ -576,7 +576,9 @@ impl GatewaySettingsCard {
                 notice(theme, "conn", if s.connected == Some(true) { "Connected: SENTIENT owns the connection now." } else { "Not known whether it is connected: treated as SENTIENT's." }, &why, self.platform_url.as_deref())
                     .into_any_element(),
             );
-            vec![locked(theme, "host", "Host", host, &why), locked(theme, "port", "MQTT port", port, &why), locked(theme, "cred", "Credential", cred, &why), locked(theme, "tls", "TLS", tls, &why)]
+            let mut host_row = locked(theme, "host", "Host", host, &why);
+            host_row.desc = c.via.clone();
+            vec![host_row, locked(theme, "port", "MQTT port", port, &why), locked(theme, "cred", "Credential", cred, &why), locked(theme, "tls", "TLS", tls, &why)]
         } else {
             let how = s.connected_how.clone().map(|h| format!(" (from {h})")).unwrap_or_default();
             let state = match s.connected {
@@ -1169,6 +1171,18 @@ pub fn debug_settings(name: &str) -> Option<GwSettings> {
             s.machine.kind = "windows-service".into();
             s.machine.restart_word = Some("restart after a failure".into());
             s.log_files = Some(r"C:\ProgramData\Sentient Gateway\data\logs".into());
+        }
+        "docker-via" | "docker-via-off" => {
+            s.config_path = Some("/sentient_gateway/config/st_gateway.json".into());
+            s.conn.host = Some("127.0.0.1".into());
+            s.conn.host_source = Some("the gateway's config file /sentient_gateway/config/st_gateway.json".into());
+            s.conn.via = Some("This machine: the gateway's container reaches it as host.docker.internal.".into());
+            s.connected = Some(name == "docker-via");
+            s.connected_how = Some("the gateway's open connections".into());
+            s.ui.enabled = false;
+            s.machine.kind = "docker".into();
+            s.machine.network = Some("st_default".into());
+            s.machine.restart_word = Some("unless-stopped".into());
         }
         "docker" | "docker-disconnected" | "docker-legacy" => {
             s.conn.host = Some("127.0.0.1".into());
