@@ -211,7 +211,7 @@ impl GatewayPage {
                 })
                 .detach();
             }
-            Work::Apply(plan) => {
+            Work::Apply(plan, page_pw) => {
                 if self.settings_job.read(cx).is_running() {
                     return;
                 }
@@ -219,19 +219,49 @@ impl GatewayPage {
                 let names = format!("{}. {}", plan.names().join(", "), plan.restart_words(status.kind()));
                 self.settings_job.update(cx, |job, cx| {
                     job.set_label("Applying the gateway's settings");
-                    job.set_plan(vec![
+                    let mut steps = vec![
                         sentient_installer_core::progress::PlanStep::new("Applying the settings").detail(names).weight(3.),
                         sentient_installer_core::progress::PlanStep::new("Reading the settings back"),
-                    ]);
+                    ];
+                    if page_pw.is_some() {
+                        steps.push(sentient_installer_core::progress::PlanStep::new("Setting the page's password").detail("Then signing in to the page with it"));
+                    }
+                    job.set_plan(steps);
                     job.set_on_page(true);
                     job.start_labelled(
                         move |sink| {
                             sink(sentient_installer_core::progress::Progress::Step { name: "Applying the settings".into() });
                             if canned {
-                                sink(sentient_installer_core::progress::Progress::Done { message: "Screens: a canned gateway; nothing was changed.".into() });
+                                // Screens: SPM_DEBUG_GATEWAY_APPLY_FAIL=refused|noconnect,
+                                // the words of the two ways a new connection fails.
+                                use sentient_installer_core::distro::gateway_docker as gd;
+                                use sentient_installer_core::progress::Progress;
+                                match std::env::var("SPM_DEBUG_GATEWAY_APPLY_FAIL").as_deref() {
+                                    Ok("refused") => return Err(gd::unreachable_words("172.17.0.1", 1883, "127.0.0.1")),
+                                    Ok("platform") => {
+                                        use sentient_installer_core::gateway_settings::{SENTIENT_CONNECTION_OFFER, SentientConnectionOffer, platform_owns_words};
+                                        sink(Progress::Step { name: "Checking the gateway connects to SENTIENT at 127.0.0.1:1883".into() });
+                                        sink(Progress::Log { line: "Connected to SENTIENT at 127.0.0.1:1883.".into() });
+                                        let offer = SentientConnectionOffer { typed_host: "127.0.0.1".into(), typed_port: 1883, write_host: "host.docker.internal".into(), sentient_host: "192.168.0.20".into(), sentient_port: 1883, token_sha256: None };
+                                        sink(Progress::Warning { message: platform_owns_words("127.0.0.1:1883", "192.168.0.20", 1883, true), offer: serde_json::to_string(&offer).ok().map(|j| format!("{SENTIENT_CONNECTION_OFFER}{j}")) });
+                                        sink(Progress::Done { message: "Applied and read back: Web page, Restart after a failure, Level before SENTIENT connects.".into() });
+                                        return Ok(());
+                                    }
+                                    Ok("readback") => return Err("Applied, but the gateway reads back the host 192.168.0.20 (from the gateway's config file), not 127.0.0.1.".into()),
+                                    Ok("noconnect") => {
+                                        sink(Progress::Log { line: "127.0.0.1 is this machine: the gateway's container reaches it as host.docker.internal (172.17.0.1).".into() });
+                                        sink(Progress::Step { name: "Checking the gateway connects to SENTIENT at 127.0.0.1:1883".into() });
+                                        let why = ": 2026-11-21T16:40:54.258393Z  WARN gateway_core::uplink: uplink connection error; retrying in 30s error=I/O: Connection refused (os error 111)";
+                                        sink(Progress::Log { line: format!("Not connected within 60 seconds{why}") });
+                                        sink(Progress::Step { name: "Putting the previous connection back".into() });
+                                        return Err(gd::no_connect_words("127.0.0.1:1883", true));
+                                    }
+                                    _ => {}
+                                }
+                                sink(Progress::Done { message: "Screens: a canned gateway; nothing was changed.".into() });
                                 return Ok(());
                             }
-                            if as_root {
+                            let applied = if as_root {
                                 let path = crate::updates::prefs_dir().join("gateway-apply.json");
                                 let text = serde_json::to_string(&plan).map_err(|e| e.to_string())?;
                                 let _ = std::fs::create_dir_all(crate::updates::prefs_dir());
@@ -241,7 +271,19 @@ impl GatewayPage {
                                 r
                             } else {
                                 gs::apply(&sink, &status, &plan)
+                            };
+                            applied?;
+                            // The page's own password, then a real sign-in with it.
+                            if let Some(pw) = page_pw {
+                                sink(sentient_installer_core::progress::Progress::Step { name: "Setting the page's password".into() });
+                                let m = if as_root {
+                                    crate::rootjob::run_with_input(&["gateway-ui-password".to_string()], Some(format!("{pw}\n").as_str()), &sink).map(|_| "The web page's password is set.".to_string())?
+                                } else {
+                                    gs::set_password(&sentient_installer_core::gateway::status(), &pw)?
+                                };
+                                sink(sentient_installer_core::progress::Progress::Done { message: m });
                             }
+                            Ok(())
                         },
                         cx,
                     )
@@ -294,7 +336,11 @@ impl GatewayPage {
             })
             .ok();
         });
-        Some(crate::manager::jobview::JobView::new("gw-set-job", title, &self.settings_job).actions([back]).render(cx))
+        // SENTIENT kept its own saved connection: offer to save the typed one there.
+        let update = crate::manager::sentient_connection::offer_of(job.warning()).map(|offer| {
+            crate::manager::sentient_connection::button("gw-sc-update", crate::licence::Target::Local(crate::installation::InstallationRecord::load()), "this computer".into(), crate::manager::sentient_connection::GatewayAt::Local, offer)
+        });
+        Some(crate::manager::jobview::JobView::new("gw-set-job", title, &self.settings_job).actions(std::iter::once(back).chain(update)).render(cx))
     }
 
     fn install(&mut self, offer: Offer, cx: &mut Context<Self>) {
@@ -672,6 +718,17 @@ pub(crate) fn runs_as(kind: &str, name: &str, managed: bool, recorded: bool) -> 
 
 impl Render for GatewayPage {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Screens: SPM_DEBUG_SC_STATE opens Update in SENTIENT once the job
+        // offers it.
+        #[cfg(debug_assertions)]
+        if std::env::var_os("SPM_DEBUG_SC_STATE").is_some() {
+            static OPENED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+            if let Some(offer) = crate::manager::sentient_connection::offer_of(self.settings_job.read(cx).warning()) {
+                if !OPENED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                    crate::manager::sentient_connection::open(crate::licence::Target::Local(None), "this computer".into(), crate::manager::sentient_connection::GatewayAt::Local, offer, window, cx);
+                }
+            }
+        }
         self.form.apply_clear(window, cx);
         // Screens: the Take it over dialog open (SPM_DEBUG_GATEWAY_TAKEOVER,
         // on a canned gateway started outside, e.g. SPM_DEBUG_GATEWAY=compose).
@@ -783,7 +840,7 @@ impl Render for GatewayPage {
                 })
                 .child(ui::fact(&theme, "Runs as", runs_as(status.kind(), &RemoveTarget::of(&status, None).name, status.managed, recorded)))
                 .children(self.settings.as_ref().and_then(|s| s.as_ref().ok()).and_then(|s| {
-                    let path = s.config_path.clone()?;
+                    let path = shown_config_path(&s.config_path.clone()?);
                     let n = s.connectors.len();
                     Some(ui::fact(&theme, "Configuration", format!("{path} · {n} connector{}", if n == 1 { "" } else { "s" })))
                 }))
@@ -1468,6 +1525,7 @@ fn test_here(status: &Status, as_root: bool) -> Result<String, String> {
 pub(crate) fn debug_fixture(name: &str) -> Option<&'static str> {
     Some(match name {
         "docker" => "installed=true version=4.16.1 running=true host=127.0.0.1 port=1883 page=off container=sentient-gateway managed=true kind=docker image=quakestring/sentient-gateway-rs:4.16.1 volumes=st-gw-config,st-gw-data,st-gw-logs",
+        "docker-via" | "docker-via-off" => "installed=true version=4.18.2 running=true host=127.0.0.1 port=1883 page=off container=sentient-gateway managed=true kind=docker image=quakestring/sentient-gateway-rs:4.18.2 volumes=st-gw-config,st-gw-data",
         "compose" => "installed=true version=4.16.1 running=true host=10.0.0.5 port=1883 page=off container=plant-gw managed=false kind=docker image=quakestring/sentient-gateway-rs:4.16.1 compose=/srv/example-site/gateway project=gateway volumes=gw-config,gw-data",
         "legacy" => "installed=false legacy=example-old-gw legacy_image=quakestring/sentient-gateway:3.7.10",
         "legacy-running" => "installed=false legacy=example-old-gw legacy_image=quakestring/sentient-gateway:latest",
@@ -1642,5 +1700,15 @@ mod tests {
         let w = update_plan(false, true, "4.16.3");
         assert!(w[0].matches("Downloading Sentient Gateway 4.16.3 (24 MB)") && w[1].matches("Installing Sentient Gateway 4.16.3"));
         assert_eq!(update_plan(false, false, "4.16.3").len(), 2);
+    }
+}
+
+/// The gateway's config file as the card shows it: an older file's name
+/// (the legacy one) is never shown, its folder is.
+pub fn shown_config_path(path: &str) -> String {
+    let legacy = ["tb", "_gateway.json"].concat();
+    match path.strip_suffix(&legacy) {
+        Some(dir) => format!("{} (the gateway's config file there)", dir.trim_end_matches(['/', '\\'])),
+        None => path.to_string(),
     }
 }

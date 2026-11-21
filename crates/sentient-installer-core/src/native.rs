@@ -1200,6 +1200,9 @@ pub fn deploy(sink: ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
     if cfg.flavor == Flavor::Stock {
         psql(cfg, &cfg.db_name, &stock_ts_kv_sql(&cfg.db_user))?;
     }
+    // The MQTT and CoAP ports chosen: SENTIENT reads them from its
+    // connectivity settings at start.
+    psql(cfg, &cfg.db_name, &connectivity_sql(cfg.mqtt_port, cfg.coap_port)).map_err(|e| format!("Setting SENTIENT's MQTT and CoAP ports: {e}"))?;
     bail_if_cancelled()?;
 
     step(&sink, "Registering the SENTIENT service");
@@ -1266,9 +1269,29 @@ pub(crate) fn admin_account_sql(email: &str, password_hash: &str) -> String {
     format!(
         "UPDATE user_credentials SET password = {hash} WHERE user_id = \
            (SELECT id FROM tb_user WHERE authority = 'SYS_ADMIN' AND email = 'admin@sentient.local'); \
-         UPDATE tb_user SET email = {email} WHERE authority = 'SYS_ADMIN' AND email = 'admin@sentient.local';",
+         UPDATE tb_user SET email = {email} WHERE authority = 'SYS_ADMIN' AND email = 'admin@sentient.local'; \
+         DO $sa$ BEGIN IF NOT EXISTS (SELECT 1 FROM tb_user WHERE authority = 'SYS_ADMIN' AND email = {email}) THEN \
+           RAISE EXCEPTION 'no system administrator has the new sign-in'; END IF; END $sa$;",
         hash = lit(password_hash),
         email = lit(email),
+    )
+}
+
+/// The SQL that gives SENTIENT's connectivity settings the chosen MQTT and
+/// CoAP ports. A native SENTIENT listens where those settings say (they
+/// live in its database, not in its environment); a Docker one keeps the
+/// defaults inside and is published on the chosen ports. Fails when a port
+/// other than the default could not be set.
+pub(crate) fn connectivity_sql(mqtt: u16, coap: u16) -> String {
+    const SYS: &str = "13814000-1dd2-11b2-8080-808080808080";
+    format!(
+        "UPDATE admin_settings SET json_value = (COALESCE(json_value, '{{}}')::jsonb \
+           || jsonb_build_object('mqtt', COALESCE(json_value::jsonb -> 'mqtt', '{{}}'::jsonb) || jsonb_build_object('port', {mqtt}), \
+                                 'coap', COALESCE(json_value::jsonb -> 'coap', '{{}}'::jsonb) || jsonb_build_object('port', {coap})))::text \
+         WHERE key = 'connectivity' AND tenant_id = '{SYS}'; \
+         DO $cn$ BEGIN IF ({mqtt} <> 1883 OR {coap} <> 5683) AND NOT EXISTS (SELECT 1 FROM admin_settings WHERE key = 'connectivity' AND tenant_id = '{SYS}' \
+           AND (json_value::jsonb -> 'mqtt' ->> 'port')::int = {mqtt} AND (json_value::jsonb -> 'coap' ->> 'port')::int = {coap}) THEN \
+           RAISE EXCEPTION 'SENTIENT''s connectivity settings could not be given MQTT port {mqtt} and CoAP port {coap}'; END IF; END $cn$;"
     )
 }
 
@@ -1365,7 +1388,32 @@ fn write_env_file(cfg: &NativeConfig) -> Result<(), String> {
         format!("# Effective SENTIENT configuration (read-only reference).\n\
                  # The service reads these from its descriptor in services\\, not from here.\n{body}"),
     )
-    .map_err(|e| format!("write env file: {e}"))
+    .map_err(|e| format!("write env file: {e}"))?;
+    // It holds the database password and the JWT secret (audit I7).
+    private_file(&cfg.env_file(), None)
+}
+
+/// Let only Administrators and SYSTEM (and `reader`, when named) open
+/// `path`: a file holding passwords under Program Files or ProgramData
+/// otherwise inherits read access for every user (audit I7, I9).
+#[cfg(windows)]
+pub fn private_file(path: &Path, reader: Option<&str>) -> Result<(), String> {
+    let p = path.display().to_string();
+    let extra = reader.map(|r| format!("{r}:(R)"));
+    let mut args: Vec<&str> = vec![&p, "/inheritance:r", "/grant:r", "*S-1-5-32-544:(F)", "*S-1-5-18:(F)"];
+    if let Some(e) = &extra {
+        args.extend(["/grant:r", e.as_str()]);
+    }
+    match sys::output("icacls.exe", &args) {
+        Some((true, _, _)) => Ok(()),
+        Some((false, out, err)) => Err(format!("could not make {p} private: {} {}", sys::decode(&err).trim(), sys::decode(&out).trim())),
+        None => Err("could not run icacls.exe".into()),
+    }
+}
+
+#[cfg(not(windows))]
+pub fn private_file(_path: &Path, _reader: Option<&str>) -> Result<(), String> {
+    Ok(())
 }
 
 /// Register the server as a Windows service via the bundled WinSW wrapper.
@@ -1420,6 +1468,8 @@ fn register_app_service(cfg: &NativeConfig) -> Result<(), String> {
     std::fs::create_dir_all(cfg.install_dir.join("logs")).ok();
     std::fs::write(svc_dir.join(format!("{APP_SERVICE}.xml")), xml)
         .map_err(|e| format!("write service descriptor: {e}"))?;
+    // The descriptor carries the service's environment, passwords included.
+    private_file(&svc_dir.join(format!("{APP_SERVICE}.xml")), None)?;
 
     if !service_exists(APP_SERVICE) {
         match sys::output_tracked(&winsw.to_string_lossy(), &["install"]) {
@@ -2622,5 +2672,18 @@ mod payload_name_tests {
         std::fs::write(dir.join(WINDOWS_PAYLOAD), b"x").unwrap();
         assert_eq!(windows_payload_in(&dir), Some(dir.join(WINDOWS_PAYLOAD)));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod connectivity_tests {
+    /// The chosen MQTT and CoAP ports go into the connectivity settings,
+    /// checked after; a non-default port that did not land fails.
+    #[test]
+    fn the_ports_go_into_the_connectivity_settings() {
+        let sql = super::connectivity_sql(11883, 15683);
+        assert!(sql.contains("jsonb_build_object('port', 11883)") && sql.contains("jsonb_build_object('port', 15683)"), "{sql}");
+        assert!(sql.contains("key = 'connectivity'") && sql.contains("RAISE EXCEPTION"), "{sql}");
+        assert!(!sql.contains("{{"), "braces escaped once: {sql}");
     }
 }

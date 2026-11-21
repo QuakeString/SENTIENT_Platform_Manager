@@ -188,7 +188,10 @@ impl InstallPlan {
 
     /// What is saved for the manager: the configuration without secrets.
     fn record(&self) -> InstallationRecord {
-        let mut stack = self.stack.clone();
+        // The configuration as installed, the chosen settings in it (PG
+        // tuning, licence server, extra variables): Settings shows them and
+        // Apply, Repair and an update keep them (audit I1).
+        let mut stack = self.configured_stack();
         stack.db_password.clear();
         stack.ch_password.clear();
         InstallationRecord {
@@ -486,6 +489,9 @@ fn provision_clickhouse_wsl_with(stack: &DeployConfig, manager: &std::path::Path
     let config = clickhouse_wsl::work_dir().join("config.json");
     std::fs::write(&config, serde_json::to_string(&ch).map_err(|e| e.to_string())?)
         .map_err(|e| format!("write {}: {e}", config.display()))?;
+    // It holds both passwords: Administrators, SYSTEM and the service
+    // account only (audit I9).
+    sentient_installer_core::native::private_file(&config, Some(clickhouse_wsl::ACCOUNT))?;
     step(sink, "Installing WSL2, Docker and ClickHouse as the service account");
     clickhouse_wsl::run_as_account(sink, &password, manager, if reuse_kept { "provision-reuse" } else { "provision" }, None)?;
     step(sink, "Starting ClickHouse at every boot");
@@ -677,6 +683,27 @@ pub fn run(mut plan: InstallPlan, sink: ProgressFn) -> Result<(), String> {
     if !plan.wsl_restarted && !plan.remote {
         discard_pending();
     }
+    // A server's install never meets an earlier SENTIENT there by chance:
+    // its database would keep its own password (the new one never works)
+    // or be taken over silently (audit I3). It is added, or removed, first.
+    if plan.remote && plan.existing.is_none() {
+        if let Some(c) = crate::adopt::search().found.first() {
+            return Err(format!(
+                "This server already has SENTIENT ({}, {}). Nothing was installed: add it as an instance instead (Instances › Add existing), or remove it first.",
+                c.kind, c.location
+            ));
+        }
+        // Data an earlier SENTIENT left without its containers or service:
+        // never reused or overwritten without being asked.
+        let left = leftover_data(&plan);
+        if !left.is_empty() {
+            return Err(format!(
+                "This server has data an earlier SENTIENT left: {}. Nothing was installed and nothing was removed. If that data is not needed, remove it on the server first{}; to keep using it, install on the server itself, where Setup offers to keep it.",
+                left.join(", "),
+                if plan.engine == Engine::Docker { format!(" (docker volume rm {})", left.iter().filter_map(|l| l.strip_prefix("the Docker volume ")).collect::<Vec<_>>().join(" ")) } else { String::new() }
+            ));
+        }
+    }
     if plan.bundle.is_none() && plan.engine == Engine::Native {
         if let Some(version) = plan.download.clone() {
             let (_, dir) = crate::online::download(Some(&version), &sink)?;
@@ -747,7 +774,7 @@ pub fn run(mut plan: InstallPlan, sink: ProgressFn) -> Result<(), String> {
                 sink(Progress::Log { line: format!("note: SENTIENT's ports were not opened in Windows Firewall: {e}") });
             }
             step(&sink, "Setting the administrator sign-in");
-            native::set_admin_account(&cfg, &plan.admin_email, &admin_hash)?;
+            admin_sign_in(&sink, plan.existing.is_some(), native::set_admin_account(&cfg, &plan.admin_email, &admin_hash))?;
             // An operator screen needs SENTIENT running after every boot.
             self_install::set_autostart(plan.shortcuts.autostart || plan.shortcuts.open_at_signin, plan.shortcuts.start_delay)?;
             // Backup, restore and repair read these from the credential
@@ -774,7 +801,7 @@ pub fn run(mut plan: InstallPlan, sink: ProgressFn) -> Result<(), String> {
             }
             distro::deploy_with(sink.clone(), &stack, plan.existing)?;
             step(&sink, "Setting the administrator sign-in");
-            distro::set_admin_account(&stack, &plan.admin_email, &admin_hash)?;
+            admin_sign_in(&sink, plan.existing.is_some(), distro::set_admin_account(&stack, &plan.admin_email, &admin_hash))?;
         }
     }
 
@@ -996,4 +1023,40 @@ mod tests {
         assert_eq!(pinned_image(&default, None), default);
         assert_eq!(pinned_image(&default, Some("in this package")), default);
     }
+}
+
+/// The administrator sign-in's result: the new sign-in is set, or (a kept
+/// database whose administrator is no longer admin@sentient.local) said so
+/// plainly, the kept one staying; a fresh database that did not take it is
+/// an error (audit I2: it used to say done and the new sign-in never worked).
+fn admin_sign_in(sink: &ProgressFn, kept: bool, r: Result<(), String>) -> Result<(), String> {
+    match r {
+        Ok(()) => Ok(()),
+        Err(_) if kept => {
+            sink(Progress::Log { line: "The kept database's administrator is not admin@sentient.local, so the sign-in entered here was not set: sign in with the administrator account it already had.".into() });
+            Ok(())
+        }
+        Err(e) => Err(format!("The administrator sign-in could not be set ({e}).")),
+    }
+}
+
+/// What an earlier SENTIENT left here without its containers or service:
+/// its Docker volumes (by this plan's names), its data folder.
+fn leftover_data(plan: &InstallPlan) -> Vec<String> {
+    let mut out = Vec::new();
+    if plan.engine == Engine::Docker {
+        let n = plan.stack.names();
+        for v in [n.vol_pg, n.vol_ch, n.vol_data] {
+            let there = sentient_installer_core::host::host_command("docker").args(["volume", "inspect", &v]).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status().is_ok_and(|s| s.success());
+            if there {
+                out.push(format!("the Docker volume {v}"));
+            }
+        }
+    } else if cfg!(target_os = "linux") {
+        let dir = std::path::Path::new("/var/lib/sentient");
+        if std::fs::read_dir(dir).is_ok_and(|mut d| d.next().is_some()) {
+            out.push(format!("the folder {}", dir.display()));
+        }
+    }
+    out
 }

@@ -22,6 +22,14 @@ pub enum Progress {
     Done { message: String },
     /// Failed.
     Error { message: String },
+    /// Finished, but something needs a look: shown with the result.
+    /// `offer`: what the window may offer to do about it (JSON, by kind).
+    /// A window from before this variant shows it as a log line.
+    Warning {
+        message: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        offer: Option<String>,
+    },
 }
 
 /// One step of a job's plan.

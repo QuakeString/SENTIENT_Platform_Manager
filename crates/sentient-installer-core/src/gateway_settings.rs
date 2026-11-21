@@ -60,12 +60,23 @@ pub struct Connection {
     pub credential: String,
     /// The token or password: "set", or `••••` and its last four characters.
     pub secret_hint: Option<String>,
+    /// SHA-256 (hex) of the access token, to find the gateway among
+    /// SENTIENT's devices without the token leaving the machine.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_sha256: Option<String>,
     pub username: Option<String>,
     pub client_id: Option<String>,
     pub tls: bool,
     /// Host, port or token come from the process's environment (a container
     /// started with `host`/`port`/`accessToken`).
     pub from_env: bool,
+    /// Where the host the gateway uses comes from, in words (the config
+    /// file and its path, the container's environment and the variable).
+    pub host_source: Option<String>,
+    /// How a host the person typed is reached when it is not used as
+    /// typed (localhost in a container on its own network is reached as
+    /// host.docker.internal): a note for under the field.
+    pub via: Option<String>,
 }
 
 impl Connection {
@@ -98,6 +109,9 @@ pub struct LocalUi {
     pub hostnames: Vec<String>,
     /// The administrator password is set (None: not known).
     pub password_set: Option<bool>,
+    /// On, but not reachable as it runs (a container that does not publish
+    /// its port): why, for the card.
+    pub unreachable: Option<String>,
 }
 
 /// A connector as SENTIENT configured it.
@@ -160,6 +174,25 @@ pub struct Machine {
     pub rust_log: Option<String>,
     /// ST_GW_UI / ST_GW_UI_LISTEN set in the environment (they win over the file).
     pub ui_env: bool,
+    /// A container's network (host, bridge, a compose network): on its own
+    /// network the web page's port is published; on the host's it is not.
+    pub network: Option<String>,
+}
+
+impl Machine {
+    /// How the gateway runs, in words, for the card: the web page is set up
+    /// differently for each.
+    pub fn kind_words(&self) -> String {
+        match (self.kind.as_str(), self.network.as_deref()) {
+            ("docker", Some("host")) => "In Docker, on the host network: the web page listens on this machine directly.".into(),
+            ("docker", Some(n)) => format!("In Docker, on the {n} network: the web page's port is published on this machine."),
+            ("docker", None) => "In Docker.".into(),
+            ("service", _) => "As a systemd service: the web page listens on this machine directly (a firewall may need the port open).".into(),
+            ("windows-service", _) => "As a Windows service: the web page listens on this machine directly (Windows Firewall may need the port open).".into(),
+            ("process", _) => "As a program started by hand.".into(),
+            _ => String::new(),
+        }
+    }
 }
 
 /// What the installed gateway's program can do (from its `--help`).
@@ -293,11 +326,14 @@ fn read_config(s: &mut GwSettings, v: &Value) {
         host: str_of(&p, "host"),
         port: p.get("port").and_then(Value::as_u64).map(|x| x as u16),
         secret_hint: if credential == "usernamePassword" { password.as_deref().and_then(hint) } else { token.as_deref().and_then(hint) },
+        token_sha256: token.as_deref().filter(|t| !t.is_empty()).map(sha256_hex),
         username: str_of(&sec, "username"),
         client_id: str_of(&sec, "clientId"),
         tls: credential.starts_with("tls") || sec.get("caCert").is_some_and(|c| c.as_str().is_some_and(|c| !c.is_empty())),
         credential,
         from_env: false,
+        host_source: None,
+        via: None,
     };
     // The page: on by default outside a container (resolved later).
     let ui = v.get("localUi").cloned().unwrap_or(Value::Null);
@@ -466,6 +502,7 @@ pub fn apply_env(s: &mut GwSettings, env: &[String], in_container: bool) {
     if let Some(h) = env_any(env, &["host", "ST_GW_HOST", "TB_GW_HOST"]) {
         s.conn.host = Some(h.to_string());
         s.conn.from_env = true;
+        s.conn.host_source = Some(if in_container { "the container's environment".into() } else { "the service's environment".into() });
     }
     if let Some(p) = env_any(env, &["port", "ST_GW_PORT", "TB_GW_PORT"]).and_then(|p| p.parse().ok()) {
         s.conn.port = Some(p);
@@ -475,6 +512,7 @@ pub fn apply_env(s: &mut GwSettings, env: &[String], in_container: bool) {
         // The image's placeholder is no token (the file's then counts).
         if !t.eq_ignore_ascii_case("YOUR_ACCESS_TOKEN") && !t.starts_with('<') {
             s.conn.secret_hint = hint(t);
+            s.conn.token_sha256 = Some(sha256_hex(t));
             s.conn.from_env = true;
         }
     }
@@ -618,6 +656,9 @@ pub fn from_read(out: &str) -> GwSettings {
         }
     };
     if !file.is_empty() {
+        if s.conn.host.is_some() {
+            s.conn.host_source = Some("the gateway's config file".into());
+        }
         s.config_path = Some(file);
     }
     s.ui.password_set = sec.get("PW").map(|p| p.trim() == "yes");
@@ -683,6 +724,10 @@ pub struct ApplyPlan {
     pub env: Option<Vec<(String, String)>>,
     /// RUST_LOG: "" removes it.
     pub rust_log: Option<String>,
+    /// The platform connection, written to the gateway's config file (a
+    /// container's environment override of it is removed): host, port.
+    pub conn_host: Option<String>,
+    pub conn_port: Option<u16>,
 }
 
 impl ApplyPlan {
@@ -694,7 +739,7 @@ impl ApplyPlan {
     /// `kind`: a Windows service's restart policy alone does not.
     pub fn restarts(&self, kind: &str) -> bool {
         if kind == "windows-service" {
-            return self.ui_enabled.is_some() || self.ui_listen.is_some() || self.env.is_some() || self.rust_log.is_some();
+            return self.ui_enabled.is_some() || self.ui_listen.is_some() || self.env.is_some() || self.rust_log.is_some() || self.conn_host.is_some() || self.conn_port.is_some();
         }
         !self.is_empty()
     }
@@ -714,6 +759,9 @@ impl ApplyPlan {
     /// What changes, in words, for the job's steps and its last line.
     pub fn names(&self) -> Vec<&'static str> {
         let mut n = Vec::new();
+        if self.conn_host.is_some() || self.conn_port.is_some() {
+            n.push("Connection to SENTIENT");
+        }
         if self.ui_enabled.is_some() {
             n.push("Web page");
         }
@@ -740,6 +788,18 @@ impl ApplyPlan {
 /// is as asked).
 pub fn mismatches(plan: &ApplyPlan, after: &GwSettings) -> Vec<String> {
     let mut out = Vec::new();
+    if let Some(h) = &plan.conn_host {
+        if after.conn.host.as_deref() != Some(h.as_str()) {
+            let from = after.conn.host_source.as_deref().map(|f| format!(" (from {f})")).unwrap_or_default();
+            out.push(format!("the host {}{from}, not {h}", after.conn.host.clone().unwrap_or_else(|| "none".into())));
+        }
+    }
+    if let Some(p) = plan.conn_port {
+        if after.conn.port != Some(p) {
+            out.push(format!("the MQTT port {}, not {p}", after.conn.port.map(|p| p.to_string()).unwrap_or_else(|| "not set".into())));
+        }
+    }
+
     if let Some(on) = plan.ui_enabled {
         if after.ui.enabled != on {
             out.push(format!("the web page is {}", if after.ui.enabled { "on" } else { "off" }));
@@ -799,23 +859,188 @@ pub fn apply(sink: &ProgressFn, status: &Status, plan: &ApplyPlan) -> Result<(),
     if let Some(why) = &before.machine.not_editable {
         return Err(why.clone());
     }
-    match status.kind() {
-        "docker" => crate::distro::gateway_docker::apply_settings(sink, status, &before, plan)?,
-        #[cfg(not(windows))]
-        "service" => crate::distro::gateway_native::apply_settings(sink, status, &before, plan)?,
-        #[cfg(windows)]
-        "windows-service" => crate::gateway::windows_apply_settings(sink, &before, plan)?,
-        _ => return Err("This gateway's settings cannot be changed from here.".into()),
+    let since = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    apply_kind(sink, status, &before, plan)?;
+    // A new connection counts only once the gateway is connected with it,
+    // else the previous one comes back (a container does this itself).
+    let conn = plan.conn_host.is_some() || plan.conn_port.is_some();
+    if conn && status.kind() != "docker" {
+        let target = format!("{}:{}", plan.conn_host.clone().or_else(|| before.conn.host.clone()).unwrap_or_default(), plan.conn_port.or(before.conn.port).unwrap_or(1883));
+        sink(Progress::Step { name: format!("Checking the gateway connects to SENTIENT at {target}") });
+        let ok = wait_connected(status, since, 60);
+        if ok.is_none() {
+            sink(Progress::Log { line: "This gateway does not say whether it is connected, so the connection could not be checked: see Connected on the card.".into() });
+        }
+        if ok == Some(false) {
+            sink(Progress::Log { line: "Not connected within 60 seconds.".into() });
+            sink(Progress::Step { name: "Putting the previous connection back".into() });
+            let back = ApplyPlan {
+                conn_host: before.conn.host.clone().filter(|_| plan.conn_host.is_some()),
+                conn_port: before.conn.port.filter(|_| plan.conn_port.is_some()),
+                ..ApplyPlan::default()
+            };
+            if !back.is_empty() {
+                let now = crate::gateway::status();
+                let current = read(&now);
+                if let Err(e) = apply_kind(sink, &now, &current, &back) {
+                    sink(Progress::Log { line: format!("The previous connection could not be put back: {e}") });
+                }
+            }
+            return Err(crate::distro::gateway_docker::no_connect_words(&target, false));
+        }
+        if ok == Some(true) {
+            sink(Progress::Log { line: format!("Connected to SENTIENT at {target}.") });
+        }
+    }
+    // Connected, the gateway takes the connection SENTIENT keeps for it
+    // (its gateway configuration) and writes it to its file: the one typed
+    // here is then not kept. The gateway connected (it switches only to a
+    // connection that works), so this is a note with the result, not a
+    // failure, with the offer to save the typed one in SENTIENT.
+    let mut sentient_kept = false;
+    if conn {
+        if let Some((h, p)) = platform_took_connection(status, since, 20) {
+            let typed_host = plan.conn_host.clone().or_else(|| before.conn.host.clone()).unwrap_or_default();
+            let typed_port = plan.conn_port.or(before.conn.port).unwrap_or(1883);
+            let target = format!("{typed_host}:{typed_port}");
+            let dials = crate::distro::gateway_docker::dials_machine(status.version.as_deref());
+            let bridge = status.kind() == "docker" && before.machine.network.as_deref().is_some_and(|n| !matches!(n, "host" | "none"));
+            let via = bridge && crate::distro::gateway_docker::is_loopback(&typed_host) && !dials;
+            let offer = SentientConnectionOffer {
+                typed_host: typed_host.clone(),
+                typed_port,
+                write_host: if via { crate::distro::gateway_docker::HOST_ALIAS.to_string() } else { typed_host.clone() },
+                sentient_host: h.clone(),
+                sentient_port: p,
+                token_sha256: before.conn.token_sha256.clone(),
+            };
+            sink(Progress::Warning { message: platform_owns_words(&target, &h, p, via), offer: serde_json::to_string(&offer).ok().map(|j| format!("{SENTIENT_CONNECTION_OFFER}{j}")) });
+            sentient_kept = true;
+        }
     }
     sink(Progress::Step { name: "Reading the settings back".into() });
     let status = crate::gateway::status();
     let after = read(&status);
-    let wrong = mismatches(plan, &after);
+    // The connection is SENTIENT's now (said above): the rest is checked.
+    let checked = if sentient_kept { ApplyPlan { conn_host: None, conn_port: None, ..plan.clone() } } else { plan.clone() };
+    let wrong = mismatches(&checked, &after);
     if !wrong.is_empty() {
-        return Err(format!("Applied, but reading back shows {}.", wrong.join("; ")));
+        return Err(format!("Applied, but the gateway reads back {}.", wrong.join("; ")));
     }
     sink(Progress::Done { message: format!("Applied and read back: {}.", plan.names().join(", ")) });
     Ok(())
+}
+
+/// The `offer` of a [`Progress::Warning`] for a connection SENTIENT kept:
+/// this prefix, then [`SentientConnectionOffer`] as JSON.
+pub const SENTIENT_CONNECTION_OFFER: &str = "sentient-connection:";
+
+/// What the window needs to save the typed connection in SENTIENT's
+/// gateway configuration (Update in SENTIENT).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SentientConnectionOffer {
+    /// As typed here (shown).
+    pub typed_host: String,
+    pub typed_port: u16,
+    /// What SENTIENT is given: as typed, or host.docker.internal for
+    /// localhost in a container on its own network with a gateway that does
+    /// not dial the machine itself.
+    pub write_host: String,
+    /// The connection SENTIENT kept.
+    pub sentient_host: String,
+    pub sentient_port: u16,
+    /// Finds the gateway's device in SENTIENT.
+    pub token_sha256: Option<String>,
+}
+
+/// SHA-256 of `s`, hex.
+pub fn sha256_hex(s: &str) -> String {
+    use sha2::Digest as _;
+    sha2::Sha256::digest(s.as_bytes()).iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Why a connection set here was not kept: SENTIENT sent the one it keeps
+/// for this gateway once it connected (`via`: typed as localhost for a
+/// container, which SENTIENT must name as host.docker.internal).
+pub fn platform_owns_words(target: &str, host: &str, port: u16, via: bool) -> String {
+    let what = if via {
+        format!("This machine's network address works there today; with the gateway updated to {}.{}.{} or later, localhost works there too.", crate::distro::gateway_docker::DIALS_MACHINE_FROM.0, crate::distro::gateway_docker::DIALS_MACHINE_FROM.1, crate::distro::gateway_docker::DIALS_MACHINE_FROM.2)
+    } else {
+        format!("Set it to {target} there to keep it.")
+    };
+    format!(
+        "The gateway connected to SENTIENT at {target}, then switched to {host}:{port}: that is the connection SENTIENT keeps for this gateway, and while the gateway is connected, SENTIENT's saved connection decides. Change it in SENTIENT › Gateways › this gateway › Configuration › General. {what}"
+    )
+}
+
+/// (host, port) when the gateway's log since `since` says SENTIENT changed
+/// its connection ("the platform changed this gateway's connection"),
+/// watched for `secs` seconds.
+fn platform_took_connection(status: &Status, since: u64, secs: u64) -> Option<(String, u16)> {
+    for _ in 0..secs / 4 {
+        std::thread::sleep(std::time::Duration::from_secs(4));
+        let log: Option<String> = match status.kind() {
+            #[cfg(not(windows))]
+            "docker" => status.container.as_deref().and_then(|n| crate::distro::gateway_docker::logs_since(n, since)),
+            #[cfg(not(windows))]
+            "service" => status.service.as_deref().and_then(|u| {
+                crate::sys::host_command("journalctl").args(["-u", u, "--since", &format!("@{since}"), "-o", "cat", "--no-pager"]).output().ok().map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+            }),
+            _ => None,
+        };
+        if let Some(found) = log.as_deref().and_then(platform_change_in) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+/// The last "the platform changed this gateway's connection" line's host
+/// and port.
+pub fn platform_change_in(log: &str) -> Option<(String, u16)> {
+    let line = log.lines().rev().find(|l| l.contains("the platform changed this gateway's connection"))?;
+    let field = |k: &str| line.split_whitespace().find_map(|w| w.strip_prefix(&format!("{k}=")).map(|v| v.trim_matches('"').to_string()));
+    Some((field("host")?, field("port")?.parse().ok()?))
+}
+
+/// The settings applied by the way the gateway runs.
+fn apply_kind(sink: &ProgressFn, status: &Status, before: &GwSettings, plan: &ApplyPlan) -> Result<(), String> {
+    match status.kind() {
+        "docker" => crate::distro::gateway_docker::apply_settings(sink, status, before, plan),
+        #[cfg(not(windows))]
+        "service" => crate::distro::gateway_native::apply_settings(sink, status, before, plan),
+        #[cfg(windows)]
+        "windows-service" => crate::gateway::windows_apply_settings(sink, before, plan),
+        _ => Err("This gateway's settings cannot be changed from here.".into()),
+    }
+}
+
+/// Whether the service gateway connects within `secs` seconds of `since`
+/// (Unix seconds): its log since then says so (systemd), or its own open
+/// connections do. None: it cannot be known (no log here, and the gateway
+/// does not say).
+fn wait_connected(status: &Status, since: u64, secs: u64) -> Option<bool> {
+    let journal = cfg!(not(windows)) && status.service.is_some();
+    for _ in 0..secs / 3 {
+        std::thread::sleep(std::time::Duration::from_secs(3));
+        #[cfg(not(windows))]
+        if let Some(unit) = &status.service {
+            let at = format!("@{since}");
+            if let Ok(o) = crate::sys::host_command("journalctl").args(["-u", unit, "--since", &at, "-o", "cat", "--no-pager"]).output() {
+                if crate::distro::gateway_docker::connected_in_log(&crate::distro::gateway_docker::strip_ansi(&String::from_utf8_lossy(&o.stdout))) {
+                    return Some(true);
+                }
+            }
+        }
+        #[cfg(windows)]
+        let _ = since;
+        match read(&crate::gateway::status()).connected {
+            Some(true) => return Some(true),
+            None if !journal => return None,
+            _ => {}
+        }
+    }
+    Some(false)
 }
 
 /// Set the local page's administrator password through the gateway's own
@@ -833,7 +1058,77 @@ pub fn set_password(status: &Status, password: &str) -> Result<String, String> {
         "windows-service" => run_with_stdin(&crate::gateway::windows_program(), &["--ui-password", "-"], password)?,
         _ => return Err("There is no gateway here whose password can be set.".into()),
     };
+    // The real effect: the page signs in with it where it is reached.
+    let now = read(&crate::gateway::status());
+    if now.ui.enabled {
+        let (addr, port) = match now.ui.listen.rsplit_once(':') {
+            Some((a, p)) => (a.trim_matches(['[', ']']).to_string(), p.parse().unwrap_or(crate::gateway::UI_PORT)),
+            None => ("127.0.0.1".to_string(), crate::gateway::UI_PORT),
+        };
+        let host = if matches!(addr.as_str(), "0.0.0.0" | "::" | "") { "127.0.0.1".to_string() } else { addr };
+        let mut last = String::new();
+        for _ in 0..5 {
+            match page_sign_in(&host, port, password) {
+                Ok(()) => return Ok(format!("The web page's password is changed, and the page signs in with it as admin on port {port}. Every browser signed in to it before is signed out.")),
+                Err(e) => last = e,
+            }
+            std::thread::sleep(std::time::Duration::from_secs(2));
+        }
+        return Err(format!("The password was set, but signing in to the page on port {port} with it did not work: {last}"));
+    }
     Ok("The web page's password is changed; every browser signed in to it is signed out.".into())
+}
+
+/// Sign in to the gateway's local page at `host:port` as admin with
+/// `password` (HTTPS, any certificate: it is the gateway's own; plain HTTP
+/// when the page does not speak TLS there). Ok: signed in.
+pub fn page_sign_in(host: &str, port: u16, password: &str) -> Result<(), String> {
+    use std::io::{Read as _, Write as _};
+    let body = serde_json::json!({ "username": crate::gateway::UI_USER, "password": password }).to_string();
+    let request = format!("POST /api/login HTTP/1.1\r\nHost: {host}:{port}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+    let connect = || {
+        use std::net::ToSocketAddrs as _;
+        let addr = (host, port).to_socket_addrs().map_err(|e| e.to_string())?.next().ok_or("no address")?;
+        let tcp = std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_secs(4)).map_err(|e| format!("nothing answers on {host}:{port} ({e})"))?;
+        tcp.set_read_timeout(Some(std::time::Duration::from_secs(8))).ok();
+        Ok::<_, String>(tcp)
+    };
+    let mut answer = String::new();
+    // HTTPS first (the page on any address but loopback).
+    let tls = (|| -> Result<String, String> {
+        let provider = std::sync::Arc::new(rustls::crypto::ring::default_provider());
+        let config = rustls::ClientConfig::builder_with_provider(provider.clone())
+            .with_safe_default_protocol_versions()
+            .map_err(|e| e.to_string())?
+            .dangerous()
+            .with_custom_certificate_verifier(std::sync::Arc::new(AnyCert(provider)))
+            .with_no_client_auth();
+        let name = rustls::pki_types::ServerName::try_from("localhost".to_string()).map_err(|e| e.to_string())?;
+        let conn = rustls::ClientConnection::new(std::sync::Arc::new(config), name).map_err(|e| e.to_string())?;
+        let mut s = rustls::StreamOwned::new(conn, connect()?);
+        s.write_all(request.as_bytes()).map_err(|e| e.to_string())?;
+        let mut out = String::new();
+        let _ = s.read_to_string(&mut out);
+        if out.is_empty() { Err("no answer over HTTPS".into()) } else { Ok(out) }
+    })();
+    match tls {
+        Ok(a) => answer = a,
+        Err(_) => {
+            let mut tcp = connect()?;
+            tcp.write_all(request.as_bytes()).map_err(|e| e.to_string())?;
+            let _ = tcp.read_to_string(&mut answer);
+        }
+    }
+    let status: u16 = answer.split_whitespace().nth(1).and_then(|c| c.parse().ok()).unwrap_or(0);
+    match status {
+        200..=299 => Ok(()),
+        0 => Err(format!("the page on {host}:{port} gave no answer")),
+        _ => {
+            let body = answer.split("\r\n\r\n").nth(1).unwrap_or("");
+            let msg = serde_json::from_str::<Value>(body).ok().and_then(|v| v.get("message").and_then(Value::as_str).map(str::to_string));
+            Err(msg.unwrap_or_else(|| format!("the page answered {status}")))
+        }
+    }
 }
 
 /// Run `program args` with `input` as one line on its standard input:
@@ -982,6 +1277,17 @@ pub fn test_connection(status: &Status) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
+    /// SENTIENT's push of its own connection is found in the gateway's log,
+    /// and said as SENTIENT's, with host.docker.internal for a container.
+    #[test]
+    fn sentients_own_connection_is_found_and_said() {
+        let log = "2026-11-21T17:23:38Z  INFO gateway_core::remote_config: the platform changed this gateway's connection host=192.168.0.20 port=1883";
+        assert_eq!(super::platform_change_in(log), Some(("192.168.0.20".to_string(), 1883)));
+        assert_eq!(super::platform_change_in("INFO connected to platform"), None);
+        let w = super::platform_owns_words("127.0.0.1:1883", "192.168.0.20", 1883, true);
+        assert!(w.contains("192.168.0.20:1883") && w.contains("Configuration › General") && w.contains("network address works there today") && !w.contains("host.docker.internal"), "{w}");
+    }
+
     use super::*;
 
     const FILE: &str = r#"{"sentient":{"host":"sentient.example.local","port":1883,"remoteShell":false,

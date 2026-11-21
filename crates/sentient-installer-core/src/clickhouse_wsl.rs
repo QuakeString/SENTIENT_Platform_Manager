@@ -112,19 +112,37 @@ icacls '{dir}' /grant '{ACCOUNT}:(OI)(CI)F' /T /Q | Out-Null
 /// account, with its password stored by Task Scheduler.
 #[cfg(windows)]
 fn register_task(name: &str, cmd_file: &Path, at_startup: bool, password: &str) -> Result<(), String> {
-    let schedule: &[&str] = if at_startup { &["/sc", "onstart"] } else { &["/sc", "once", "/st", "23:59"] };
-    let tr = cmd_file.display().to_string();
-    let mut args: Vec<&str> = vec!["/create", "/tn", name, "/tr", &tr];
-    args.extend_from_slice(schedule);
-    args.extend_from_slice(&["/ru", ACCOUNT, "/rp", password, "/f"]);
-    match sys::output("schtasks.exe", &args) {
-        Some((true, _, _)) => Ok(()),
-        Some((false, out, err)) => Err(format!(
-            "could not register the task {name}: {} {}",
-            sys::decode(&err).trim(),
-            sys::decode(&out).trim()
-        )),
-        None => Err("could not run schtasks.exe".into()),
+    // Register-ScheduledTask with the password read from standard input:
+    // schtasks takes it only on its command line (/rp), where every process
+    // listing shows it (audit I9).
+    use std::io::Write as _;
+    use std::process::Stdio;
+    let q = |s: &str| s.replace('\'', "''");
+    let trigger = if at_startup { "New-ScheduledTaskTrigger -AtStartup".to_string() } else { "New-ScheduledTaskTrigger -Once -At '23:59'".to_string() };
+    let script = format!(
+        "$p = [Console]::In.ReadLine(); \
+         $a = New-ScheduledTaskAction -Execute '{exe}'; \
+         $t = {trigger}; \
+         Register-ScheduledTask -TaskName '{name}' -Action $a -Trigger $t -User '{user}' -Password $p -Force | Out-Null",
+        exe = q(&cmd_file.display().to_string()),
+        name = q(name),
+        user = q(ACCOUNT),
+    );
+    let mut child = sys::command("powershell.exe")
+        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("could not run powershell.exe: {e}"))?;
+    if let Some(mut i) = child.stdin.take() {
+        let _ = writeln!(i, "{password}");
+    }
+    let o = child.wait_with_output().map_err(|e| e.to_string())?;
+    if o.status.success() {
+        Ok(())
+    } else {
+        Err(format!("could not register the task {name}: {} {}", sys::decode(&o.stderr).trim(), sys::decode(&o.stdout).trim()))
     }
 }
 

@@ -146,7 +146,7 @@ pub fn run_command(image: &str, env_file: &str, devices: &[SerialDevice]) -> Str
     let q = super::shell_quote;
     let volumes: String = VOLUMES.iter().map(|(v, p)| format!(" -v {v}:{p}")).collect();
     format!(
-        "docker run -d --name {CONTAINER} --restart unless-stopped --network host{volumes}{} --env-file {} {}",
+        "docker run -d --name {CONTAINER} --restart unless-stopped --network host --add-host {HOST_GATEWAY}{volumes}{} --env-file {} {}",
         device_flags(devices),
         q(env_file),
         q(image)
@@ -426,12 +426,27 @@ pub fn update(sink: &ProgressFn, version: &str) -> Result<(), String> {
 pub fn update_spec(current: &Spec, image: &str, old_image_env: &[String], found: &[SerialDevice]) -> Spec {
     let image_owned = |kv: &str| {
         let Some((k, _)) = kv.split_once('=') else { return true };
-        let dir = k.strip_prefix("TB_GW_").or_else(|| k.strip_prefix("ST_GW_")).is_some_and(|r| matches!(r, "CONFIG_DIR" | "DATA_DIR" | "LOGS_PATH" | "EXTENSIONS_DIR"));
+        // A folder setting the image itself gives (its default path) goes,
+        // so the new image's comes in; one given for this container stays.
+        let dir = k.strip_prefix("TB_GW_").or_else(|| k.strip_prefix("ST_GW_")).is_some_and(|r| matches!(r, "CONFIG_DIR" | "DATA_DIR" | "LOGS_PATH" | "EXTENSIONS_DIR"))
+            && kv.split_once('=').is_some_and(|(_, v)| v.starts_with("/sentient_gateway/") || v.starts_with("/thingsboard_gateway/"));
         k == "PATH" || dir || old_image_env.iter().any(|e| e == kv)
     };
     let mut spec = current.clone();
     spec.image = image.to_string();
     spec.env = current.env.iter().filter(|kv| !image_owned(kv)).cloned().collect();
+    // A new image brings its own command and entry point.
+    spec.cmd.clear();
+    spec.entrypoint.clear();
+    // Its data folder as the old container had it (an image-owned
+    // ST_GW_DATA_DIR is gone from env by now: read it from the old spec).
+    if !spec.mounts.iter().any(|m| m.1 == data_dir(current)) {
+        let mut probe = current.clone();
+        if ensure_data_volume(&mut probe).is_some() {
+            spec.mounts.push((DATA_VOLUME.to_string(), data_dir(current), false, false));
+        }
+    }
+    ensure_host_gateway(&mut spec);
     if spec.devices.is_empty() {
         spec.devices = found.iter().map(|d| (d.path.clone(), d.path.clone())).collect();
         for d in found {
@@ -445,15 +460,27 @@ pub fn update_spec(current: &Spec, image: &str, old_image_env: &[String], found:
 }
 
 #[cfg(not(windows))]
-fn wait_running(sink: &ProgressFn, version: &str) -> Result<(), String> {
-    for _ in 0..30 {
-        if status().running {
-            sink(Progress::Done { message: format!("Sentient Gateway {version} is running.") });
-            return Ok(());
-        }
+fn wait_running(sink: &ProgressFn, version: &str, target: &str) -> Result<(), String> {
+    // Up, and still up a few seconds later (a restart loop is not up, A13).
+    let up = (0..30).any(|_| {
         std::thread::sleep(std::time::Duration::from_secs(1));
+        container_running(CONTAINER)
+    }) && {
+        std::thread::sleep(std::time::Duration::from_secs(4));
+        container_running(CONTAINER)
+    };
+    if !up {
+        return Err(format!("The gateway container did not stay up; see docker logs {CONTAINER}."));
     }
-    Err(format!("The gateway container did not stay up; see docker logs {CONTAINER}."))
+    // Installed either way; whether it reached SENTIENT is said (I16).
+    sink(Progress::Step { name: format!("Checking the gateway connects to SENTIENT at {target}") });
+    if wait_connected(CONTAINER, 60) {
+        sink(Progress::Done { message: format!("Sentient Gateway {version} is running and connected to SENTIENT.") });
+    } else {
+        let why = last_connect_line(CONTAINER);
+        sink(Progress::Done { message: format!("Sentient Gateway {version} is installed and running, but it did not connect to SENTIENT at {target} within 60 seconds{why}. Check the host, port and access token on Gateway › Connection.") });
+    }
+    Ok(())
 }
 
 fn start(sink: &ProgressFn, version: &str, host: &str, port: u16, token: &str) -> Result<(), String> {
@@ -480,7 +507,7 @@ fn start(sink: &ProgressFn, version: &str, host: &str, port: u16, token: &str) -
         let r = super::run(sink, &run_command(&image, &env.to_string_lossy(), &devices));
         let _ = std::fs::remove_file(&env);
         r?;
-        wait_running(sink, version)
+        wait_running(sink, version, &format!("{host}:{port}"))
     }
 }
 
@@ -595,6 +622,26 @@ pub struct Spec {
     /// Other names on its network (a compose service's name, kept when the
     /// container is taken over).
     pub aliases: Vec<String>,
+    /// Its fixed IPv4 address on its network (empty: Docker picks one).
+    pub ip: String,
+    /// The other networks it is on: (network, aliases, fixed IPv4 or "").
+    pub extra_networks: Vec<(String, Vec<String>, String)>,
+    /// A command and entry point given when it was created, when they
+    /// differ from the image's (empty: the image's).
+    pub cmd: Vec<String>,
+    pub entrypoint: Vec<String>,
+    pub user: String,
+    pub privileged: bool,
+    /// Labels given when it was created (not the image's, not compose's).
+    pub labels: Vec<(String, String)>,
+    /// A log driver other than the default, and its options.
+    pub log_driver: String,
+    pub log_opts: Vec<(String, String)>,
+    /// tmpfs mounts: (path, options).
+    pub tmpfs: Vec<(String, String)>,
+    /// Memory limit in bytes and CPUs in billionths (0: none).
+    pub memory: u64,
+    pub nano_cpus: u64,
 }
 
 /// One container's `docker inspect` (an array of one).
@@ -631,7 +678,9 @@ pub fn parse_spec(json: &str) -> Option<Spec> {
         for (inside, list) in b {
             for e in list.as_array().into_iter().flatten() {
                 let hp = e.get("HostPort").and_then(|x| x.as_str()).unwrap_or_default();
-                let ip = e.get("HostIp").and_then(|x| x.as_str()).unwrap_or_default();
+                // An IPv6 address is bracketed for `-p` (A20).
+                let raw = e.get("HostIp").and_then(|x| x.as_str()).unwrap_or_default();
+                let ip = if raw.contains(':') && !raw.starts_with('[') { format!("[{raw}]") } else { raw.to_string() };
                 if hp.is_empty() {
                     ports.push(inside.clone());
                 } else if ip.is_empty() {
@@ -658,7 +707,39 @@ pub fn parse_spec(json: &str) -> Option<Spec> {
         .filter(|a| *a != name && !(a.len() >= 12 && id.starts_with(a.as_str())))
         .collect();
     aliases.dedup();
+    let nets = c.get("NetworkSettings").and_then(|n| n.get("Networks")).and_then(|n| n.as_object()).cloned().unwrap_or_default();
+    let ipv4 = |n: &serde_json::Value| n.get("IPAMConfig").and_then(|i| i.get("IPv4Address")).and_then(|x| x.as_str()).unwrap_or_default().to_string();
+    let ip = nets.get(network).map(ipv4).unwrap_or_default();
+    let extra_networks: Vec<(String, Vec<String>, String)> = nets
+        .iter()
+        .filter(|(k, _)| k.as_str() != network && !matches!(network, "host" | "none"))
+        .map(|(k, n)| {
+            let al: Vec<String> = strs(n.get("Aliases")).into_iter().filter(|a| *a != name && !(a.len() >= 12 && id.starts_with(a.as_str()))).collect();
+            (k.clone(), al, ipv4(n))
+        })
+        .collect();
+    let config = c.get("Config").cloned().unwrap_or_default();
+    let kv = |v: Option<&serde_json::Value>| -> Vec<(String, String)> {
+        let mut out: Vec<(String, String)> = v.and_then(|x| x.as_object()).map(|o| o.iter().map(|(k, v)| (k.clone(), v.as_str().unwrap_or_default().to_string())).collect()).unwrap_or_default();
+        out.sort();
+        out
+    };
+    let log = host.get("LogConfig").cloned().unwrap_or_default();
+    let log_driver = log.get("Type").and_then(|x| x.as_str()).unwrap_or_default().to_string();
+    let log_opts = kv(log.get("Config"));
     Some(Spec {
+        ip,
+        extra_networks,
+        cmd: strs(config.get("Cmd")),
+        entrypoint: strs(config.get("Entrypoint")),
+        user: config.get("User").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+        privileged: host.get("Privileged").and_then(|x| x.as_bool()).unwrap_or(false),
+        labels: kv(config.get("Labels")).into_iter().filter(|(k, _)| !k.starts_with("com.docker.compose.")).collect(),
+        log_driver: if log_driver == "json-file" && log_opts.is_empty() { String::new() } else { log_driver },
+        log_opts,
+        tmpfs: kv(host.get("Tmpfs")),
+        memory: host.get("Memory").and_then(|x| x.as_u64()).unwrap_or(0),
+        nano_cpus: host.get("NanoCpus").and_then(|x| x.as_u64()).unwrap_or(0),
         ports,
         extra_hosts: strs(host.get("ExtraHosts")),
         aliases,
@@ -712,7 +793,42 @@ pub fn run_args(spec: &Spec, env_file: &str) -> Vec<String> {
     for c in &spec.cap_add {
         a.extend(["--cap-add".into(), c.clone()]);
     }
+    if !spec.ip.is_empty() && !matches!(spec.network.as_str(), "" | "default" | "bridge" | "host" | "none") {
+        a.extend(["--ip".into(), spec.ip.clone()]);
+    }
+    if !spec.user.is_empty() {
+        a.extend(["--user".into(), spec.user.clone()]);
+    }
+    if spec.privileged {
+        a.push("--privileged".into());
+    }
+    for (k, v) in &spec.labels {
+        a.extend(["--label".into(), format!("{k}={v}")]);
+    }
+    if !spec.log_driver.is_empty() {
+        a.extend(["--log-driver".into(), spec.log_driver.clone()]);
+    }
+    for (k, v) in &spec.log_opts {
+        a.extend(["--log-opt".into(), format!("{k}={v}")]);
+    }
+    for (p, o) in &spec.tmpfs {
+        a.extend(["--tmpfs".into(), if o.is_empty() { p.clone() } else { format!("{p}:{o}") }]);
+    }
+    if spec.memory > 0 {
+        a.extend(["--memory".into(), spec.memory.to_string()]);
+    }
+    if spec.nano_cpus > 0 {
+        a.extend(["--cpus".into(), format!("{}", spec.nano_cpus as f64 / 1e9)]);
+    }
+    if let Some((first, _)) = spec.entrypoint.split_first() {
+        a.extend(["--entrypoint".into(), first.clone()]);
+    }
     a.extend(["--env-file".into(), env_file.to_string(), spec.image.clone()]);
+    // The rest of a given entry point, then a given command.
+    if spec.entrypoint.len() > 1 {
+        a.extend(spec.entrypoint[1..].iter().cloned());
+    }
+    a.extend(spec.cmd.iter().cloned());
     a
 }
 
@@ -841,6 +957,17 @@ pub fn take_over(sink: &ProgressFn, choice: ComposeChoice, name: Option<&str>) -
         if let Some(s) = &service {
             spec.aliases.push(s.clone());
         }
+        // Its old name stays a name on its network: other containers that
+        // reach the gateway by it still do.
+        if !spec.aliases.contains(&old) {
+            spec.aliases.push(old.clone());
+        }
+        if let Some(added) = ensure_data_volume(&mut spec) {
+            sink(Progress::Log { line: added });
+        }
+        if ensure_host_gateway(&mut spec) {
+            sink(Progress::Log { line: format!("{HOST_ALIAS} is this machine in the container (--add-host {HOST_GATEWAY}).") });
+        }
         sink(Progress::Log { line: format!("Image {}", spec.image) });
         if !spec.network.is_empty() {
             sink(Progress::Log { line: format!("Network {}", spec.network) });
@@ -877,7 +1004,11 @@ pub fn take_over(sink: &ProgressFn, choice: ComposeChoice, name: Option<&str>) -
             let args = run_args(&spec, &file);
             let refs: Vec<&str> = args.iter().map(String::as_str).collect();
             match docker_all(&refs) {
-                Some((true, _)) => {}
+                Some((true, _)) => {
+                    if let Err(e) = connect_extra_networks(&spec) {
+                        return put_back(format!("{e} {old} runs again, unchanged."));
+                    }
+                }
                 Some((false, out)) => {
                     for l in out.lines().filter(|l| !l.trim().is_empty()).take(6) {
                         sink(Progress::Log { line: strip_ansi(l) });
@@ -945,7 +1076,52 @@ pub fn take_over(sink: &ProgressFn, choice: ComposeChoice, name: Option<&str>) -
 
 /// `docker inspect <name>` read as a Spec.
 pub fn inspect_spec(name: &str) -> Option<Spec> {
-    docker(&["inspect", name]).filter(|(ok, _)| *ok).and_then(|(_, o)| parse_spec(&o))
+    let mut spec = docker(&["inspect", name]).filter(|(ok, _)| *ok).and_then(|(_, o)| parse_spec(&o))?;
+    let image = docker(&["image", "inspect", &spec.image]).filter(|(ok, _)| *ok).map(|(_, o)| o).unwrap_or_default();
+    without_image_defaults(&mut spec, &image);
+    Some(spec)
+}
+
+/// Leave out of `spec` what its image sets itself (command, entry point,
+/// user, labels): what remains was given when the container was created,
+/// and a recreate gives it again.
+pub fn without_image_defaults(spec: &mut Spec, image_inspect: &str) {
+    let v: serde_json::Value = serde_json::from_str(image_inspect).unwrap_or_default();
+    let c = v.as_array().and_then(|a| a.first()).cloned().unwrap_or(v);
+    let cfg = c.get("Config").cloned().unwrap_or_default();
+    let strs = |x: Option<&serde_json::Value>| -> Vec<String> { x.and_then(|x| x.as_array()).map(|a| a.iter().filter_map(|s| s.as_str().map(str::to_string)).collect()).unwrap_or_default() };
+    if spec.cmd == strs(cfg.get("Cmd")) {
+        spec.cmd.clear();
+    }
+    if spec.entrypoint == strs(cfg.get("Entrypoint")) {
+        spec.entrypoint.clear();
+    }
+    if Some(spec.user.as_str()) == cfg.get("User").and_then(|x| x.as_str()) {
+        spec.user.clear();
+    }
+    let image_labels = cfg.get("Labels").and_then(|l| l.as_object()).cloned().unwrap_or_default();
+    spec.labels.retain(|(k, v)| image_labels.get(k).and_then(|x| x.as_str()) != Some(v.as_str()));
+}
+
+/// Put a recreated container on its other networks, with their names and
+/// fixed addresses (`docker run` takes one network). Err: which failed.
+#[cfg(not(windows))]
+fn connect_extra_networks(spec: &Spec) -> Result<(), String> {
+    for (net, aliases, ip) in &spec.extra_networks {
+        let mut a: Vec<String> = vec!["network".into(), "connect".into()];
+        for al in aliases {
+            a.extend(["--alias".into(), al.clone()]);
+        }
+        if !ip.is_empty() {
+            a.extend(["--ip".into(), ip.clone()]);
+        }
+        a.extend([net.clone(), spec.name.clone()]);
+        let refs: Vec<&str> = a.iter().map(String::as_str).collect();
+        if !matches!(docker_all(&refs), Some((true, _))) {
+            return Err(format!("{} could not be put on its network {net} again.", spec.name));
+        }
+    }
+    Ok(())
 }
 
 /// The image's own environment (PATH, the gateway's folders): kept, not listed.
@@ -972,22 +1148,19 @@ fn not_editable(s: &Status) -> Option<String> {
 fn read_script_out(spec: &Spec, running: bool) -> Option<String> {
     let script = crate::gateway_settings::read_script();
     if running {
-        let line = format!("D=\"${{ST_GW_CONFIG_DIR:-/sentient_gateway/config}}\"; P=1; {script}");
+        let line = format!("D=\"${{ST_GW_CONFIG_DIR:-${{TB_GW_CONFIG_DIR:-/sentient_gateway/config}}}}\"; P=1; {script}");
         // The gateway's file capability (NET_RAW) makes its process
         // undumpable: not even root in the container lists its sockets, so
         // "connected" is known here only from --status-json.
         return docker(&["exec", &spec.name, "sh", "-c", &line]).filter(|(ok, _)| *ok).map(|(_, o)| o);
     }
-    let dir = env_value(&spec.env, "ST_GW_CONFIG_DIR").unwrap_or_else(|| VOLUMES[0].1.to_string());
+    let dir = config_dir_of(spec);
     let (src, _, _, _) = spec.mounts.iter().find(|(_, d, _, _)| *d == dir)?;
     let mount = format!("{src}:/c:ro");
     let line = format!("D=/c; P=0; {script}");
     docker(&["run", "--rm", "--pull=never", "--network", "none", "-v", &mount, "--entrypoint", "sh", &spec.image, "-c", &line]).filter(|(ok, _)| *ok).map(|(_, o)| o)
 }
 
-fn env_value(env: &[String], name: &str) -> Option<String> {
-    env.iter().find_map(|l| l.strip_prefix(&format!("{name}="))).map(str::to_string).filter(|v| !v.is_empty())
-}
 
 /// The container's settings (crate::gateway_settings::read).
 pub fn read_settings(status: &Status) -> crate::gateway_settings::GwSettings {
@@ -1012,6 +1185,23 @@ pub fn read_settings(status: &Status) -> crate::gateway_settings::GwSettings {
         s.connected_how = Some("the container is stopped".into());
     }
     gs::apply_env(&mut s, &spec.env, true);
+    // localhost typed for a gateway on its own network is written as
+    // host.docker.internal: shown as typed, with how it is reached.
+    if needs_publish(&spec) && s.conn.host.as_deref() == Some(HOST_ALIAS) {
+        let typed = spec.labels.iter().find(|(k, _)| k == TYPED_HOST_LABEL).map(|(_, v)| v.clone()).unwrap_or_else(|| "localhost".into());
+        s.conn.via = Some(format!("This machine: the gateway's container reaches it as {HOST_ALIAS}."));
+        s.conn.host = Some(typed);
+    }
+    // A gateway that dials the machine itself for localhost: said the same way.
+    if needs_publish(&spec) && s.conn.host.as_deref().is_some_and(is_loopback) && dials_machine(status.version.as_deref()) {
+        s.conn.via = Some(format!("This machine: the gateway's container reaches it as {HOST_ALIAS}."));
+    }
+    // Its own network: the page's access is the published address.
+    if let Some(l) = published_ui_listen(&spec, &s.ui.listen) {
+        s.ui.listen = l;
+    } else if needs_publish(&spec) && s.ui.enabled {
+        s.ui.unreachable = Some(format!("The web page is on inside the container, but its port is not published on the {} network: it cannot be reached. Apply the web page again to publish it.", spec.network));
+    }
     if let Some(out) = &out {
         gs::connected_from_read(&mut s, out);
     }
@@ -1019,6 +1209,7 @@ pub fn read_settings(status: &Status) -> crate::gateway_settings::GwSettings {
     let why = not_editable(status);
     let editable = why.is_none();
     s.machine.not_editable = why;
+    s.machine.network = Some(if spec.network.is_empty() || spec.network == "default" { "bridge".into() } else { spec.network.clone() });
     s.machine.restart_always = Some(matches!(spec.restart.as_str(), "always" | "unless-stopped" | "on-failure"));
     s.machine.restart_word = Some(if spec.restart.is_empty() { "no".into() } else { spec.restart.clone() });
     s.machine.serial.mode = "devices".into();
@@ -1039,14 +1230,381 @@ fn set_env(env: &mut Vec<String>, name: &str, value: Option<&str>) {
     }
 }
 
+/// Where the gateway keeps its buffer (data.db) and logs inside the
+/// container: ST_GW_DATA_DIR (TB_GW_DATA_DIR), else the image's default.
+pub fn data_dir(spec: &Spec) -> String {
+    let get = |k: &str| spec.env.iter().find_map(|e| e.strip_prefix(&format!("{k}=")).map(str::to_string));
+    get("ST_GW_DATA_DIR").or_else(|| get("TB_GW_DATA_DIR")).filter(|d| d.starts_with('/')).unwrap_or_else(|| "/sentient_gateway/data".into())
+}
+
+/// Give the data folder a volume when none keeps it ([`DATA_VOLUME`]): a
+/// container created without one loses its buffered data and its logs each
+/// time it is created again (a take-over, an update, Apply). Returns what
+/// was added, for the job's log and the review.
+pub fn ensure_data_volume(spec: &mut Spec) -> Option<String> {
+    let dir = data_dir(spec);
+    let kept = spec.mounts.iter().any(|(_, dest, _, _)| {
+        let d = dest.trim_end_matches('/');
+        dir == d || dir.starts_with(&format!("{d}/")) || d == ""
+    });
+    if kept {
+        return None;
+    }
+    spec.mounts.push((DATA_VOLUME.to_string(), dir.clone(), false, false));
+    Some(format!("A volume {DATA_VOLUME} keeps {dir} (the gateway's buffer and logs), which had none."))
+}
+
+/// The volume [`ensure_data_volume`] adds.
+pub const DATA_VOLUME: &str = "st-gw-data";
+
+/// (address, port) of a listen value such as `0.0.0.0:8642`.
+fn listen_parts(l: &str) -> (String, u16) {
+    match l.rsplit_once(':') {
+        Some((a, p)) => (a.trim_matches(['[', ']']).to_string(), p.parse().unwrap_or(crate::gateway::UI_PORT)),
+        None => ("0.0.0.0".into(), crate::gateway::UI_PORT),
+    }
+}
+
+/// Whether the container has its own network (a bridge): its ports must be
+/// published to be reached from outside it. `host` shares the machine's.
+pub fn needs_publish(spec: &Spec) -> bool {
+    !matches!(spec.network.as_str(), "host" | "none")
+}
+
+/// The web page on a container with its own network: the page listens on
+/// every address inside it, and the access choice (`listen`: all
+/// interfaces `0.0.0.0:P`, this machine only `127.0.0.1:P`) becomes the
+/// published address `ADDR:P:P`; off, the port is no longer published.
+/// On the host network the gateway's own listen value decides.
+pub fn set_ui_publish(spec: &mut Spec, enabled: bool, listen: &str) {
+    let (addr, port) = listen_parts(listen);
+    if !needs_publish(spec) {
+        set_env(&mut spec.env, "ST_GW_UI_LISTEN", Some(listen));
+        return;
+    }
+    set_env(&mut spec.env, "ST_GW_UI_LISTEN", Some(&format!("0.0.0.0:{port}")));
+    spec.ports.retain(|p| {
+        let c = p.split('/').next().unwrap_or(p);
+        c.rsplit(':').next() != Some(&port.to_string())
+    });
+    if enabled {
+        spec.ports.push(format!("{addr}:{port}:{port}"));
+    }
+}
+
+/// The web page's access as published (`ADDR:P`), when the container has
+/// its own network and publishes the page's port: what the card shows as
+/// "Listen on" (the value inside the container is always every address).
+pub fn published_ui_listen(spec: &Spec, inner: &str) -> Option<String> {
+    if !needs_publish(spec) {
+        return None;
+    }
+    let (_, port) = listen_parts(inner);
+    spec.ports.iter().find_map(|p| {
+        let c = p.split('/').next().unwrap_or(p);
+        // `[addr:]host:container`, an IPv6 addr in brackets.
+        let mut parts: Vec<&str> = c.rsplitn(3, ':').collect();
+        parts.reverse();
+        match parts.as_slice() {
+            [addr, host, cont] if cont.parse() == Ok(port) => Some(format!("{}:{host}", if addr.is_empty() { "0.0.0.0" } else { addr })),
+            [host, cont] if cont.parse() == Ok(port) => Some(format!("0.0.0.0:{host}")),
+            _ => None,
+        }
+    })
+}
+
+/// The name a gateway container reaches this machine by.
+pub const HOST_ALIAS: &str = "host.docker.internal";
+/// `--add-host` that makes [`HOST_ALIAS`] this machine (Docker's host-gateway).
+pub const HOST_GATEWAY: &str = "host.docker.internal:host-gateway";
+/// The label that keeps the host typed when it is written as [`HOST_ALIAS`].
+pub const TYPED_HOST_LABEL: &str = "in.sentient.gateway.typed-host";
+
+/// The first gateway release that dials the machine itself for a loopback
+/// host when it runs in a container on its own network (the gateway's
+/// dial_host): from it on, the host is written as typed.
+pub const DIALS_MACHINE_FROM: (u32, u32, u32) = (4, 18, 3);
+
+/// Whether the gateway `version` ("4.18.3", "v4.18.3-rc1") dials the machine
+/// for localhost in a container on its own network.
+pub fn dials_machine(version: Option<&str>) -> bool {
+    let Some(v) = version else { return false };
+    let core = v.trim().trim_start_matches('v').split(['-', '+', ' ']).next().unwrap_or("");
+    let n: Vec<u32> = core.split('.').filter_map(|x| x.parse().ok()).collect();
+    n.len() >= 3 && (n[0], n[1], n[2]) >= DIALS_MACHINE_FROM
+}
+
+/// localhost, ::1 or 127.x.
+pub fn is_loopback(host: &str) -> bool {
+    let h = host.trim().trim_matches(['[', ']']).to_ascii_lowercase();
+    h == "localhost" || h == "::1" || h.starts_with("127.")
+}
+
+/// Give the container [`HOST_GATEWAY`] when it has no host.docker.internal
+/// of its own, so this machine always has a name in it. true: added.
+pub fn ensure_host_gateway(spec: &mut Spec) -> bool {
+    if spec.extra_hosts.iter().any(|h| h.split(':').next() == Some(HOST_ALIAS)) {
+        return false;
+    }
+    spec.extra_hosts.push(HOST_GATEWAY.to_string());
+    true
+}
+
+/// The host written to the config file for `typed`: in a container on its
+/// own network, loopback is the container itself, so this machine is
+/// reached as [`HOST_ALIAS`]; anything else as typed.
+pub fn conn_host_for(spec: &Spec, typed: &str, dials: bool) -> String {
+    if needs_publish(spec) && is_loopback(typed) && !dials {
+        HOST_ALIAS.to_string()
+    } else {
+        typed.to_string()
+    }
+}
+
+/// The address host-gateway is on this machine (the default bridge's
+/// gateway; Docker's own default when it cannot be read).
+#[cfg(not(windows))]
+fn host_gateway_ip() -> String {
+    docker(&["network", "inspect", "bridge", "--format", "{{range .IPAM.Config}}{{.Gateway}} {{end}}"])
+        .filter(|(ok, _)| *ok)
+        .and_then(|(_, o)| o.split_whitespace().find(|a| a.parse::<std::net::Ipv4Addr>().is_ok()).map(str::to_string))
+        .unwrap_or_else(|| "172.17.0.1".into())
+}
+
+/// Err: nothing on this machine answers where a container reaches it
+/// (`ip`:`port`, host.docker.internal): SENTIENT's MQTT port listens on
+/// 127.0.0.1 only, or is not there.
+pub fn host_gateway_reachable(ip: &str, port: u16, typed: &str) -> Result<(), String> {
+    let addr: std::net::SocketAddr = format!("{ip}:{port}").parse().map_err(|_| format!("{ip}:{port} is not an address"))?;
+    match std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_secs(3)) {
+        Ok(_) => Ok(()),
+        Err(_) => Err(unreachable_words(ip, port, typed)),
+    }
+}
+
+/// Whether `ip`:`port` accepts a TCP connection from inside the running
+/// container `name` (bash's /dev/tcp, 3 seconds). None: it could not be
+/// tried there (no bash in the image, the container stopped).
+#[cfg(not(windows))]
+fn reachable_from_container(name: &str, ip: &str, port: u16) -> Option<bool> {
+    let probe = "(exec 3<>/dev/tcp/$1/$2) 2>/dev/null & p=$!; for i in 1 2 3 4 5 6; do sleep 0.5; if ! kill -0 $p 2>/dev/null; then wait $p; exit $?; fi; done; kill $p 2>/dev/null; exit 124";
+    match docker(&["exec", name, "bash", "-c", probe, "probe", ip, &port.to_string()]) {
+        Some((true, _)) => Some(true),
+        // bash ran and the connection failed or timed out (1, 124); 126/127
+        // and a stopped container read the same here: tell them apart.
+        Some((false, _)) => docker(&["exec", name, "bash", "-c", "exit 0"]).filter(|(ok, _)| *ok).map(|_| false),
+        None => None,
+    }
+}
+
+/// Why Apply stops when nothing answers where the container reaches this
+/// machine ([`host_gateway_reachable`]).
+pub fn unreachable_words(ip: &str, port: u16, typed: &str) -> String {
+    format!(
+        "{typed} in the gateway's container is the container itself, so it reaches this machine as {HOST_ALIAS} ({ip}), and nothing answers on {ip}:{port}: SENTIENT's MQTT port listens on 127.0.0.1 only, or not on {port}. Publish it on all interfaces (\"{port}:{port}\") or on {ip}, then Apply again. Nothing was changed."
+    )
+}
+
+/// Why Apply put the previous connection back: `target` did not connect
+/// within 60 seconds; `via`: reached as host.docker.internal. The gateway's
+/// own last line about it is in the job's log, under this.
+pub fn no_connect_words(target: &str, via: bool) -> String {
+    let check = if via {
+        format!("It is this machine, which the gateway's container reaches as {HOST_ALIAS}: check SENTIENT's MQTT port is published on all interfaces and no firewall stops containers reaching it.")
+    } else {
+        "Check the address from the gateway's machine.".to_string()
+    };
+    format!("The gateway did not connect to SENTIENT at {target} within 60 seconds, so its previous connection was put back. {check}")
+}
+
+/// The container's log since `since` (Unix seconds), colours removed.
+#[cfg(not(windows))]
+pub fn logs_since(name: &str, since: u64) -> Option<String> {
+    docker_all(&["logs", "--since", &since.to_string(), name]).map(|(_, o)| strip_ansi(&o))
+}
+
+/// ": <the gateway's last line about its connection>", or "".
+#[cfg(not(windows))]
+fn last_connect_line(name: &str) -> String {
+    let last = docker_all(&["logs", "--tail", "40", name]).map(|(_, o)| o).unwrap_or_default();
+    last.lines().rev().map(strip_ansi).find(|l| l.contains("uplink") || l.contains("connect")).map(|l| format!(": {}", l.trim())).unwrap_or_default()
+}
+
+/// Whether the gateway in `name` reports being connected to SENTIENT
+/// within `secs` seconds (its --status-json, else its log).
+#[cfg(not(windows))]
+fn wait_connected(name: &str, secs: u64) -> bool {
+    for _ in 0..secs / 3 {
+        std::thread::sleep(std::time::Duration::from_secs(3));
+        if let Some((true, out)) = docker(&["exec", name, "sentient-gateway", "--status-json"]) {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(out.trim()) {
+                if v.get("connected").and_then(|c| c.as_bool()) == Some(true) {
+                    return true;
+                }
+                continue;
+            }
+        }
+        if let Some((_, log)) = docker_all(&["logs", "--since", "90s", name]) {
+            if connected_in_log(&strip_ansi(&log)) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Whether a gateway's log says it is connected now: its last "connected to
+/// platform" comes after its last connection error or loss (a gateway
+/// without --status-json).
+pub fn connected_in_log(log: &str) -> bool {
+    let lines: Vec<&str> = log.lines().collect();
+    let last = |f: &dyn Fn(&str) -> bool| lines.iter().rposition(|l| f(l));
+    let up = last(&|l| l.contains("connected to platform"));
+    let down = last(&|l| l.contains("uplink connection error") || l.contains("the platform is lost") || l.contains("disconnected from platform"));
+    match (up, down) {
+        (Some(u), Some(d)) => u > d,
+        (Some(_), None) => true,
+        _ => false,
+    }
+}
+
+/// (path, content) of the config file the gateway in container `name` uses.
+#[cfg(not(windows))]
+fn read_config_file(name: &str) -> Option<(String, String)> {
+    let find = "d=\"${ST_GW_CONFIG_DIR:-${TB_GW_CONFIG_DIR:-/sentient_gateway/config}}\"; for f in st_gateway.json tb_gateway.json; do if [ -f \"$d/$f\" ]; then echo \"$d/$f\"; cat \"$d/$f\"; exit 0; fi; done; exit 3";
+    let (ok, out) = docker(&["exec", name, "sh", "-c", find])?;
+    let (p, j) = out.split_once('\n')?;
+    ok.then(|| (p.trim().to_string(), j.to_string()))
+}
+
+/// `json` (the gateway's config file) with the platform host and port set:
+/// under `sentient`, or `thingsboard` in an older file that has only that.
+pub fn with_connection(json: &str, host: Option<&str>, port: Option<u16>) -> Result<String, String> {
+    let mut v: serde_json::Value = serde_json::from_str(json).map_err(|e| format!("the gateway's config file is not valid JSON ({e})"))?;
+    let obj = v.as_object_mut().ok_or("the gateway's config file is not a JSON object")?;
+    let key = if obj.contains_key("sentient") || !obj.contains_key("thingsboard") { "sentient" } else { "thingsboard" };
+    let section = obj.entry(key).or_insert_with(|| serde_json::json!({}));
+    let section = section.as_object_mut().ok_or("the platform section of the config file is not an object")?;
+    if let Some(h) = host {
+        section.insert("host".into(), serde_json::Value::String(h.to_string()));
+    }
+    if let Some(p) = port {
+        section.insert("port".into(), serde_json::Value::from(p));
+    }
+    serde_json::to_string_pretty(&v).map_err(|e| e.to_string())
+}
+
+
+/// The folder the gateway reads its config file from in the container, as
+/// the gateway resolves it (ST_GW_, then the older spelling, then the image's).
+pub fn config_dir_of(spec: &Spec) -> String {
+    let get = |k: &str| spec.env.iter().find_map(|e| e.strip_prefix(&format!("{k}=")).map(str::to_string)).filter(|v| v.starts_with('/'));
+    get("ST_GW_CONFIG_DIR").or_else(|| get(&["TB", "_GW_CONFIG_DIR"].concat())).unwrap_or_else(|| "/sentient_gateway/config".into())
+}
+
+/// The volume or host folder that holds `path` in the container, and
+/// `path` under it: (source, relative path).
+pub fn mount_of(spec: &Spec, path: &str) -> Option<(String, String)> {
+    spec.mounts
+        .iter()
+        .filter_map(|(src, dest, ro, _)| {
+            let d = dest.trim_end_matches('/');
+            let rel = path.strip_prefix(&format!("{d}/"))?;
+            (!*ro).then(|| (d.len(), src.clone(), rel.to_string()))
+        })
+        .max_by_key(|(n, _, _)| *n)
+        .map(|(_, s, r)| (s, r))
+}
+
+/// Write `content` (None: remove the file) to `path` in `spec`'s volume while
+/// no gateway runs: through a throwaway container of the gateway's image,
+/// as its user, with a temporary file and a rename.
+#[cfg(not(windows))]
+fn write_config_offline(spec: &Spec, path: &str, content: Option<&str>) -> Result<(), String> {
+    let (src, rel) = mount_of(spec, path).ok_or_else(|| format!("The gateway's config folder ({}) has no volume, so a change to its config file would not survive the container being created again.", path.rsplit_once('/').map(|(d, _)| d).unwrap_or(path)))?;
+    // A file of its own: the recreate's env file (write_env_file) is in
+    // use while this runs.
+    let tmp = {
+        use std::io::Write as _;
+        use std::os::unix::fs::OpenOptionsExt as _;
+        let dir = std::env::var_os("XDG_RUNTIME_DIR").map(std::path::PathBuf::from).filter(|d| d.is_dir()).unwrap_or_else(std::env::temp_dir);
+        let path = dir.join(format!("spm-gateway-{}-config.json", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let mut f = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&path).map_err(|e| format!("write {}: {e}", path.display()))?;
+        f.write_all(content.unwrap_or("").as_bytes()).map_err(|e| format!("write {}: {e}", path.display()))?;
+        path
+    };
+    let q = super::shell_quote;
+    let script = "f=\"/c/$1\"; if [ \"$2\" = rm ]; then rm -f \"$f\"; else cat > \"$f.spm-new\" && mv \"$f.spm-new\" \"$f\"; fi";
+    let user = if spec.user.is_empty() { String::new() } else { format!("--user {} ", q(&spec.user)) };
+    let line = format!(
+        "docker run --rm -i --network none --pull=never {user}-v {} --entrypoint sh {} -c {} sh {} {} < {} 2>&1",
+        q(&format!("{src}:/c")),
+        q(&spec.image),
+        q(script),
+        q(&rel),
+        if content.is_some() { "write" } else { "rm" },
+        q(&tmp.display().to_string())
+    );
+    let r = super::run_output(&line);
+    let _ = std::fs::remove_file(&tmp);
+    match r {
+        Some((true, _)) => Ok(()),
+        Some((false, o)) => Err(format!("The gateway's config file could not be written: {}", o.trim())),
+        None => Err("Docker could not be run to write the gateway's config file.".into()),
+    }
+}
+
+/// The host and port the gateway in `name` last started with (its
+/// "starting host=… port=…" line).
+#[cfg(not(windows))]
+fn started_with(name: &str) -> Option<(String, u16)> {
+    let log = docker_all(&["logs", "--tail", "400", name]).map(|(_, o)| strip_ansi(&o))?;
+    started_with_in(&log)
+}
+
+/// [`started_with`] on a log.
+pub fn started_with_in(log: &str) -> Option<(String, u16)> {
+    let line = log.lines().rev().find(|l| l.contains(" starting host="))?;
+    let field = |k: &str| line.split_whitespace().find_map(|w| w.strip_prefix(&format!("{k}=")).map(|v| v.trim_matches('"').to_string()));
+    Some((field("host")?, field("port")?.parse().ok()?))
+}
+
 /// The container's spec with `plan` applied (crate::gateway_settings::ApplyPlan).
 pub fn planned_spec(spec: &Spec, before: &crate::gateway_settings::GwSettings, plan: &crate::gateway_settings::ApplyPlan, gid_of: &dyn Fn(&str) -> Option<u32>) -> Result<Spec, String> {
+    planned_spec_for(spec, before, plan, gid_of, false)
+}
+
+/// [`planned_spec`]; `dials`: the gateway dials the machine itself for
+/// localhost ([`dials_machine`]), so the host is written as typed.
+pub fn planned_spec_for(spec: &Spec, before: &crate::gateway_settings::GwSettings, plan: &crate::gateway_settings::ApplyPlan, gid_of: &dyn Fn(&str) -> Option<u32>, dials: bool) -> Result<Spec, String> {
     let mut s = spec.clone();
     if let Some(on) = plan.ui_enabled {
         set_env(&mut s.env, "ST_GW_UI", Some(if on { "on" } else { "off" }));
     }
-    if let Some(l) = &plan.ui_listen {
-        set_env(&mut s.env, "ST_GW_UI_LISTEN", Some(l));
+    // The page's access: published on a container with its own network
+    // (set_ui_publish), else the gateway's listen value.
+    if plan.ui_enabled.is_some() || plan.ui_listen.is_some() {
+        let on = plan.ui_enabled.unwrap_or(before.ui.enabled);
+        let listen = plan.ui_listen.clone().unwrap_or_else(|| before.ui.listen.clone());
+        set_ui_publish(&mut s, on, if listen.is_empty() { "0.0.0.0:8642" } else { &listen });
+    }
+    ensure_data_volume(&mut s);
+    ensure_host_gateway(&mut s);
+    // localhost typed for a container on its own network: what was typed,
+    // to show it again (the file holds host.docker.internal).
+    if let Some(h) = &plan.conn_host {
+        s.labels.retain(|(k, _)| k != TYPED_HOST_LABEL);
+        if needs_publish(&s) && is_loopback(h) && !dials {
+            s.labels.push((TYPED_HOST_LABEL.to_string(), h.clone()));
+        }
+    }
+    // The connection goes to the config file (write_connection, before the
+    // recreate); the environment no longer overrides it.
+    if plan.conn_host.is_some() || plan.conn_port.is_some() {
+        for k in ["host", "ST_GW_HOST", "TB_GW_HOST", "port", "ST_GW_PORT", "TB_GW_PORT"] {
+            set_env(&mut s.env, k, None);
+        }
     }
     if let Some(l) = &plan.rust_log {
         set_env(&mut s.env, "RUST_LOG", (!l.is_empty()).then_some(l.as_str()));
@@ -1121,9 +1679,114 @@ pub fn apply_settings(sink: &ProgressFn, status: &Status, before: &crate::gatewa
     {
         let name = status.container.clone().ok_or("There is no gateway container.")?;
         let spec = inspect_spec(&name).ok_or("The gateway container could not be read.")?;
-        let new = planned_spec(&spec, before, plan, &gid_of)?;
+        // A gateway that dials the machine itself for localhost gets the
+        // host as typed; an older one gets host.docker.internal.
+        let dials = dials_machine(status.version.as_deref());
+        let new = planned_spec_for(&spec, before, plan, &gid_of, dials)?;
         let name = new.name.clone();
-        recreate_container(sink, &new, Some(format!("Stopping the container {name}")), &format!("Creating {name} again with the same volumes"), "with the new settings")
+        let conn = plan.conn_host.is_some() || plan.conn_port.is_some();
+        // localhost for a container on its own network: this machine, as
+        // host.docker.internal, where SENTIENT's MQTT port has to answer.
+        let file_host = plan.conn_host.as_deref().map(|h| conn_host_for(&new, h, dials));
+        if let Some(typed) = plan.conn_host.as_deref() {
+            if needs_publish(&new) && is_loopback(typed) {
+                let ip = host_gateway_ip();
+                let port = plan.conn_port.or(before.conn.port).unwrap_or(1883);
+                // Tried from the gateway's own container (its network is
+                // the one the new container gets); from here only when the
+                // image has no shell for it.
+                match reachable_from_container(&spec.name, &ip, port) {
+                    Some(true) => {}
+                    Some(false) => return Err(unreachable_words(&ip, port, typed)),
+                    None => host_gateway_reachable(&ip, port, typed)?,
+                }
+                sink(Progress::Log { line: format!("{typed} is this machine: the gateway's container reaches it as {HOST_ALIAS} ({ip}).") });
+            }
+        }
+        // An image that sets the connection itself wins over the file even
+        // once the container's own variables are gone: said before anything
+        // changes.
+        if conn {
+            if let Some(v) = image_env(&spec.image).into_iter().find(|e| ["host=", "ST_GW_HOST=", "TB_GW_HOST=", "port=", "ST_GW_PORT=", "TB_GW_PORT="].iter().any(|p| e.starts_with(p))) {
+                return Err(format!("The gateway's image {} sets the connection ({}) in its own environment, which wins over its config file: nothing was changed. Use the standard image (Update the gateway), or set the connection in the image.", spec.image, if v.to_ascii_lowercase().contains("host=") { "host" } else { "port" }));
+            }
+        }
+        // The config file as it is, to put back when the new connection does
+        // not connect, and the one to write. It is written while no gateway
+        // runs: a gateway writes its connection in force back to its file
+        // as it stops, over a change made while it ran.
+        let old_file = if conn { read_config_file(&spec.name) } else { None };
+        let path = old_file.as_ref().map(|(p, _)| p.clone()).unwrap_or_else(|| format!("{}/st_gateway.json", config_dir_of(&spec)));
+        let new_json = if conn { Some(with_connection(old_file.as_ref().map(|(_, j)| j.as_str()).unwrap_or("{}"), file_host.as_deref(), plan.conn_port)?) } else { None };
+        if conn {
+            mount_of(&spec, &path).ok_or_else(|| format!("The gateway's config folder ({}) has no volume, so its connection cannot be changed: nothing was changed.", path.rsplit_once('/').map(|(d, _)| d).unwrap_or(&path)))?;
+        }
+        let write_new = || -> Result<(), String> {
+            match &new_json {
+                Some(j) => {
+                    sink(Progress::Log { line: "Writing the connection to the gateway's config file".into() });
+                    write_config_offline(&spec, &path, Some(j))
+                }
+                None => Ok(()),
+            }
+        };
+        let put_back = || -> Result<(), String> { write_config_offline(&spec, &path, old_file.as_ref().map(|(_, j)| j.as_str())) };
+        if let Err(e) = recreate_with(sink, &new, Some(format!("Stopping the container {name}")), &format!("Creating {name} again with the same volumes"), "with the new settings", conn.then_some(&write_new as &dyn Fn() -> Result<(), String>)) {
+            // The previous container runs again: so does its file.
+            if conn && docker(&["inspect", "--format", "{{.State.Running}}", &name]).is_some_and(|(ok, o)| ok && o.trim() == "true") {
+                let _ = docker(&["stop", "-t", "25", &name]);
+                let _ = put_back();
+                let _ = docker(&["start", &name]);
+            }
+            return Err(e);
+        }
+        // A new connection counts only once the gateway started with it and
+        // connected with it; otherwise the old one comes back.
+        if conn {
+            let target = format!("{}:{}", plan.conn_host.clone().or_else(|| before.conn.host.clone()).unwrap_or_default(), plan.conn_port.or(before.conn.port).unwrap_or(1883));
+            sink(Progress::Step { name: format!("Checking the gateway connects to SENTIENT at {target}") });
+            std::thread::sleep(std::time::Duration::from_secs(2));
+            let started = started_with(&name);
+            let wrong_start = started.as_ref().filter(|(h, p)| file_host.as_deref().is_some_and(|f| f != h) || plan.conn_port.is_some_and(|x| x != *p)).cloned();
+            let failure = if let Some((h, p)) = wrong_start {
+                Some(format!("The gateway started with {h}:{p}, not the connection written to its config file, so its previous connection was put back."))
+            } else if !wait_connected(&name, 60) {
+                let why = last_connect_line(&name);
+                sink(Progress::Log { line: format!("Not connected within 60 seconds{why}") });
+                Some(no_connect_words(&target, file_host.as_deref() == Some(HOST_ALIAS)))
+            } else {
+                None
+            };
+            if let Some(why) = failure {
+                sink(Progress::Step { name: "Putting the previous connection back".into() });
+                recreate_with(sink, &spec, None, "Creating the gateway again with its previous settings", "with its previous settings", Some(&put_back))?;
+                return Err(why);
+            }
+            sink(Progress::Log { line: format!("Connected to SENTIENT at {target}.") });
+        }
+        // The real effect, not the setting: the page answers where it is
+        // published (or on the host network, where it listens).
+        if plan.ui_enabled.is_some() || plan.ui_listen.is_some() {
+            let on = plan.ui_enabled.unwrap_or(before.ui.enabled);
+            let inner = new.env.iter().find_map(|e| e.strip_prefix("ST_GW_UI_LISTEN=")).unwrap_or("0.0.0.0:8642").to_string();
+            let (_, port) = listen_parts(&inner);
+            if on {
+                sink(Progress::Step { name: format!("Checking the web page answers on port {port}") });
+                if needs_publish(&new) && !matches!(docker(&["port", &name, &port.to_string()]), Some((true, o)) if !o.trim().is_empty()) {
+                    return Err(format!("The container runs, but Docker does not publish port {port}: the web page cannot be reached."));
+                }
+                let up = (0..20).any(|_| {
+                    std::thread::sleep(std::time::Duration::from_secs(1));
+                    std::net::TcpStream::connect_timeout(&std::net::SocketAddr::from(([127, 0, 0, 1], port)), std::time::Duration::from_secs(1)).is_ok()
+                });
+                if !up {
+                    return Err(format!("The gateway runs with its web page on, but nothing answers on port {port} of this machine within 20 seconds."));
+                }
+                let (addr, _) = listen_parts(&published_ui_listen(&new, &inner).unwrap_or(inner.clone()));
+                sink(Progress::Log { line: format!("The web page answers: https://{}:{port}/", if addr == "0.0.0.0" { "<this machine's address>".to_string() } else { addr }) });
+            }
+        }
+        Ok(())
     }
 }
 
@@ -1137,6 +1800,14 @@ pub fn apply_settings(sink: &ProgressFn, status: &Status, before: &crate::gatewa
 /// the job's step names; `what` ends the failure ("on <image>").
 #[cfg(not(windows))]
 pub(crate) fn recreate_container(sink: &ProgressFn, spec: &Spec, stop_step: Option<String>, start_step: &str, what: &str) -> Result<(), String> {
+    recreate_with(sink, spec, stop_step, start_step, what, None)
+}
+
+/// [`recreate_container`]; `between` runs once the old container has
+/// stopped and before the new one starts (the gateway writes its connection
+/// in force back to its file as it stops, so a file change goes here).
+#[cfg(not(windows))]
+pub(crate) fn recreate_with(sink: &ProgressFn, spec: &Spec, stop_step: Option<String>, start_step: &str, what: &str, between: Option<&dyn Fn() -> Result<(), String>>) -> Result<(), String> {
     let name = spec.name.clone();
     let old = format!("{name}-spm-previous");
     let env_file = write_env_file(&spec.env)?;
@@ -1154,10 +1825,29 @@ pub(crate) fn recreate_container(sink: &ProgressFn, spec: &Spec, stop_step: Opti
             let _ = docker(&["start", &name]);
             return Err(format!("docker rename {name} failed; the gateway was started again as it was."));
         }
+        if let Some(f) = between {
+            if let Err(e) = f() {
+                let _ = docker(&["rename", &old, &name]);
+                let _ = docker(&["start", &name]);
+                return Err(format!("{e} The previous container {name} runs again, unchanged."));
+            }
+        }
         sink(Progress::Step { name: start_step.to_string() });
         let args = run_args(spec, &file);
         let refs: Vec<&str> = args.iter().map(String::as_str).collect();
-        let started = matches!(docker(&refs), Some((true, _)));
+        let run = docker_all(&refs);
+        if let Some((false, out)) = &run {
+            for l in out.lines().filter(|l| !l.trim().is_empty()).take(6) {
+                sink(Progress::Log { line: strip_ansi(l) });
+            }
+        }
+        let started = matches!(run, Some((true, _))) && match connect_extra_networks(spec) {
+            Ok(()) => true,
+            Err(e) => {
+                sink(Progress::Log { line: e });
+                false
+            }
+        };
         let up = started && (0..30).any(|_| {
             std::thread::sleep(std::time::Duration::from_secs(1));
             container_running(&name)
@@ -1252,7 +1942,7 @@ pub fn test_creds(status: &Status) -> Option<crate::gateway_settings::TestCreds>
     let spec = inspect_spec(status.container.as_deref()?)?;
     let file = status
         .running
-        .then(|| docker(&["exec", &spec.name, "sh", "-c", "d=\"${ST_GW_CONFIG_DIR:-/sentient_gateway/config}\"; cat \"$d/st_gateway.json\" 2>/dev/null || cat \"$d/tb_gateway.json\" 2>/dev/null"]))
+        .then(|| docker(&["exec", &spec.name, "sh", "-c", "d=\"${ST_GW_CONFIG_DIR:-${TB_GW_CONFIG_DIR:-/sentient_gateway/config}}\"; cat \"$d/st_gateway.json\" 2>/dev/null || cat \"$d/tb_gateway.json\" 2>/dev/null"]))
         .flatten()
         .filter(|(ok, _)| *ok)
         .map(|(_, o)| o);
@@ -1331,7 +2021,7 @@ mod tests {
     fn the_run_line_passes_serial_adapters_with_their_group() {
         let none = run_command("quakestring/sentient-gateway-rs:4.16.2", "/tmp/gw.env", &[]);
         assert!(!none.contains("--device") && !none.contains("--group-add"));
-        assert!(none.contains("--network host -v st-gw-config:/sentient_gateway/config"));
+        assert!(none.contains("--network host --add-host host.docker.internal:host-gateway -v st-gw-config:/sentient_gateway/config"));
         let devs = [
             SerialDevice { path: "/dev/serial/by-id/usb-Example_RS485_A1-if00-port0".into(), gid: 986 },
             SerialDevice { path: "/dev/ttyACM0".into(), gid: 986 },
@@ -1444,7 +2134,178 @@ mod tests {
         assert_eq!((spec.restart.as_str(), spec.network.as_str()), ("no", "host"));
         // Its own device, not every adapter found now.
         assert_eq!(spec.devices, vec![("/dev/ttyUSB0".to_string(), "/dev/ttyUSB0".to_string())]);
-        assert_eq!(spec.mounts.len(), 2);
+        // Its two mounts, and a volume for the data folder, which had none.
+        assert_eq!(spec.mounts.len(), 3);
+        assert_eq!(spec.mounts[2], (DATA_VOLUME.to_string(), "/sentient_gateway/data".to_string(), false, false));
+    }
+
+    /// Connected only when "connected to platform" comes after the last loss.
+    #[test]
+    fn connected_is_read_from_the_log() {
+        assert!(connected_in_log("a\nINFO gateway_core::uplink: connected to platform epoch=1\nWARN uplink: no session limits"));
+        assert!(!connected_in_log("INFO connected to platform\nWARN uplink connection error; retrying"));
+        assert!(connected_in_log("WARN uplink connection error\nINFO connected to platform epoch=2"));
+        assert!(!connected_in_log("WARN the platform is lost: telling 0 connectors"));
+    }
+
+    /// A container with no volume for the gateway's data folder gets one;
+    /// one that has it (or a parent of it) keeps its own.
+    #[test]
+    fn the_data_folder_gets_a_volume() {
+        let mut s = Spec { mounts: vec![("st-gw-config".into(), "/sentient_gateway/config".into(), false, false)], ..Spec::default() };
+        assert!(ensure_data_volume(&mut s).is_some());
+        assert_eq!(s.mounts[1], (DATA_VOLUME.to_string(), "/sentient_gateway/data".to_string(), false, false));
+        assert!(ensure_data_volume(&mut s).is_none());
+        let mut custom = Spec { env: vec!["ST_GW_DATA_DIR=/data/gw".into()], mounts: vec![("/srv/gw".into(), "/data".into(), false, true)], ..Spec::default() };
+        assert!(ensure_data_volume(&mut custom).is_none(), "a parent folder's mount keeps it");
+    }
+
+    /// The web page on a container's own network is published per the
+    /// access choice and inside listens on every address; off, it is no
+    /// longer published; on the host network nothing is published.
+    #[test]
+    fn the_web_page_is_published_on_a_bridge_only() {
+        let mut s = Spec { network: "st_default".into(), ports: vec!["5000:5000".into()], ..Spec::default() };
+        set_ui_publish(&mut s, true, "127.0.0.1:8642");
+        assert_eq!(s.ports, vec!["5000:5000", "127.0.0.1:8642:8642"]);
+        assert!(s.env.contains(&"ST_GW_UI_LISTEN=0.0.0.0:8642".to_string()));
+        assert_eq!(published_ui_listen(&s, "0.0.0.0:8642").as_deref(), Some("127.0.0.1:8642"));
+        set_ui_publish(&mut s, true, "0.0.0.0:8642");
+        assert_eq!(s.ports, vec!["5000:5000", "0.0.0.0:8642:8642"]);
+        set_ui_publish(&mut s, false, "0.0.0.0:8642");
+        assert_eq!(s.ports, vec!["5000:5000"]);
+        let mut h = Spec { network: "host".into(), ..Spec::default() };
+        set_ui_publish(&mut h, true, "127.0.0.1:8642");
+        assert!(h.ports.is_empty());
+        assert!(h.env.contains(&"ST_GW_UI_LISTEN=127.0.0.1:8642".to_string()));
+        assert_eq!(published_ui_listen(&h, "127.0.0.1:8642"), None);
+    }
+
+    /// localhost for a container on its own network is this machine as
+    /// host.docker.internal (kept as typed in a label); on the host network
+    /// and for any other host, as typed. Every container gets the name.
+    #[test]
+    fn localhost_in_a_bridge_container_is_this_machine() {
+        let bridge = Spec { network: "st_default".into(), ..Spec::default() };
+        let host = Spec { network: "host".into(), ..Spec::default() };
+        for h in ["localhost", "127.0.0.1", "::1", "[::1]", "LOCALHOST"] {
+            assert_eq!(conn_host_for(&bridge, h, false), HOST_ALIAS, "{h}");
+            assert_eq!(conn_host_for(&bridge, h, true), h, "{h}: a gateway that dials the machine itself");
+            assert_eq!(conn_host_for(&host, h, false), h, "{h}");
+        }
+        assert_eq!(conn_host_for(&bridge, "192.168.0.20", false), "192.168.0.20");
+        assert_eq!(conn_host_for(&bridge, "sentient", false), "sentient");
+        assert!(dials_machine(Some("4.18.3")) && dials_machine(Some("v4.19.0-rc1")) && dials_machine(Some("5.0.0")));
+        assert!(!dials_machine(Some("4.18.2")) && !dials_machine(Some("latest")) && !dials_machine(None));
+        let mut s = bridge.clone();
+        assert!(ensure_host_gateway(&mut s));
+        assert!(!ensure_host_gateway(&mut s));
+        assert_eq!(s.extra_hosts, vec![HOST_GATEWAY.to_string()]);
+        let mut own = Spec { extra_hosts: vec!["host.docker.internal:10.0.0.1".into()], ..Spec::default() };
+        assert!(!ensure_host_gateway(&mut own), "its own host.docker.internal stays");
+        assert!(run_args(&s, "/e").join(" ").contains("--add-host host.docker.internal:host-gateway"));
+        assert!(run_command("img", "/e", &[]).contains("--add-host host.docker.internal:host-gateway"));
+    }
+
+    /// Apply's plan: the typed host goes in a label for a bridge container
+    /// (localhost), not for another host; the container gets the name.
+    #[test]
+    fn the_typed_host_is_kept_for_the_page() {
+        let bridge = Spec { network: "st_default".into(), ..Spec::default() };
+        let before = crate::gateway_settings::GwSettings::default();
+        let plan = crate::gateway_settings::ApplyPlan { conn_host: Some("127.0.0.1".into()), ..Default::default() };
+        let s = planned_spec(&bridge, &before, &plan, &|_| None).unwrap();
+        assert!(s.labels.contains(&(TYPED_HOST_LABEL.to_string(), "127.0.0.1".to_string())));
+        assert!(s.extra_hosts.contains(&HOST_GATEWAY.to_string()));
+        let plan = crate::gateway_settings::ApplyPlan { conn_host: Some("192.168.0.20".into()), ..Default::default() };
+        let s2 = planned_spec(&s, &before, &plan, &|_| None).unwrap();
+        assert!(!s2.labels.iter().any(|(k, _)| k == TYPED_HOST_LABEL));
+    }
+
+    /// Where nothing answers, the reason names host.docker.internal and
+    /// 127.0.0.1-only publishing; something listening passes.
+    #[test]
+    fn the_host_gateway_port_is_checked() {
+        let l = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let p = l.local_addr().unwrap().port();
+        assert!(host_gateway_reachable("127.0.0.1", p, "localhost").is_ok());
+        drop(l);
+        let e = host_gateway_reachable("127.0.0.1", p, "localhost").unwrap_err();
+        assert!(e.contains(HOST_ALIAS) && e.contains("127.0.0.1 only") && e.contains("Nothing was changed"), "{e}");
+    }
+
+    /// The host and port a gateway started with are read from its log; the
+    /// config file is found under its volume (the longest mount).
+    #[test]
+    fn the_start_line_and_the_volume_are_read() {
+        let log = "INFO sentient_gateway: Sentient Gateway (rs) v4.18.2 starting host=172.17.0.1 port=21999 security=\"accessToken\"\nINFO x\nINFO sentient_gateway: Sentient Gateway (rs) v4.18.2 starting host=host.docker.internal port=1883 security=\"accessToken\"";
+        assert_eq!(started_with_in(log), Some(("host.docker.internal".to_string(), 1883)));
+        assert_eq!(started_with_in("nothing"), None);
+        let spec = Spec { mounts: vec![("st-gw-config".into(), "/sentient_gateway/config".into(), false, false), ("/srv/gw".into(), "/sentient_gateway".into(), false, true), ("ro".into(), "/etc/x".into(), true, false)], ..Spec::default() };
+        assert_eq!(mount_of(&spec, "/sentient_gateway/config/st_gateway.json"), Some(("st-gw-config".to_string(), "st_gateway.json".to_string())));
+        assert_eq!(mount_of(&spec, "/sentient_gateway/data/x"), Some(("/srv/gw".to_string(), "data/x".to_string())));
+        assert_eq!(mount_of(&spec, "/etc/x/y"), None, "read-only");
+        let legacy = Spec { env: vec![["TB", "_GW_CONFIG_DIR=/thingsboard_gateway/config"].concat()], ..Spec::default() };
+        assert_eq!(config_dir_of(&legacy), "/thingsboard_gateway/config");
+        assert_eq!(config_dir_of(&Spec::default()), "/sentient_gateway/config");
+    }
+
+    /// An IPv6 publish is bracketed, and read back as the page's access.
+    #[test]
+    fn an_ipv6_publish_is_bracketed() {
+        let json = r#"[{"Name":"/g","Config":{"Image":"i","Env":[]},"HostConfig":{"NetworkMode":"n","PortBindings":{"8642/tcp":[{"HostIp":"::","HostPort":"8642"}]}},"Mounts":[]}]"#;
+        let spec = parse_spec(json).unwrap();
+        assert_eq!(spec.ports, vec!["[::]:8642:8642/tcp".to_string()]);
+        assert_eq!(published_ui_listen(&spec, "0.0.0.0:8642").as_deref(), Some("[::]:8642"));
+    }
+
+    /// The connection is written into the config file's platform section
+    /// (an older file's too), the rest of it kept.
+    #[test]
+    fn the_connection_goes_into_the_config_file() {
+        let st = with_connection(r#"{"sentient":{"host":"saf.example.in","port":1883,"security":{"type":"accessToken"}},"localUi":{"enabled":false}}"#, Some("localhost"), None).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&st).unwrap();
+        assert_eq!(v["sentient"]["host"], "localhost");
+        assert_eq!(v["sentient"]["port"], 1883);
+        assert_eq!(v["sentient"]["security"]["type"], "accessToken");
+        assert_eq!(v["localUi"]["enabled"], false);
+        let tb = with_connection(r#"{"thingsboard":{"host":"a","port":1883}}"#, Some("192.168.0.20"), Some(1884)).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&tb).unwrap();
+        assert_eq!((v["thingsboard"]["host"].as_str(), v["thingsboard"]["port"].as_u64()), (Some("192.168.0.20"), Some(1884)));
+        assert!(v.get("sentient").is_none());
+        assert!(with_connection("not json", Some("h"), None).is_err());
+    }
+
+    /// Everything a recreate must give again is read and given: every
+    /// network with its names and fixed address, a given command, user,
+    /// privileged, labels (not compose's, not the image's), log driver,
+    /// tmpfs, limits.
+    #[test]
+    fn a_recreate_keeps_the_whole_container() {
+        let inspect = r#"[{"Name":"/gw","Id":"abcdef0123456789","Config":{"Image":"img:1","Env":[],"Cmd":["--verbose"],"Entrypoint":["/bin/gw"],"User":"1000","Labels":{"com.docker.compose.service":"gw","site":"saf","org.image":"x"}},
+            "HostConfig":{"NetworkMode":"st_default","Privileged":true,"LogConfig":{"Type":"local","Config":{"max-size":"10m"}},"Tmpfs":{"/run":"size=64m"},"Memory":268435456,"NanoCpus":1500000000,"RestartPolicy":{"Name":"always"}},
+            "NetworkSettings":{"Networks":{"st_default":{"Aliases":["gw","abcdef012345"],"IPAMConfig":{"IPv4Address":"172.30.0.9"}},"plant":{"Aliases":["gateway"],"IPAMConfig":null}}},"Mounts":[]}]"#;
+        let mut spec = parse_spec(inspect).unwrap();
+        without_image_defaults(&mut spec, r#"[{"Config":{"Cmd":null,"Entrypoint":["/bin/gw"],"User":"","Labels":{"org.image":"x"}}}]"#);
+        assert_eq!(spec.ip, "172.30.0.9");
+        assert_eq!(spec.extra_networks, vec![("plant".to_string(), vec!["gateway".to_string()], String::new())]);
+        assert_eq!((spec.cmd.clone(), spec.entrypoint.clone()), (vec!["--verbose".to_string()], Vec::<String>::new()));
+        assert_eq!(spec.labels, vec![("site".to_string(), "saf".to_string())]);
+        let args = run_args(&spec, "/tmp/e.env").join(" ");
+        for want in ["--network st_default", "--ip 172.30.0.9", "--user 1000", "--privileged", "--label site=saf", "--log-driver local", "--log-opt max-size=10m", "--tmpfs /run:size=64m", "--memory 268435456", "--cpus 1.5", "img:1 --verbose"] {
+            assert!(args.contains(want), "{want} missing in {args}");
+        }
+        assert!(!args.contains("compose"), "{args}");
+    }
+
+    /// An update keeps a data or config folder given for this container,
+    /// and lets the image's default ones go.
+    #[test]
+    fn an_update_keeps_custom_folders() {
+        let current = Spec { image: "img:1".into(), env: vec!["ST_GW_CONFIG_DIR=/etc/gw".into(), "ST_GW_DATA_DIR=/sentient_gateway/data".into()], mounts: vec![("/srv/gw".into(), "/etc/gw".into(), false, true)], ..Spec::default() };
+        let spec = update_spec(&current, "img:2", &[], &[]);
+        assert!(spec.env.contains(&"ST_GW_CONFIG_DIR=/etc/gw".to_string()));
+        assert!(!spec.env.iter().any(|e| e.starts_with("ST_GW_DATA_DIR=")));
     }
 
     const INSPECT: &str = r#"[{"Name":"/sentient-gateway","Config":{"Image":"quakestring/sentient-gateway-rs:4.16.2","Env":["host=127.0.0.1","port=1883","accessToken=Q1w2E3r4T5y6U7i8O9p0","PATH=/usr/bin","ST_GW_CONFIG_DIR=/sentient_gateway/config"]},
@@ -1479,7 +2340,7 @@ mod tests {
         assert_eq!((new.restart.as_str(), new.group_add.clone()), ("no", vec!["986".to_string()]));
         let args = run_args(&new, "/run/user/1000/x.env").join(" ");
         assert!(!args.contains("Q1w2E3r4"), "{args}");
-        assert!(args.contains("--network host -v st-gw-config:/sentient_gateway/config -v /srv/example/certs:/certs:ro"), "{args}");
+        assert!(args.contains("--network host --add-host host.docker.internal:host-gateway -v st-gw-config:/sentient_gateway/config -v /srv/example/certs:/certs:ro"), "{args}");
         assert!(args.contains("--device /dev/serial/by-id/usb-Example_RS485-if00:/dev/serial/by-id/usb-Example_RS485-if00 --group-add 986"));
         assert!(!args.contains("--restart"));
         assert!(args.ends_with("--env-file /run/user/1000/x.env quakestring/sentient-gateway-rs:4.16.2"));

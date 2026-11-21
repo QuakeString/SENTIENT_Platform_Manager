@@ -16,6 +16,89 @@ refreshes that repository's Downloads table.
 ## [Unreleased]
 
 ### Fixed
+- Gateway › Connection accepts localhost and 127.0.0.1 for a Docker
+  gateway on its own network: it is written as host.docker.internal (this
+  machine), the page keeps showing what was typed with a note, and Apply
+  first checks SENTIENT's MQTT port answers there (published on all
+  interfaces), then waits for the gateway to connect or puts the previous
+  connection back. Every gateway container the Platform Manager creates
+  (install, take over, update, Apply) gets host.docker.internal.
+- Gateway › Connection on a Docker gateway: the new host was written
+  while the gateway still ran, and a gateway writes its connection in
+  force back to its file as it stops, so the new container started with
+  the old host (and "connected" with it). The file is now written between
+  stop and start, the gateway's own start line is checked against it, and
+  the reachability check runs inside the gateway's container. When
+  SENTIENT then sends the connection it keeps for the gateway, the job
+  says so and where to change it. Messages never name the gateway's legacy
+  file; a test gates it.
+- A gateway install says whether the gateway connected to SENTIENT.
+- When SENTIENT's saved connection replaces the one set on Gateway ›
+  Connection and the gateway is connected with it, Apply ends as done with
+  a note, not as a failure, and offers Update in SENTIENT: sign in once
+  as the gateway's tenant administrator (the password is never stored,
+  the session lasts until the Platform Manager closes) and the typed
+  connection is saved in SENTIENT's gateway configuration, read back,
+  and checked on the gateway.
+- A native install (Windows, Linux) listens on the MQTT and CoAP ports
+  chosen in Setup: they are written to SENTIENT's connectivity settings
+  before its first start. Before, it always used 1883 and 5683.
+- A database that refuses its password is said as such ("PostgreSQL
+  refused the password for postgres"), not as a cancelled password prompt.
+- A Docker gateway from 4.18.3 (it dials the machine itself for localhost
+  in a container on its own network) gets localhost / 127.0.0.1 written
+  as typed; an older one gets host.docker.internal. When SENTIENT's saved
+  connection replaces the one set here, the job names it and what works.
+- A native (systemd) or Windows service gateway: a new connection on
+  Gateway › Connection counts only once the gateway connects with it
+  within 60 seconds; otherwise the previous host and port are put back
+  and the job says so.
+- A failed job shows its own explanation first, with the last error
+  lines under it, instead of the last log line; a long explanation is no
+  longer replaced by "The action did not finish on the server".
+- A remote install stops when the server has data an earlier SENTIENT
+  left (its Docker volumes, /var/lib/sentient) without its containers or
+  service, naming it, instead of installing over it.
+- A job on a server that failed was shown as done (gateway install,
+  update, Apply, take over, start/stop, remove; SENTIENT's update when it
+  stopped early): its error went where the window did not read it. Every
+  failure now reaches the window, and a job that ended badly without a
+  word (killed, crashed) says it stopped.
+- Gateway in Docker: its buffer and logs folder gets a volume when it had
+  none (a take-over, an update or Apply created it again and lost them).
+- Gateway in Docker: the web page on a container with its own network is
+  published on this machine (this machine only or all interfaces, as
+  chosen), no longer published when it is off, and Apply checks that the
+  page answers. The page says how the gateway runs (Docker on its own
+  network, Docker on the host network, a service).
+- Gateway in Docker: taking over, updating or applying keeps every network
+  and its names, a fixed address, a given command, user, privileged mode,
+  labels, log driver, tmpfs and limits. A taken-over container keeps its
+  old name on its network. An update keeps a config or data folder given
+  for this container.
+- Gateway: the connection to SENTIENT (host, MQTT port) can be changed from
+  the Gateway page. Docker: written to the gateway's config file, and the
+  container's environment no longer overrides it; a service: through the
+  gateway's own --install. Not knowing whether it is connected no longer
+  locks it.
+- Setup keeps the settings chosen in it (PostgreSQL tuning, licence
+  server, extra variables) in the installation's record: Settings shows
+  them, and Apply, Repair or an update no longer put the defaults back.
+- Setup with a kept database: when its administrator is no longer
+  admin@sentient.local, Setup says the new sign-in was not set and the
+  kept one stays; a new database that does not take it is an error.
+- An install on a server that already has SENTIENT stops and says so, so
+  its database is never reused or taken over by chance.
+- Native Linux: SENTIENT's web, MQTT and CoAP ports are opened in firewalld
+  or ufw when one is active, so other computers reach it.
+- A server's gateway form starts with 127.0.0.1 (the same machine as
+  SENTIENT), not an empty host that invited its public name.
+- Passwords no longer show in the process list (root steps run from a
+  private file; the schema installer reads DATABASE_URL from its
+  environment; Windows registers its task through PowerShell with the
+  password on standard input), and the files holding them are private: the
+  Docker compose file (0600), and on Windows conf\sentient.env, the
+  service descriptor and ClickHouse's config (Administrators and SYSTEM).
 - Logs: Save log is a job with its progress and Cancel. The log goes into
   the file as it is read (a day of SENTIENT's log is never held whole); a
   server's log is written gzipped there and downloaded with its progress.

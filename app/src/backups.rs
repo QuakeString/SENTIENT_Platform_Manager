@@ -880,8 +880,22 @@ pub fn apply_schedule(prefs: &BackupPrefs) -> Result<(), String> {
                 let timer = format!("[Unit]\nDescription={TASK} (daily)\n\n[Timer]\nOnCalendar=*-*-* {h:02}:{m:02}:00\nPersistent=true\n\n[Install]\nWantedBy=timers.target\n");
                 std::fs::write(format!("{unit}.service"), service).map_err(|e| e.to_string())?;
                 std::fs::write(format!("{unit}.timer"), timer).map_err(|e| e.to_string())?;
-                let _ = sentient_installer_core::host::host_command("systemctl").arg("daemon-reload").status();
-                let _ = sentient_installer_core::host::host_command("systemctl").args(["enable", "--now", "sentient-backup.timer"]).status();
+                // Each step checked, then the timer read back: a schedule shown
+                // while no timer runs is worse than an error (A8).
+                let run = |args: &[&str]| -> Result<(), String> {
+                    let o = sentient_installer_core::host::host_command("systemctl").args(args).output().map_err(|e| format!("systemctl: {e}"))?;
+                    if o.status.success() {
+                        Ok(())
+                    } else {
+                        Err(format!("systemctl {} failed: {}", args.join(" "), String::from_utf8_lossy(&o.stderr).trim()))
+                    }
+                };
+                run(&["daemon-reload"])?;
+                run(&["enable", "--now", "sentient-backup.timer"])?;
+                let active = sentient_installer_core::host::host_command("systemctl").args(["is-active", "sentient-backup.timer"]).output().map(|o| String::from_utf8_lossy(&o.stdout).trim() == "active").unwrap_or(false);
+                if !active {
+                    return Err("The daily backup timer was set up but is not running (systemctl is-active sentient-backup.timer).".into());
+                }
             }
             None => {
                 let _ = sentient_installer_core::host::host_command("systemctl").args(["disable", "--now", "sentient-backup.timer"]).status();
