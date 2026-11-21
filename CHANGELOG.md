@@ -15,6 +15,10 @@ refreshes that repository's Downloads table.
 
 ## [Unreleased]
 
+## [0.9.6] - 2026-11-21
+
+Backup details show what a backup holds and check each of its parts, and the Backup page cards read Backups, Restores and Backup settings.
+
 ### Changed
 - Backup and restore: the cards read Backups, Restores, Backup settings
   (the settings card was titled "Backup" and is now last). Restore from
@@ -31,6 +35,11 @@ refreshes that repository's Downloads table.
   each part's result; for a backup checked before that, the dialog offers
   Check now. Telemetry with no valid time (stored as 1970) is named so.
   One scroll area: the dialog's body, never a table inside it.
+
+### Fixed
+- Releases: the sideload MSIX is `SENTIENT-Platform-Manager-<v>-sideload.msix`,
+  so it no longer collides with the Store package of the same name when a
+  release is put together.
 
 ## [0.9.5] - 2026-11-20
 
