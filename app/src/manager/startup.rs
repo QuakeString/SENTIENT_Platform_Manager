@@ -197,7 +197,7 @@ impl StartupPanel {
         let on = self.start_on;
         let typed = self.start_delay.read(cx).value().to_string();
         self.start_job.update(cx, |job, cx| {
-            job.start(
+            job.start("Changing how SENTIENT starts",
                 move |sink| {
                     let delay = if on { crate::installer::parse_start_delay(&typed)? } else { 0 };
                     crate::self_install::set_autostart(on, delay)?;
@@ -269,7 +269,7 @@ impl StartupPanel {
             .autologin_on
             .then(|| (self.autologin_user(cx), self.autologin_password.read(cx).value().to_string()));
         self.signin_job.update(cx, |job, cx| {
-            job.start(
+            job.start("Changing the automatic sign-in",
                 move |sink| {
                     if signin {
                         crate::self_install::set_open_at_signin(&sink, mode)?;

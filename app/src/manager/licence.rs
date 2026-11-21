@@ -344,7 +344,7 @@ impl LicencePage {
                 }
                 Target::Local(_) => job.set_label("Starting SENTIENT"),
             }
-            job.start(
+            job.start_labelled(
                 move |sink| match target {
                     Target::Local(Some(r)) => r.platform().control(sink, "start"),
                     Target::Local(None) => Err("SENTIENT isn't installed on this computer.".into()),
@@ -365,7 +365,7 @@ impl LicencePage {
         self.job.update(cx, |job, cx| {
             job.set_label(format!("Updating the server agent on {}", inst.name));
             job.set_instance(inst.id.clone(), inst.name.clone(), inst.color.clone());
-            job.start(move |sink| crate::remote::deploy(&inst, &sink), cx)
+            job.start_labelled(move |sink| crate::remote::deploy(&inst, &sink), cx)
         });
         self.watch_job(cx);
     }

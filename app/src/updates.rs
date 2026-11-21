@@ -501,6 +501,11 @@ fn newest_manager(all: &[Release], channel: Channel, installed: &str) -> Option<
     }
     let mut offer = Offer::from(r, version.clone());
     offer.installer = r.assets.iter().find(|a| installer_for_this_system(&a.name)).cloned();
+    // Installed from a package: the release's package of that kind.
+    #[cfg(target_os = "linux")]
+    if let Some(owner) = crate::self_install::owner_cached().filter(|o| !matches!(o, crate::self_install::PackageOwner::Flatpak(_))) {
+        offer.installer = r.assets.iter().find(|a| owner.takes(&a.name)).cloned();
+    }
     offer.sha256 = offer.installer.as_ref().and_then(|a| published_sha256(r, a));
     offer.signature = offer.installer.as_ref().and_then(|a| r.assets.iter().find(|s| s.name == signing::signature_name(&a.name)).cloned());
     offer.unsigned = offer.signature.is_none();
@@ -540,9 +545,13 @@ pub fn install_manager(offer: &Offer, sink: &ProgressFn) -> Result<(), String> {
     if crate::store::is_store() {
         return Err(STORE_UPDATES.into());
     }
-    #[cfg(not(windows))]
-    if let Some(owner) = crate::self_install::owner() {
-        return Err(format!("This Platform Manager was installed with {tool}: update it with {tool} (the new package is on the release page).", tool = owner.tool()));
+    // Installed from a package: updated with that package manager (below);
+    // a Flatpak through Flatpak.
+    #[cfg(target_os = "linux")]
+    let owner = crate::self_install::owner_cached();
+    #[cfg(target_os = "linux")]
+    if let Some(crate::self_install::PackageOwner::Flatpak(_)) = &owner {
+        return Err("This Platform Manager is a Flatpak: Flatpak updates it (Software, or flatpak update).".into());
     }
     let [address, downloading, checking, replacing] = SELF_UPDATE_STEPS;
     sink(Progress::Step { name: address.into() });
@@ -622,6 +631,11 @@ pub fn install_manager(offer: &Offer, sink: &ProgressFn) -> Result<(), String> {
     if let Some(w) = crate::authenticode::check(&file).map_err(|e| refuse(format!("{what} is not used: {e}. Nothing was changed.")))? {
         sink(Progress::Log { line: format!("{what}: {w} (allowed until releases are code-signed).") });
     }
+    #[cfg(target_os = "linux")]
+    if let Some(script) = owner.as_ref().and_then(|o| o.install_script(&file)) {
+        sink(Progress::Step { name: replacing.into() });
+        return install_package(offer, &file, &script, sink);
+    }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -632,6 +646,39 @@ pub fn install_manager(offer: &Offer, sink: &ProgressFn) -> Result<(), String> {
         .args(["--self-update", "--from", manager_version()])
         .spawn()
         .map_err(|e| format!("start {}: {e}", file.display()))?;
+    Ok(())
+}
+
+/// A Platform Manager installed from a package: install the downloaded,
+/// checked package `file` with the package manager as root (`script`, one
+/// password prompt: pkexec), note the new version in the installation
+/// record and start the new program; the caller then quits.
+#[cfg(target_os = "linux")]
+fn install_package(offer: &Offer, file: &std::path::Path, script: &str, sink: &ProgressFn) -> Result<(), String> {
+    sink(Progress::Log { line: "Waiting for the administrator password: the package manager installs the update.".into() });
+    sentient_installer_core::privileged::run(sink, script).map_err(|e| {
+        format!("Platform Manager {} was downloaded and checked, but installing its package did not finish ({e}). The installed version is unchanged.", offer.version)
+    })?;
+    let _ = std::fs::remove_file(file);
+    crate::self_install::refresh_operator_screen(sink);
+    if let Some(mut record) = crate::installation::InstallationRecord::load() {
+        record.manager_version = offer.version.clone();
+        if let Ok(json) = serde_json::to_string_pretty(&record) {
+            let _ = crate::self_install::write_record(&crate::installation::record_path(), &json);
+        }
+    }
+    // The new program starts once this one has quit (the caller quits on
+    // Ok): started now, it would hand its start to this copy (the tray's
+    // lock, crate::background::forward) and end with it.
+    let exe = crate::self_install::manager_exe();
+    let dir = exe.parent().filter(|d| d.is_dir()).map(|d| d.to_path_buf()).unwrap_or_else(|| "/".into());
+    std::process::Command::new("sh")
+        .args(["-c", "sleep 3; exec \"$0\" \"$@\""])
+        .arg(&exe)
+        .args(["--manager", "--updated-from", manager_version()])
+        .current_dir(dir)
+        .spawn()
+        .map_err(|e| format!("Platform Manager {} is installed; start it again from the menu ({e}).", offer.version))?;
     Ok(())
 }
 

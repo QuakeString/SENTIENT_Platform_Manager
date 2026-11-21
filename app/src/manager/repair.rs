@@ -94,7 +94,7 @@ impl RepairPage {
         let as_root = cfg!(target_os = "linux") && !crate::rootjob::is_root() && (g.container.is_none() || has_record);
         self.job.update(cx, |job, cx| {
             // jobview: short (the gateway's removal, its result in its panel).
-            job.start(
+            job.start("Removing the gateway",
                 move |sink| {
                     if as_root {
                         let mut args = vec!["gateway-remove".to_string()];
@@ -159,7 +159,7 @@ impl RepairPage {
         let Some(record) = self.record.clone() else { return };
         self.running = Some(Action::TakeOver);
         self.job.update(cx, |job, _| job.set_plan(crate::jobplan::takeover()));
-        self.job.update(cx, |job, cx| job.start(move |sink| crate::adopt::take_over_compose(record, compose.as_deref(), creds.db.as_deref(), creds.ch.as_deref(), sink).map(|_| ()), cx));
+        self.job.update(cx, |job, cx| job.start("Taking over the compose file", move |sink| crate::adopt::take_over_compose(record, compose.as_deref(), creds.db.as_deref(), creds.ch.as_deref(), sink).map(|_| ()), cx));
     }
 
     fn start(&mut self, action: Action, cx: &mut Context<Self>) {
@@ -181,7 +181,7 @@ impl RepairPage {
                 if action == Action::Uninstall && !keep {
                     args.push("--delete-data".into());
                 }
-                job.start(
+                job.start(if action == Action::Repair { "Repairing SENTIENT" } else { "Uninstalling SENTIENT" },
                     move |sink| {
                         crate::rootjob::run(&args, &sink)?;
                         // The root job cleaned by the record's manifest; this
@@ -196,8 +196,8 @@ impl RepairPage {
                 )
             } else {
                 match action {
-                    Action::Repair => job.start(move |sink| crate::maintenance_ops::run_repair(record, sink), cx),
-                    _ => job.start(move |sink| crate::maintenance_ops::run_uninstall(record, keep, sink), cx),
+                    Action::Repair => job.start("Repairing SENTIENT", move |sink| crate::maintenance_ops::run_repair(record, sink), cx),
+                    _ => job.start("Uninstalling SENTIENT", move |sink| crate::maintenance_ops::run_uninstall(record, keep, sink), cx),
                 }
             }
         });

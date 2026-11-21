@@ -724,7 +724,7 @@ impl MoveFlow {
             if let Target::Remote(i) = &t {
                 job.set_instance(i.id.clone(), i.name.clone(), i.color.clone());
             }
-            job.start(move |sink| run_moves(&t, &moves, sink), cx);
+            job.start_labelled(move |sink| run_moves(&t, &moves, sink), cx);
         });
     }
 

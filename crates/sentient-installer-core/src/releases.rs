@@ -148,6 +148,13 @@ pub fn list(repo: &str, force: bool) -> Result<crate::fetch_cache::Listed<Vec<Re
 
 fn request(repo: &str) -> Result<Vec<Release>, crate::fetch_cache::Failure> {
     use crate::fetch_cache::Failure;
+    // A test of an update path against releases that are not published:
+    // `SPM_RELEASE_FEED` names a file in the API's format. What it offers is
+    // still checked against the release key's signatures before it is used.
+    if let Some(feed) = std::env::var_os("SPM_RELEASE_FEED") {
+        let body = std::fs::read_to_string(&feed).map_err(|e| Failure::Other(format!("the test release list {} could not be read: {e}", feed.to_string_lossy())))?;
+        return serde_json::from_str(&body).map_err(|e| Failure::Other(format!("the test release list is not valid JSON: {e}")));
+    }
     let url = format!("https://api.github.com/repos/{repo}/releases?per_page=50");
     let body = crate::net::agent()
         .get(&url)

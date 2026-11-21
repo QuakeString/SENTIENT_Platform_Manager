@@ -543,7 +543,7 @@ impl RestoreFlow {
             }
             // jobview: the run's plan is set by start_run; the check and the
             // precheck are short reads shown in their own step.
-            j.start(
+            j.start_labelled(
                 move |sink| {
                     #[cfg(debug_assertions)]
                     if let Ok(frame) = std::env::var("SPM_DEBUG_RESTORE") {

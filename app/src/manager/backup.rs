@@ -435,7 +435,7 @@ impl BackupPage {
         self.backup.update(cx, |job, cx| {
             job.set_plan(crate::jobplan::backup_file());
             job.set_label("Backing up");
-            job.start(
+            job.start_labelled(
                 move |sink| {
                     if let Some(r) = &record {
                         opts.origin = crate::backup_jobs::origin(r, &conn);
@@ -652,7 +652,7 @@ impl BackupPage {
             job.set_label("Backing up");
             job.set_on_page(true);
             job.set_details(std::rc::Rc::new(move |cx| BackupDialog::open(me.clone(), false, "Backup".into(), cx)));
-            job.start(
+            job.start_labelled(
                 move |sink| {
                     // Native Linux: the database password is root-only.
                     if crate::rootjob::needed(&record) {

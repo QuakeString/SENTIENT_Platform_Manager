@@ -442,7 +442,7 @@ impl Installer {
                 job.set_plan(steps);
                 job.resume_from(from);
             });
-            this.install.update(cx, |job, cx| job.start(move |sink| plan::run(plan, sink), cx));
+            this.install.update(cx, |job, cx| job.start("Installing SENTIENT", move |sink| plan::run(plan, sink), cx));
         }
         if this.bundle.is_none() {
             let task = cx.spawn(async move |this, cx| {
@@ -506,7 +506,7 @@ impl Installer {
                 this.engine = Engine::Native;
                 this.install.update(cx, |job, cx| {
                     job.set_plan(plan::screen_steps());
-                    job.start(
+                    job.start("Installing the Platform Manager",
                         |sink| {
                             sink(sentient_installer_core::progress::Progress::Step { name: "Installing the Platform Manager".into() });
                             sink(sentient_installer_core::progress::Progress::Step { name: "Installing PostgreSQL from your distribution".into() });
@@ -527,7 +527,7 @@ impl Installer {
                         PlanStep::new("Setting up Docker in WSL 2").detail("SENTIENT's own Ubuntu distribution with Docker Engine").weight(4.),
                         PlanStep::new("Installing SENTIENT and its database").detail("The containers, the database and its schema").weight(6.),
                     ]);
-                    job.start(
+                    job.start("Installing the Platform Manager",
                         |sink| {
                             sink(Progress::Step { name: "Installing the Platform Manager".into() });
                             sink(Progress::Step { name: "Turning on WSL 2".into() });
@@ -731,7 +731,7 @@ impl Installer {
         self.check_fix_watch = true;
         self.check_fix.update(cx, |job, cx| {
             // jobview: short (a check's one-click fix, shown on its row).
-            job.start(
+            job.start("Fixing the check",
                 move |sink| {
                     sentient_installer_core::diagnose::apply(&action, &sink)
                         .map(|message| sink(sentient_installer_core::progress::Progress::Done { message }))
@@ -746,7 +746,7 @@ impl Installer {
     fn remove_leftovers(&mut self, cx: &mut Context<Self>) {
         let pg_dir = std::path::PathBuf::from(self.value(&self.fields.data_dir, cx));
         // jobview: short (shown on the check's row).
-        self.cleanup.update(cx, |job, cx| job.start(move |sink| crate::leftovers::remove(pg_dir, sink), cx));
+        self.cleanup.update(cx, |job, cx| job.start("Removing what was left behind", move |sink| crate::leftovers::remove(pg_dir, sink), cx));
         let job = self.cleanup.clone();
         let task = cx.spawn(async move |this, cx| {
             loop {
@@ -1367,7 +1367,7 @@ impl Installer {
             self.problem = None;
             self.step = INSTALL;
             self.install.update(cx, |job, _| job.set_plan(plan::manager_only_steps()));
-            self.install.update(cx, |job, cx| job.start(move |sink| plan::run_manager_only(shortcuts, sink), cx));
+            self.install.update(cx, |job, cx| job.start("Installing the Platform Manager", move |sink| plan::run_manager_only(shortcuts, sink), cx));
             cx.notify();
             return;
         }
@@ -1384,7 +1384,7 @@ impl Installer {
         // Its steps from the first frame (the shared job view).
         let steps = plan::steps(&plan);
         self.install.update(cx, |job, _| job.set_plan(steps));
-        self.install.update(cx, |job, cx| job.start(move |sink| plan::run(plan, sink), cx));
+        self.install.update(cx, |job, cx| job.start("Installing SENTIENT", move |sink| plan::run(plan, sink), cx));
         cx.notify();
     }
 
@@ -1526,7 +1526,7 @@ impl Installer {
         if self.step == INSTALL && std::env::var_os("SPM_DEBUG_RESTART").is_none() {
             self.install.update(cx, |job, cx| {
                 job.set_plan(plan::screen_steps());
-                job.start(
+                job.start("Installing the Platform Manager",
                     move |sink| {
                         sink(sentient_installer_core::progress::Progress::Step { name: "Installing the Platform Manager".into() });
                         sink(sentient_installer_core::progress::Progress::Step { name: "Starting PostgreSQL".into() });

@@ -254,7 +254,7 @@ impl InstallFlow {
             job.set_label(format!("Installing SENTIENT on {}", inst.name));
             job.set_on_page(true);
             job.set_instance(inst.id.clone(), inst.name.clone(), inst.color.clone());
-            job.start(
+            job.start_labelled(
                 move |sink| {
                     sink(Progress::Step { name: crate::jobplan::CONNECT.into() });
                     remote::follow(&inst, &id, &sink)
@@ -582,7 +582,7 @@ impl InstallFlow {
             job.set_retry(Rc::new(move |cx: &mut App| {
                 me.update(cx, |f, cx| f.start_install(cx)).ok();
             }));
-            job.start(
+            job.start_labelled(
                 move |sink| {
                     // The agent brought up to date first: an older one does
                     // not know the install jobs.

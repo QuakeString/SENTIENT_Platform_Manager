@@ -952,7 +952,7 @@ impl RemotePages {
                 me.update(cx, |p, cx| p.update_agent(cx)).ok();
             }));
             // jobview: short (one step, followed in the progress strip).
-            job.start(
+            job.start_labelled(
                 move |sink| {
                     remote::deploy(&inst, &sink)?;
                     sink(sentient_installer_core::progress::Progress::Done { message: format!("The server agent on {} is up to date.", inst.name) });
@@ -1326,7 +1326,7 @@ impl RemotePages {
                 let (l, a) = (l2.clone(), a2.clone());
                 me.update(cx, |p, cx| p.run_job(l, a, cx)).ok();
             }));
-            job.start(
+            job.start_labelled(
                 move |sink| {
                     // The agent is brought up to date first; when that fails
                     // the job still runs on the agent there, and only a job it
@@ -2699,7 +2699,7 @@ impl RemotePages {
         self.job_label = Some(format!("Taking over the compose file on {}", inst.name).into());
         self.job.update(cx, |job, cx| {
             job.set_plan(std::iter::once(crate::jobplan::connect()).chain(crate::jobplan::takeover()).collect());
-            job.start(
+            job.start(format!("Taking over SENTIENT on {}", inst.name),
                 move |sink| {
                     sink(sentient_installer_core::progress::Progress::Step { name: crate::jobplan::CONNECT.into() });
                     remote::deploy(&inst, &sink)?;
@@ -2733,7 +2733,7 @@ impl RemotePages {
         self.job_label = Some(format!("Applying settings on {}", inst.name).into());
         self.job.update(cx, |job, cx| {
             job.set_plan(vec![crate::jobplan::connect(), sentient_installer_core::progress::PlanStep::new("Applying the settings").detail("SENTIENT restarts where a setting needs it").weight(3.)]);
-            job.start(
+            job.start(format!("Applying settings on {}", inst.name),
                 move |sink| {
                     sink(sentient_installer_core::progress::Progress::Step { name: crate::jobplan::CONNECT.into() });
                     remote::deploy(&inst, &sink)?;
@@ -3212,7 +3212,7 @@ impl RemotePages {
                     job.set_label(format!("Applying the gateway's settings on {}", inst.name));
                     job.set_on_page(true);
                     job.set_instance(inst.id.clone(), inst.name.clone(), inst.color.clone());
-                    job.start(
+                    job.start_labelled(
                         move |sink| {
                             sink(Progress::Step { name: crate::jobplan::CONNECT.into() });
                             if canned {
@@ -3243,7 +3243,7 @@ impl RemotePages {
                     job.set_label(format!("Changing the gateway page's password on {}", inst.name));
                     job.set_on_page(true);
                     job.set_instance(inst.id.clone(), inst.name.clone(), inst.color.clone());
-                    job.start(
+                    job.start_labelled(
                         move |sink| {
                             sink(Progress::Step { name: crate::jobplan::CONNECT.into() });
                             if canned {
@@ -3386,7 +3386,7 @@ impl RemotePages {
                 })
                 .ok();
             }));
-            job.start(
+            job.start_labelled(
                 move |sink| {
                     sink(Progress::Step { name: crate::jobplan::CONNECT.into() });
                     if canned {
@@ -3491,7 +3491,7 @@ impl RemotePages {
         self.job.update(cx, |job, cx| {
             job.set_label(strip_label);
             // jobview: short (one step, followed in the progress strip).
-            job.start(
+            job.start_labelled(
                 move |sink| {
                     remote::deploy(&inst, &sink)?;
                     sink(sentient_installer_core::progress::Progress::Done { message: format!("The Platform Manager is set up on {}.", inst.name) });

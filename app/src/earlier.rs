@@ -271,9 +271,9 @@ impl EarlierPage {
         self.screen = Screen::Running(run);
         self.show_log = false;
         self.job.update(cx, |job, cx| match run {
-            Run::Remove => job.start(move |sink| remove_fresh(found, backup, sink), cx),
-            Run::Repair => job.start(move |sink| repair(found, sink), cx),
-            Run::Keep => job.start(move |sink| keep_database(found, sink), cx),
+            Run::Remove => job.start("Removing the earlier SENTIENT", move |sink| remove_fresh(found, backup, sink), cx),
+            Run::Repair => job.start("Repairing the earlier SENTIENT", move |sink| repair(found, sink), cx),
+            Run::Keep => job.start("Keeping the earlier database", move |sink| keep_database(found, sink), cx),
         });
         cx.notify();
     }

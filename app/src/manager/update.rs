@@ -280,7 +280,7 @@ impl UpdatePage {
         let (older, windows_service) = self.gateway.as_ref().map(|s| (!s.installed && s.legacy.is_some(), s.kind() == "windows-service")).unwrap_or_default();
         let plan = crate::manager::gateway::update_plan(older, windows_service, &offer.version);
         self.gateway_job.update(cx, |job, _| job.set_plan(plan));
-        self.gateway_job.update(cx, |job, cx| job.start(move |sink| sentient_installer_core::gateway::update(&sink, &offer), cx));
+        self.gateway_job.update(cx, |job, cx| job.start("Updating the gateway", move |sink| sentient_installer_core::gateway::update(&sink, &offer), cx));
         cx.notify();
     }
 
@@ -425,7 +425,7 @@ impl UpdatePage {
         };
         self.plan_run(title, crate::jobplan::docker_to(self.shape(), &version, how), cx);
         self.job.update(cx, |job, cx| {
-            job.start(move |sink| crate::updating::run_to(record, None, Some(&target), accept, sink).map(|_| ()), cx)
+            job.start("Updating SENTIENT", move |sink| crate::updating::run_to(record, None, Some(&target), accept, sink).map(|_| ()), cx)
         });
     }
 
@@ -436,7 +436,7 @@ impl UpdatePage {
         let accept = self.accept_breaking;
         self.plan_run(format!("Updating SENTIENT {} to {version}", self.installed()), crate::jobplan::update(self.shape(), Some(&version), Some(&version)), cx);
         self.job.update(cx, |job, cx| {
-            job.start(
+            job.start("Downloading SENTIENT",
                 move |sink| {
                     let (_, dir) = crate::online::download(Some(&version), &sink)?;
                     if crate::rootjob::needed(&record) {
@@ -495,9 +495,9 @@ impl UpdatePage {
         self.plan_run("Rolling back the last update".into(), crate::jobplan::rollback(self.shape()), cx);
         if crate::rootjob::needed(&record) {
             let args = vec!["rollback".to_string()];
-            self.job.update(cx, |job, cx| job.start(move |sink| crate::rootjob::run(&args, &sink).map(|_| ()), cx));
+            self.job.update(cx, |job, cx| job.start("Rolling SENTIENT back", move |sink| crate::rootjob::run(&args, &sink).map(|_| ()), cx));
         } else {
-            self.job.update(cx, |job, cx| job.start(move |sink| crate::updating::rollback(record, sink).map(|_| ()), cx));
+            self.job.update(cx, |job, cx| job.start("Rolling SENTIENT back", move |sink| crate::updating::rollback(record, sink).map(|_| ()), cx));
         }
     }
 
@@ -566,10 +566,10 @@ impl UpdatePage {
             if accept {
                 args.push("--accept-breaking".into());
             }
-            self.job.update(cx, |job, cx| job.start(move |sink| crate::rootjob::run(&args, &sink).map(|_| ()), cx));
+            self.job.update(cx, |job, cx| job.start("Updating SENTIENT", move |sink| crate::rootjob::run(&args, &sink).map(|_| ()), cx));
         } else {
             self.job.update(cx, |job, cx| {
-                job.start(move |sink| crate::updating::run(record, package.as_deref(), accept, sink).map(|_| ()), cx)
+                job.start("Updating SENTIENT", move |sink| crate::updating::run(record, package.as_deref(), accept, sink).map(|_| ()), cx)
             });
         }
     }
@@ -728,7 +728,7 @@ impl UpdatePage {
         let Some(offer) = self.updates.read(cx).manager().cloned() else { return };
         let plan = crate::updates::SELF_UPDATE_STEPS.iter().map(|s| sentient_installer_core::progress::PlanStep::new(*s).weight(if *s == "Downloading" { 4. } else { 1. })).collect();
         self.manager_job.update(cx, |job, _| job.set_plan(plan));
-        self.manager_job.update(cx, |job, cx| job.start(move |sink| crate::updates::install_manager(&offer, &sink).map(|_| ()), cx));
+        self.manager_job.update(cx, |job, cx| job.start("Updating the Platform Manager", move |sink| crate::updates::install_manager(&offer, &sink).map(|_| ()), cx));
         cx.notify();
     }
 
@@ -754,9 +754,9 @@ impl UpdatePage {
         self.changes_job.update(cx, |job, _| job.set_plan(plan));
         if crate::rootjob::needed(&record) {
             let args = vec!["apply-changes".to_string()];
-            self.changes_job.update(cx, |job, cx| job.start(move |sink| crate::rootjob::run(&args, &sink).map(|_| ()), cx));
+            self.changes_job.update(cx, |job, cx| job.start("Applying the changes", move |sink| crate::rootjob::run(&args, &sink).map(|_| ()), cx));
         } else {
-            self.changes_job.update(cx, |job, cx| job.start(move |sink| crate::changes::apply(record, &sink).map(|_| ()), cx));
+            self.changes_job.update(cx, |job, cx| job.start("Applying the changes", move |sink| crate::changes::apply(record, &sink).map(|_| ()), cx));
         }
     }
 

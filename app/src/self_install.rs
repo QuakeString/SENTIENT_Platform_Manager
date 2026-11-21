@@ -676,6 +676,42 @@ mod imp {
                 PackageOwner::Flatpak(id) => format!("flatpak uninstall -y --noninteractive {}", q(id)),
             }
         }
+
+        /// Whether `name` is a release file of this package's kind: the Arch
+        /// package, the .deb or the .rpm (x86_64). A Flatpak takes none.
+        pub fn takes(&self, name: &str) -> bool {
+            if !cfg!(target_arch = "x86_64") {
+                return false;
+            }
+            match self {
+                PackageOwner::Pacman(_) => name.starts_with("sentient-platform-manager-") && name.ends_with("-x86_64.pkg.tar.zst"),
+                PackageOwner::Dpkg(_) => name.starts_with("sentient-platform-manager_") && name.ends_with("_amd64.deb"),
+                PackageOwner::Rpm(_) => name.starts_with("sentient-platform-manager-") && name.ends_with(".x86_64.rpm"),
+                PackageOwner::Flatpak(_) => false,
+            }
+        }
+
+        /// The root script that installs the downloaded package `file` over
+        /// this one (None: Flatpak updates through Flatpak).
+        pub fn install_script(&self, file: &Path) -> Option<String> {
+            let f = q(&file.display().to_string());
+            Some(match self {
+                PackageOwner::Pacman(_) => format!("pacman -U --noconfirm {f}"),
+                // apt resolves the package's dependencies; dpkg alone where
+                // there is no apt.
+                PackageOwner::Dpkg(_) => format!("if command -v apt-get >/dev/null; then DEBIAN_FRONTEND=noninteractive apt-get install -y {f}; else dpkg -i {f}; fi"),
+                PackageOwner::Rpm(_) => format!(
+                    "if command -v dnf >/dev/null; then dnf install -y {f}; elif command -v zypper >/dev/null; then zypper -n --no-gpg-checks install {f}; else rpm -Uvh {f}; fi"
+                ),
+                PackageOwner::Flatpak(_) => return None,
+            })
+        }
+    }
+
+    /// [`owner`], asked once per run (the release list is read often).
+    pub fn owner_cached() -> Option<PackageOwner> {
+        static OWNER: std::sync::OnceLock<Option<PackageOwner>> = std::sync::OnceLock::new();
+        OWNER.get_or_init(owner).clone()
     }
 
     /// The package's name from what the package manager answered for the
@@ -841,6 +877,31 @@ mod package_tests {
         assert_eq!(PackageOwner::Pacman("spm".into()).remove_script(), "pacman -R --noconfirm 'spm'");
         assert!(PackageOwner::Dpkg("spm".into()).remove_script().starts_with("apt-get remove -y 'spm'"));
         assert!(PackageOwner::Rpm("spm".into()).remove_script().contains("dnf remove -y 'spm'"));
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn a_package_install_takes_its_own_kind_of_package() {
+        let pac = PackageOwner::Pacman("sentient-platform-manager".into());
+        let deb = PackageOwner::Dpkg("sentient-platform-manager".into());
+        let rpm = PackageOwner::Rpm("sentient-platform-manager".into());
+        let files = [
+            "sentient-platform-manager-0.9.7-1-x86_64.pkg.tar.zst",
+            "sentient-platform-manager_0.9.7_amd64.deb",
+            "sentient-platform-manager-0.9.7-1.x86_64.rpm",
+            "sentient-platform-manager-0.9.7-x86_64.AppImage",
+            "SENTIENT-Setup-manager-0.9.7-linux-x86_64",
+        ];
+        let pick = |o: &PackageOwner| files.iter().filter(|f| o.takes(f)).copied().collect::<Vec<_>>();
+        assert_eq!(pick(&pac), [files[0]]);
+        assert_eq!(pick(&deb), [files[1]]);
+        assert_eq!(pick(&rpm), [files[2]]);
+        assert!(pick(&PackageOwner::Flatpak("x".into())).is_empty());
+        let f = std::path::Path::new("/tmp/a b/x.pkg.tar.zst");
+        assert_eq!(pac.install_script(f).unwrap(), "pacman -U --noconfirm '/tmp/a b/x.pkg.tar.zst'");
+        assert!(deb.install_script(f).unwrap().contains("apt-get install -y '/tmp/a b/x.pkg.tar.zst'"));
+        assert!(rpm.install_script(f).unwrap().contains("dnf install -y '/tmp/a b/x.pkg.tar.zst'"));
+        assert!(PackageOwner::Flatpak("x".into()).install_script(f).is_none());
         assert_eq!(PackageOwner::Dpkg("spm".into()).tool(), "apt");
     }
 }

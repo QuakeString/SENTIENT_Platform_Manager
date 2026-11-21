@@ -666,13 +666,23 @@ impl Manager {
                 crate::modal::open(crate::modal::Modal { title: "Platform Manager log".into(), body: view.into(), width: 1000., icon: None, on_close: None }, cx);
             }
         }
-        // Screens: a job in the progress strip (SPM_DEBUG_STRIP=running|failed|done).
+        // Screens: a job in the progress strip (SPM_DEBUG_STRIP=running|failed|done;
+        // refused: the self-update stopping with its own message, nothing printed).
         #[cfg(debug_assertions)]
-        if let Ok(kind) = std::env::var("SPM_DEBUG_STRIP") {
+        if std::env::var("SPM_DEBUG_STRIP").as_deref() == Ok("refused") {
+            let job = cx.new(|_| crate::jobs::Job::new());
+            job.update(cx, |j, cx| {
+                j.start("Updating the Platform Manager", |_| {
+                    std::thread::sleep(std::time::Duration::from_secs(1));
+                    Err("This Platform Manager is a Flatpak: Flatpak updates it (Software, or flatpak update).".into())
+                }, cx)
+            });
+            manager._debug_job = Some(job);
+        } else if let Ok(kind) = std::env::var("SPM_DEBUG_STRIP") {
             let job = cx.new(|_| crate::jobs::Job::new());
             job.update(cx, |j, cx| {
                 j.set_label("Stopping ClickHouse on Plant B server");
-                j.start(
+                j.start_labelled(
                     move |sink| {
                         sink(sentient_installer_core::progress::Progress::Step { name: "Stopping ClickHouse".into() });
                         sink(sentient_installer_core::progress::Progress::Log { line: "docker compose -p sentient stop clickhouse".into() });

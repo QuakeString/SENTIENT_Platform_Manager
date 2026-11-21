@@ -190,7 +190,9 @@ impl Strip {
                 if !lines.is_empty() && !text.contains(crate::remote::DETAILS) {
                     text = format!("{text}{}{}", crate::remote::DETAILS, lines.join("\n"));
                 }
-                let label = self.label.clone().unwrap_or_else(|| "A job".into());
+                // Every job starts with its name (Job::start); "Job" is never
+                // shown in practice.
+                let label = self.label.clone().unwrap_or_else(|| "Job".into());
                 // The bell's line: the diagnosed cause, else the headline.
                 let head = j.diagnosis().filter(|d| d.is_known()).map(|d| d.cause.clone()).unwrap_or_else(|| crate::remote::split_failure(&m).0);
                 if let Some(d) = j.diagnosis() {
@@ -586,11 +588,18 @@ impl Render for JobDetails {
             _ => "Retry",
         };
         let lines: Vec<SharedString> = job.steps().iter().map(|s| SharedString::from(format!("▸ {s}"))).chain(job.log().iter().cloned()).collect();
-        let text = lines.iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n");
+        let mut text = lines.iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n");
+        // Copy takes the message when the job printed nothing.
+        if let (true, JobState::Failed(m)) = (text.is_empty(), job.state()) {
+            text = m.to_string();
+        }
+        // The output box: while it runs, and after when it printed something
+        // (a job that stopped before any output has only its message).
+        let output_box = !lines.is_empty() || matches!(job.state(), JobState::Running);
         v_flex()
             .gap_3()
             .child(state)
-            .child(
+            .when(output_box, |v| v.child(
                 div()
                     .id("job-details-lines")
                     .max_h(px(380.))
@@ -602,7 +611,7 @@ impl Render for JobDetails {
                     .text_size(px(12.5))
                     .when(lines.is_empty(), |d| d.child(div().text_color(theme.muted_foreground).child("No output yet.")))
                     .children(lines.into_iter().map(|l| div().child(l))),
-            )
+            ))
             .child(
                 h_flex()
                     .gap(crate::ui::button_gap())
