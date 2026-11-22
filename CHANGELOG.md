@@ -15,6 +15,11 @@ refreshes that repository's Downloads table.
 
 ## [Unreleased]
 
+### Fixed
+- Scrollbars: the thumb is rounded at both ends and stays clear of a
+  box's rounded corners; it is easier to see, and darker on hover and
+  while dragged. There is no square track behind it any more.
+
 ## [0.9.8] - 2026-11-22
 
 The gateway's connection can be set from the Platform Manager and works with localhost, a taken-over gateway keeps everything it had, Update in SENTIENT saves the connection there, and logs save with their progress.

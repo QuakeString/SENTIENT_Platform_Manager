@@ -100,7 +100,11 @@ const SCROLLBAR_THUMB_HOVER_WIDTH: Pixels = px(6.);
 /// Base's dragged thumb width, restated for the same reason.
 const SCROLLBAR_THUMB_ACTIVE_WIDTH: Pixels = px(8.);
 /// Base's hovered and dragged thumb inset, restated for the same reason.
+#[allow(dead_code)]
 const SCROLLBAR_THUMB_INSET: Pixels = px(4.);
+/// SENTIENT: the thumb's distance from the area's ends and side: at least a
+/// box's corner radius, so the pill never reaches a rounded corner.
+const SCROLLBAR_THUMB_INSET_SENTIENT: Pixels = px(8.);
 
 /// The plot hover motion this design system projects onto Base.
 ///
@@ -412,40 +416,39 @@ impl Theme {
                 .with_mode(self.scrollbar_mode)
                 .with_motion(scrollbar_motion(self.scrollbar_mode))
                 .with_styles(
+                    // SENTIENT: no track (Base paints it square, so it ran
+                    // into a box's rounded corners); a pill thumb inset from
+                    // both ends and the side, so it never touches a corner;
+                    // its colour from the theme's text tokens, clear on the
+                    // page and darker on hover and while dragged.
                     gpui_base::ScrollbarStyles::default()
-                        .track(|style| style.bg(self.scrollbar))
-                        .track_hover(|style| style.bg(self.scrollbar))
-                        .track_active(|style| style.bg(self.scrollbar).border_color(self.border))
+                        .track(|style| style.bg(gpui::transparent_black()))
+                        .track_hover(|style| style.bg(gpui::transparent_black()))
+                        .track_active(|style| style.bg(gpui::transparent_black()))
                         .thumb(|style| {
                             style
-                                .bg(self.tokens.scrollbar_thumb)
-                                .radius(self.radius)
+                                .bg(self.muted_foreground.opacity(0.55))
+                                .radius(RADIUS_FULL)
+                                .inset(SCROLLBAR_THUMB_INSET_SENTIENT)
                                 .when(gpui_base::is_mobile(), |style| {
                                     style
                                         .width(MOBILE_SCROLLBAR_THUMB_WIDTH)
                                         .inset(MOBILE_SCROLLBAR_THUMB_INSET)
-                                        .radius(RADIUS_FULL)
                                 })
                         })
                         .thumb_hover(|style| {
                             style
-                                .bg(self.tokens.scrollbar_thumb_hover)
-                                .radius(self.radius)
-                                .when(gpui_base::is_mobile(), |style| {
-                                    style
-                                        .width(SCROLLBAR_THUMB_HOVER_WIDTH)
-                                        .inset(SCROLLBAR_THUMB_INSET)
-                                })
+                                .bg(self.muted_foreground.opacity(0.8))
+                                .radius(RADIUS_FULL)
+                                .width(SCROLLBAR_THUMB_HOVER_WIDTH)
+                                .inset(SCROLLBAR_THUMB_INSET_SENTIENT)
                         })
                         .thumb_active(|style| {
                             style
-                                .bg(self.tokens.scrollbar_thumb_hover)
-                                .radius(self.radius)
-                                .when(gpui_base::is_mobile(), |style| {
-                                    style
-                                        .width(SCROLLBAR_THUMB_ACTIVE_WIDTH)
-                                        .inset(SCROLLBAR_THUMB_INSET)
-                                })
+                                .bg(self.foreground.opacity(0.75))
+                                .radius(RADIUS_FULL)
+                                .width(SCROLLBAR_THUMB_ACTIVE_WIDTH)
+                                .inset(SCROLLBAR_THUMB_INSET_SENTIENT)
                         }),
                 ),
             resizable: gpui_base::ResizableTheme {
