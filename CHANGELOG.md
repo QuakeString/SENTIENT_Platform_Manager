@@ -15,6 +15,10 @@ refreshes that repository's Downloads table.
 
 ## [Unreleased]
 
+## [0.9.9] - 2026-11-22
+
+Scrollbars are easier to see and stay clear of rounded corners.
+
 ### Fixed
 - Scrollbars: the thumb is rounded at both ends and stays clear of a
   box's rounded corners; it is easier to see, and darker on hover and
