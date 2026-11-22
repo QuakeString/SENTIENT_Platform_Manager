@@ -30,7 +30,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
-use super::serve::{Hello, Request, Response, Work, SERVE};
+use super::serve::{Chunk, Hello, Request, Response, Work, SERVE};
 use super::Instance;
 
 /// Why a request did not go over the connection.
@@ -67,6 +67,8 @@ struct Link {
     hello: Hello,
     input: Mutex<Option<Box<dyn Write + Send>>>,
     pending: Mutex<HashMap<u64, mpsc::Sender<Response>>>,
+    /// Streamed requests' lines, by id ([`stream`]).
+    streams: Mutex<HashMap<u64, mpsc::Sender<String>>>,
     next: AtomicU64,
     dead: AtomicBool,
     stderr: Arc<Mutex<String>>,
@@ -309,7 +311,15 @@ fn connect(slot: &Arc<Slot>) -> Opened {
         };
         for line in lines {
             let Ok(line) = line else { break };
+            if let Ok(c) = serde_json::from_str::<Chunk>(line.trim()) {
+                let tx = link.streams.lock().unwrap_or_else(|e| e.into_inner()).get(&c.chunk).cloned();
+                if let Some(tx) = tx {
+                    let _ = tx.send(c.line);
+                }
+                continue;
+            }
             if let Ok(r) = serde_json::from_str::<Response>(line.trim()) {
+                link.streams.lock().unwrap_or_else(|e| e.into_inner()).remove(&r.id);
                 let tx = link.pending.lock().unwrap_or_else(|e| e.into_inner()).remove(&r.id);
                 if let Some(tx) = tx {
                     let _ = tx.send(r);
@@ -320,6 +330,7 @@ fn connect(slot: &Arc<Slot>) -> Opened {
             let mut p = link.pending.lock().unwrap_or_else(|e| e.into_inner());
             link.dead.store(true, Ordering::SeqCst);
             p.clear();
+            link.streams.lock().unwrap_or_else(|e| e.into_inner()).clear();
         }
         // Wake the supervisor (it waits on the slot's state lock).
         let _g = sl.lock();
@@ -334,7 +345,7 @@ fn connect(slot: &Arc<Slot>) -> Opened {
     };
     match hello {
         Some(h) if h.spm_serve == SERVE => {
-            let link = Arc::new(Link { hello: h, input: Mutex::new(Some(input)), pending: Mutex::new(HashMap::new()), next: AtomicU64::new(1), dead: AtomicBool::new(false), stderr });
+            let link = Arc::new(Link { hello: h, input: Mutex::new(Some(input)), pending: Mutex::new(HashMap::new()), streams: Mutex::new(HashMap::new()), next: AtomicU64::new(1), dead: AtomicBool::new(false), stderr });
             *link_slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(link.clone());
             // Reap it when it ends (its pipe closed).
             std::thread::spawn(move || {
@@ -401,6 +412,7 @@ fn call_on(slot: &Arc<Slot>, work: Work, stdin: Option<String>) -> Result<(Peer,
         Work::Job(a) => format!("job {}", a.first().map(String::as_str).unwrap_or("")),
         Work::Sh { .. } => "sh".to_string(),
         Work::Ps(_) => "ps".to_string(),
+        Work::Cancel(_) => "cancel".to_string(),
     };
     let r = call_link(slot, work, stdin);
     crate::timing::took(&format!("conn-call {what} ok={}", r.is_ok()), t0);
@@ -423,7 +435,7 @@ fn call_link(slot: &Arc<Slot>, work: Work, stdin: Option<String>) -> Result<(Pee
         }
         p.insert(id, tx);
     }
-    let line = serde_json::to_string(&Request { id, work, stdin }).map_err(|e| Fail::Err(e.to_string()))?;
+    let line = serde_json::to_string(&Request { id, work, stdin, stream: false }).map_err(|e| Fail::Err(e.to_string()))?;
     let sent = {
         let mut i = link.input.lock().unwrap_or_else(|e| e.into_inner());
         match i.as_mut() {
@@ -441,6 +453,80 @@ fn call_link(slot: &Arc<Slot>, work: Work, stdin: Option<String>) -> Result<(Pee
         Ok(r) => Ok((peer, r)),
         Err(_) => Err(lost()),
     }
+}
+
+/// A request answered as it runs ([`stream`]): its output's lines as they
+/// come, then its answer. Dropping it ends the request on the server.
+pub struct Stream {
+    pub lines: mpsc::Receiver<String>,
+    pub done: mpsc::Receiver<Response>,
+    link: Arc<Link>,
+    id: u64,
+}
+
+impl Stream {
+    /// End it on the server (its answer still comes to `done`).
+    pub fn cancel(&self) {
+        if self.link.dead.load(Ordering::SeqCst) {
+            return;
+        }
+        let cid = self.link.next.fetch_add(1, Ordering::SeqCst);
+        let line = serde_json::to_string(&Request { id: cid, work: Work::Cancel(self.id), stdin: None, stream: false }).unwrap_or_default();
+        let mut i = self.link.input.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(w) = i.as_mut() {
+            let _ = writeln!(w, "{line}").and_then(|_| w.flush());
+        }
+    }
+}
+
+impl Drop for Stream {
+    fn drop(&mut self) {
+        self.cancel();
+        self.link.streams.lock().unwrap_or_else(|e| e.into_inner()).remove(&self.id);
+        self.link.pending.lock().unwrap_or_else(|e| e.into_inner()).remove(&self.id);
+    }
+}
+
+/// Start a request whose output comes line by line while it runs (a log
+/// followed live). [`Fail::PerCall`]: no connection, or an agent that does
+/// not stream; the caller reads the way it did before.
+pub fn stream(inst: &Instance, work: Work) -> Result<Stream, Fail> {
+    if disabled() {
+        return Err(Fail::PerCall);
+    }
+    stream_on(&slot_for(inst), work)
+}
+
+fn stream_on(slot: &Arc<Slot>, work: Work) -> Result<Stream, Fail> {
+    let link = wait_up(slot)?;
+    if !link.hello.streams {
+        return Err(Fail::PerCall);
+    }
+    let id = link.next.fetch_add(1, Ordering::SeqCst);
+    let (tx, done) = mpsc::channel();
+    let (ltx, lines) = mpsc::channel();
+    {
+        let mut p = link.pending.lock().unwrap_or_else(|e| e.into_inner());
+        if link.dead.load(Ordering::SeqCst) {
+            return Err(Fail::Err(super::explain("connection reset").unwrap_or_default()));
+        }
+        p.insert(id, tx);
+        link.streams.lock().unwrap_or_else(|e| e.into_inner()).insert(id, ltx);
+    }
+    let line = serde_json::to_string(&Request { id, work, stdin: None, stream: true }).map_err(|e| Fail::Err(e.to_string()))?;
+    let sent = {
+        let mut i = link.input.lock().unwrap_or_else(|e| e.into_inner());
+        match i.as_mut() {
+            Some(w) => writeln!(w, "{line}").and_then(|_| w.flush()).is_ok(),
+            None => false,
+        }
+    };
+    if !sent {
+        link.pending.lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
+        link.streams.lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
+        return Err(Fail::PerCall);
+    }
+    Ok(Stream { lines, done, link, id })
 }
 
 /// The connection, once it is up (waiting while it is being made).

@@ -30,6 +30,14 @@ const FOLLOW_EVERY: Duration = Duration::from_secs(3);
 
 /// Reads one source: (source, lines, since midnight) → raw text, or why not.
 pub type LoadFn = Arc<dyn Fn(Source, u32, bool) -> Result<String, String> + Send + Sync>;
+/// Follows one source live: (source, going, sink) → every new line to the
+/// sink as it is written, until `going` says stop (crate::logsource::follow
+/// here, crate::remote::follow_log on a server). An Err containing
+/// [`logsource::NO_FOLLOW`]: that source is read every [`FOLLOW_EVERY`]
+/// instead.
+pub type FollowFn = Arc<dyn Fn(Source, &dyn Fn() -> bool, &mut dyn FnMut(&str)) -> Result<(), String> + Send + Sync>;
+/// At most this many lines stay in a followed view (the oldest go).
+const LIVE_KEEP: usize = 5_000;
 /// The sources there are, or why they could not be read.
 pub type SourcesFn = Arc<dyn Fn() -> Result<Vec<Source>, String> + Send + Sync>;
 /// A longer read of one source written into a file as it comes (Save log):
@@ -81,6 +89,9 @@ fn take_kept(kept: &mut Option<Kept>, key: &str) -> Option<Kept> {
 /// window ([`Kept`]).
 impl Drop for LogView {
     fn drop(&mut self) {
+        if let Some(l) = self.live.take() {
+            l.store(false, std::sync::atomic::Ordering::SeqCst);
+        }
         let Some(key) = self.kept_key.take() else { return };
         if self.lines.is_empty() {
             return;
@@ -100,6 +111,11 @@ enum Levels {
 
 pub struct LogView {
     load: LoadFn,
+    /// Live lines as they are written (None: read again every
+    /// [`FOLLOW_EVERY`], the Platform Manager's own log).
+    follow_fn: Option<FollowFn>,
+    /// The followers of the current read: false ends them.
+    live: Option<Arc<std::sync::atomic::AtomicBool>>,
     save_fn: SaveFn,
     /// Save log, as a named job (the progress strip, the bell) with its own
     /// line and Cancel under the toolbar.
@@ -138,6 +154,24 @@ pub struct LogView {
     fill: bool,
     _poll: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
+}
+
+/// What a follower sends: a new line, or its end (why).
+enum Live {
+    Line(Source, String),
+    End(Result<(), String>),
+}
+
+/// Why following stopped.
+enum Stop {
+    /// The view is gone.
+    Gone,
+    /// Another source, paused, hidden or not following: start again.
+    Changed,
+    /// A source cannot be followed: read on a timer instead.
+    NoFollow,
+    /// Every follower ended (a dropped connection): read again.
+    Ended,
 }
 
 /// The log box in a dialog.
@@ -183,6 +217,8 @@ impl LogView {
             save_job,
             save_cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             load,
+            follow_fn: None,
+            live: None,
             sources_fn,
             sources: vec![Source::Sentient],
             pick: Some(Source::Sentient),
@@ -244,9 +280,12 @@ impl LogView {
             sink(sentient_installer_core::progress::Progress::Step { name: "Reading the log".into() });
             logsource::read_to(r2.as_ref(), s, n, today, out, going)
         });
+        let r3 = record.clone();
+        let follow: FollowFn = Arc::new(move |s, going, sink| logsource::follow(r3.as_ref(), s, going, sink));
         let sources: SourcesFn = Arc::new(move || Ok(logsource::available(record.as_ref())));
         let mut v = Self::new(load, sources, window, cx);
         v.save_fn = save;
+        v.follow_fn = Some(follow);
         v.shown_on = Some(super::Page::Logs);
         // A window opened again: the lines shown before, at once (the
         // first read, not run yet, reads them again behind them).
@@ -295,9 +334,12 @@ impl LogView {
         let load: LoadFn = Arc::new(move |s, n, today| crate::remote::logs_from(&i1, s, n, today));
         let i2 = inst.clone();
         let save: SaveFn = Arc::new(move |s, n, today, out, sink, going| remote_save(&i2, s, n, today, out, sink, going));
+        let i3 = inst.clone();
+        let follow: FollowFn = Arc::new(move |s, going, sink| crate::remote::follow_log(&i3, s, going, sink));
         let sources: SourcesFn = Arc::new(move || crate::remote::log_sources(&inst));
         let mut v = Self::new(load, sources, window, cx);
         v.save_fn = save;
+        v.follow_fn = Some(follow);
         v
     }
 
@@ -342,53 +384,170 @@ impl LogView {
         }
     }
 
-    /// Read now and, while following, every few seconds.
+    /// Read now; while following, the new lines as they are written (the
+    /// followers start before the read, so none falls between them), or
+    /// read again every [`FOLLOW_EVERY`] where a source cannot be followed.
+    /// A follower that stops (the connection dropped) reads it all again.
     fn start(&mut self, cx: &mut Context<Self>) {
+        use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
+        if let Some(l) = self.live.take() {
+            l.store(false, SeqCst);
+        }
         let load = self.load.clone();
-        self._poll = Some(cx.spawn(async move |this, cx| loop {
-            let Ok((pick, sources, paused, on)) = this.update(cx, |v, _| (v.pick, v.sources.clone(), v.paused, v.shown_on)) else { break };
-            if paused {
-                cx.background_executor().timer(FOLLOW_EVERY).await;
-                continue;
-            }
-            // This computer's Logs page hidden (another page, or a server
-            // open): no reading; at once when it shows again.
-            if let Some(page) = on.filter(|p| !super::shown_here(*p)) {
-                super::until_shown(page, cx).await;
-                continue;
-            }
-            let load = load.clone();
-            let lines = cx.background_executor().spawn(async move { Self::read(&load, pick, &sources, TAIL, false) }).await;
-            let follow = this
-                .update(cx, |v, cx| {
-                    if v.pick != pick {
-                        v.selected.clear();
-                    }
-                    match lines {
-                        Ok(lines) => {
-                            v.lines = lines;
-                            v.error = None;
+        let follow_fn = self.follow_fn.clone();
+        // This start's followers (a newer start, or the view gone, ends them).
+        let alive = Arc::new(AtomicBool::new(true));
+        self.live = Some(alive.clone());
+        self._poll = Some(cx.spawn(async move |this, cx| {
+            // A source here that cannot be followed: read again on a timer.
+            let mut poll_only = follow_fn.is_none();
+            loop {
+                let Ok((pick, sources, paused, on, follow)) = this.update(cx, |v, _| (v.pick, v.sources.clone(), v.paused, v.shown_on, v.follow)) else { break };
+                if paused {
+                    cx.background_executor().timer(FOLLOW_EVERY).await;
+                    continue;
+                }
+                // This computer's Logs page hidden (another page, or a server
+                // open): no reading; at once when it shows again.
+                if let Some(page) = on.filter(|p| !super::shown_here(*p)) {
+                    super::until_shown(page, cx).await;
+                    continue;
+                }
+                // The followers first (each source's new lines from now).
+                let session = Arc::new(AtomicBool::new(true));
+                let live = match (&follow_fn, follow && !poll_only) {
+                    (Some(f), true) => Some(Self::followers(f.clone(), pick.map(|p| vec![p]).unwrap_or_else(|| sources.clone()), session.clone(), alive.clone())),
+                    _ => None,
+                };
+                let load = load.clone();
+                let lines = cx.background_executor().spawn(async move { Self::read(&load, pick, &sources, TAIL, false) }).await;
+                let follow = this
+                    .update(cx, |v, cx| {
+                        if v.pick != pick {
+                            v.selected.clear();
                         }
-                        // A failed re-read keeps the lines read before.
-                        Err(e) => {
-                            if v.pick != pick {
-                                v.lines.clear();
+                        match lines {
+                            Ok(lines) => {
+                                v.lines = lines;
+                                v.error = None;
                             }
-                            v.error = Some(e);
+                            // A failed re-read keeps the lines read before.
+                            Err(e) => {
+                                if v.pick != pick {
+                                    v.lines.clear();
+                                }
+                                v.error = Some(e);
+                            }
+                        }
+                        if v.follow {
+                            v.scroll.scroll_to_bottom();
+                        }
+                        cx.notify();
+                        v.follow
+                    })
+                    .unwrap_or(false);
+                if !follow {
+                    session.store(false, SeqCst);
+                    break;
+                }
+                let Some(mut rx) = live else {
+                    cx.background_executor().timer(FOLLOW_EVERY).await;
+                    continue;
+                };
+                // Lines that came while the read ran and are in it already.
+                let mut first = true;
+                let mut ended = 0usize;
+                let want = pick.map(|_| 1).unwrap_or_else(|| this.update(cx, |v, _| v.sources.len()).unwrap_or(1));
+                let stop = loop {
+                    use futures::StreamExt as _;
+                    let next = futures::future::select(rx.next(), cx.background_executor().timer(Duration::from_secs(1))).await;
+                    let mut batch = Vec::new();
+                    if let futures::future::Either::Left((m, _)) = next {
+                        match m {
+                            Some(m) => batch.push(m),
+                            None => break Stop::Ended,
                         }
                     }
-                    if v.follow {
-                        v.scroll.scroll_to_bottom();
+                    while let Ok(m) = rx.try_recv() {
+                        batch.push(m);
                     }
-                    cx.notify();
-                    v.follow
-                })
-                .unwrap_or(false);
-            if !follow {
-                break;
+                    let mut new_lines = Vec::new();
+                    let mut why = None;
+                    for m in batch {
+                        match m {
+                            Live::Line(src, l) => new_lines.push(logsource::parse(&l, src)),
+                            Live::End(Err(e)) if e.contains(logsource::NO_FOLLOW) => why = Some(Stop::NoFollow),
+                            Live::End(_) => {
+                                ended += 1;
+                                if ended >= want {
+                                    why = Some(Stop::Ended);
+                                }
+                            }
+                        }
+                    }
+                    let state = this.update(cx, |v, cx| {
+                        if !new_lines.is_empty() {
+                            if std::mem::take(&mut first) {
+                                // Already read: the last lines of the read.
+                                let from = v.lines.len().saturating_sub(200);
+                                let seen: std::collections::HashSet<(Source, String, String)> = v.lines[from..].iter().map(|l| (l.source, l.time.clone(), l.message.clone())).collect();
+                                new_lines.retain(|l| !seen.contains(&(l.source, l.time.clone(), l.message.clone())));
+                            }
+                            v.lines.extend(new_lines);
+                            if v.lines.len() > LIVE_KEEP {
+                                let cut = v.lines.len() - LIVE_KEEP;
+                                v.lines.drain(..cut);
+                                v.selected.clear();
+                                v.anchor = None;
+                            }
+                            if v.follow {
+                                v.scroll.scroll_to_bottom();
+                            }
+                            cx.notify();
+                        }
+                        (v.pick == pick && !v.paused && v.follow, v.shown_on)
+                    });
+                    let Ok((same, on)) = state else { break Stop::Gone };
+                    if !same || on.is_some_and(|p| !super::shown_here(p)) {
+                        break Stop::Changed;
+                    }
+                    if let Some(w) = why {
+                        break w;
+                    }
+                };
+                session.store(false, SeqCst);
+                match stop {
+                    Stop::Gone => break,
+                    Stop::Changed => {}
+                    Stop::NoFollow => poll_only = true,
+                    // Stopped (the connection dropped): read it all again soon.
+                    Stop::Ended => cx.background_executor().timer(FOLLOW_EVERY).await,
+                }
+                if !this.update(cx, |v, _| v.follow).unwrap_or(false) {
+                    break;
+                }
             }
-            cx.background_executor().timer(FOLLOW_EVERY).await;
         }));
+    }
+
+    /// One follower thread per source, their lines (and ends) on one channel.
+    fn followers(f: FollowFn, sources: Vec<Source>, session: Arc<std::sync::atomic::AtomicBool>, alive: Arc<std::sync::atomic::AtomicBool>) -> futures::channel::mpsc::UnboundedReceiver<Live> {
+        use std::sync::atomic::Ordering::SeqCst;
+        let (tx, rx) = futures::channel::mpsc::unbounded();
+        for src in sources {
+            let (f, tx, session, alive) = (f.clone(), tx.clone(), session.clone(), alive.clone());
+            std::thread::spawn(move || {
+                let going = || session.load(SeqCst) && alive.load(SeqCst) && !tx.is_closed();
+                let t2 = tx.clone();
+                let r = f(src, &going, &mut |l| {
+                    if !l.trim().is_empty() {
+                        let _ = t2.unbounded_send(Live::Line(src, l.to_string()));
+                    }
+                });
+                let _ = tx.unbounded_send(Live::End(r));
+            });
+        }
+        rx
     }
 
     fn shown(&self, cx: &App) -> Vec<&Line> {

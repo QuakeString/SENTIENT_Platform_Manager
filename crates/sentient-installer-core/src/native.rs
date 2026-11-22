@@ -1944,6 +1944,27 @@ mod stack_tests {
     }
 }
 
+/// Where a native install's SENTIENT log can be followed as it grows.
+#[derive(Debug, Clone, PartialEq)]
+pub enum LogFollow {
+    /// A log file, read as lines are added.
+    File(std::path::PathBuf),
+    /// A systemd unit's journal (`journalctl -f`).
+    Journal(String),
+}
+
+/// [`LogFollow`] for this install: the same place [`logs`] reads.
+pub fn log_follow(cfg: &NativeConfig) -> LogFollow {
+    #[cfg(target_os = "linux")]
+    {
+        return crate::native_linux::log_follow(cfg);
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        LogFollow::File(cfg.install_dir.join("logs").join(format!("{APP_SERVICE}.out.log")))
+    }
+}
+
 pub fn logs(cfg: &NativeConfig, tail: u32) -> String {
     #[cfg(target_os = "linux")]
     {

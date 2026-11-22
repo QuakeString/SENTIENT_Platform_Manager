@@ -65,7 +65,7 @@ use crate::installation::InstallationRecord;
 
 const USAGE: &str = "usage: --job install <plan.json> [--staged] | install-secrets (one JSON line on stdin) | install-facts-json [<port>:<name>,…] | diagnose-fix <fix json> | install-manager [--no-shortcuts] | remove-manager | migrate <stock|timescaledb|clickhouse> | resume-migration | migrate-preflight | movedata-json | movedata-check <store> <folder> | movedata-estimate <store=folder,…> | move-data <store=folder,…> | move-data-remove-old <folder> | move-data-cancel | \
 update [<package folder> | --latest | --version <release>] [--accept-breaking] | rollback | rollback-info | backup <file> | restore <file> <database> [<key file>] | \
-use-restored <database> | restore-inspect <backup> [--passphrase-file <file> | --passphrase-stdin] | restore-precheck <request.json> [--passphrase-file <file>] | restore-run <request.json> [--passphrase-file <file> | --passphrase-stdin] | restore-history-json | restore-log <id> | restore-cancel | restore-remove-db <name> | backup-list <folder> | find-existing | add-if-one [--pg-admin-password-stdin] | add-existing [<n> | --native] [--pg-admin-password-stdin] | take-over-compose [--compose <file>] [--db-password-file <file>] [--ch-password-file <file>] | takeover-plan [--compose <file>] | takeover-check-password [--clickhouse] --db-password-file <file> | open-at-signin <kiosk|window|off> | auto-signin <account|off> | repair | control <start|stop|restart> [--stop-shared-pg] | service <start|stop|restart> <name> | uninstall [--delete-data] | uninstall --parts <sentient,postgres,pg-database,clickhouse,ch-database,gateway,shortcuts,wsl-distro,wsl,manager> [--keep-files] [--keep-pg-data] [--keep-ch-data] [--wsl-distro] [--wsl] | uninstall-facts-json | apply-settings <file.json> | apply-changes | scheduled-backup | backup-schedule | backup-auto <off|HH:MM> <keep> <everything|last90|configuration> | backup-verify <backup> | backup-delete <backup> | backup-folder <folder> <move|leave> | dir-list <folder> | dir-mkdir <folder> <name> | dir-make-writable <folder> [<uid>] | licence-api --request-stdin | --request-file <file> | admin <sentient-admin args> | replace <backup> [--delete-old] [--passphrase-stdin] | status-json | monitor-json | stats-live [system|services|db] | stats-sample | stats-history <seconds> | stats-install | server-info-json | server-boot-json | server-power <reboot|poweroff> | docker-restart | system-updates | services-json | dbstatus-json | backups-json | backup-details <file> | settings-json | logs [<lines>] | kept | remove-kept <name> | agent-info | agents | serve | pg-others-json | \
+use-restored <database> | restore-inspect <backup> [--passphrase-file <file> | --passphrase-stdin] | restore-precheck <request.json> [--passphrase-file <file>] | restore-run <request.json> [--passphrase-file <file> | --passphrase-stdin] | restore-history-json | restore-log <id> | restore-cancel | restore-remove-db <name> | backup-list <folder> | find-existing | add-if-one [--pg-admin-password-stdin] | add-existing [<n> | --native] [--pg-admin-password-stdin] | take-over-compose [--compose <file>] [--db-password-file <file>] [--ch-password-file <file>] | takeover-plan [--compose <file>] | takeover-check-password [--clickhouse] --db-password-file <file> | open-at-signin <kiosk|window|off> | auto-signin <account|off> | repair | control <start|stop|restart> [--stop-shared-pg] | service <start|stop|restart> <name> | uninstall [--delete-data] | uninstall --parts <sentient,postgres,pg-database,clickhouse,ch-database,gateway,shortcuts,wsl-distro,wsl,manager> [--keep-files] [--keep-pg-data] [--keep-ch-data] [--wsl-distro] [--wsl] | uninstall-facts-json | apply-settings <file.json> | apply-changes | scheduled-backup | backup-schedule | backup-auto <off|HH:MM> <keep> <everything|last90|configuration> | backup-verify <backup> | backup-delete <backup> | backup-folder <folder> <move|leave> | dir-list <folder> | dir-mkdir <folder> <name> | dir-make-writable <folder> [<uid>] | licence-api --request-stdin | --request-file <file> | admin <sentient-admin args> | replace <backup> [--delete-old] [--passphrase-stdin] | status-json | monitor-json | stats-live [system|services|db] | stats-sample | stats-history <seconds> | stats-install | server-info-json | server-boot-json | server-power <reboot|poweroff> | docker-restart | system-updates | services-json | dbstatus-json | backups-json | backup-details <file> | settings-json | logs [<lines>] | log-follow --source <key> | kept | remove-kept <name> | agent-info | agents | serve | pg-others-json | \
 gateway-status | gateway-install-secrets (one JSON line on stdin) | gateway-install <host> <port> [--version <release>] [--staged] | gateway-update [<version>] | gateway-control <start|stop|restart> | gateway-remove [--delete-data] [--remove-image] | gateway-adopt | gateway-take-over [--warn-only] [--container <name>] | gateway-settings-json | gateway-apply <plan.json> | gateway-ui-password (the password on stdin) | gateway-test
 
 Administrator password (native Linux): a job typed in a terminal may ask for it, once for the
@@ -1058,6 +1058,35 @@ fn run_job(args: &[String]) -> i32 {
             // the gateway's on a gateway-only server.
             None => return print_log(crate::logsource::read(record.as_ref(), sources[0], n, today)),
         }
+    }
+    // One log followed live (crate::manager::logs over the server's
+    // connection, crate::remote::serve streaming): log-follow --source <key>
+    // prints every new line as it is written, until it is stopped (the
+    // window leaves the page, or the connection closes).
+    if job == "log-follow" {
+        let record = InstallationRecord::load();
+        let sources = crate::logsource::available(record.as_ref());
+        let Some(src) = args.windows(2).find(|w| w[0] == "--source").and_then(|w| crate::logsource::Source::from_key(&w[1])).filter(|s| sources.contains(s)) else {
+            eprintln!("No such log here.");
+            return 2;
+        };
+        use std::io::Write as _;
+        let out = std::io::stdout();
+        let ok = std::sync::atomic::AtomicBool::new(true);
+        let r = crate::logsource::follow(record.as_ref(), src, &|| ok.load(std::sync::atomic::Ordering::SeqCst), &mut |line| {
+            let mut o = out.lock();
+            // Nobody reading any more: stop.
+            if writeln!(o, "{line}").and_then(|_| o.flush()).is_err() {
+                ok.store(false, std::sync::atomic::Ordering::SeqCst);
+            }
+        });
+        return match r {
+            Ok(()) => 0,
+            Err(e) => {
+                eprintln!("{e}");
+                if e.contains(crate::logsource::NO_FOLLOW) { 3 } else { 1 }
+            }
+        };
     }
     // A whole log saved on this computer for the window on another one to
     // download (crate::manager::logs, Save log): logs-file <lines>

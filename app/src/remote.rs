@@ -1947,6 +1947,44 @@ pub fn logs_from(inst: &Instance, source: crate::logsource::Source, lines: u32, 
     spm_job(inst, &format!("logs {lines} --source {}{}", source.key(), if today { " --today" } else { "" }))
 }
 
+/// Follow one log source on the server live (crate::manager::logs): every
+/// new line to `sink` as the agent's `log-follow` job writes it, over the
+/// server's open connection, until `going` says stop. An Err starting with
+/// crate::logsource::NO_FOLLOW: the server cannot stream it (a Windows
+/// server, an older agent, no open connection, or a source it cannot
+/// follow); the page reads it every few seconds instead.
+pub fn follow_log(inst: &Instance, source: crate::logsource::Source, going: &dyn Fn() -> bool, sink: &mut dyn FnMut(&str)) -> Result<(), String> {
+    use std::sync::mpsc::RecvTimeoutError;
+    let no = || Err(format!("The {} log {} from here.", source.label(), crate::logsource::NO_FOLLOW));
+    if is_windows(inst) {
+        return no();
+    }
+    let st = match conn::stream(inst, serve::Work::Job(vec!["log-follow".into(), "--source".into(), source.key().into()])) {
+        Ok(st) => st,
+        Err(conn::Fail::PerCall) => return no(),
+        Err(conn::Fail::Err(e)) => return Err(e),
+    };
+    while going() {
+        match st.lines.recv_timeout(std::time::Duration::from_millis(500)) {
+            Ok(l) => sink(&l),
+            Err(RecvTimeoutError::Timeout) => {}
+            // The job ended (its answer says why), or the connection dropped.
+            Err(RecvTimeoutError::Disconnected) => {
+                return match st.done.recv_timeout(std::time::Duration::from_secs(2)) {
+                    Ok(r) if r.code == Some(3) => no(),
+                    Ok(r) => {
+                        let e = clean_stderr(&r.err).trim().to_string();
+                        Err(if e.is_empty() { "The log stopped.".to_string() } else { e })
+                    }
+                    Err(_) => Err(explain("connection reset").unwrap_or_else(|| "The connection was lost.".into())),
+                };
+            }
+        }
+    }
+    st.cancel();
+    Ok(())
+}
+
 /// A whole log written gzipped to a temporary file on the server for
 /// download (`logs-file`): (its path there, log bytes, file bytes).
 pub fn logs_file(inst: &Instance, source: crate::logsource::Source, lines: u32, today: bool) -> Result<(String, u64, u64), String> {

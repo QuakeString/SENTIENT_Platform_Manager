@@ -198,6 +198,159 @@ pub fn read(record: Option<&InstallationRecord>, source: Source, tail: u32, toda
     }
 }
 
+/// How often a followed file is looked at for new lines, and how often a
+/// follow checks it is still wanted while nothing comes.
+const FOLLOW_TICK: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// Follow one source as it grows (the Logs page's live view; on a server
+/// the agent's `log-follow` job): every new line from now on goes to
+/// `sink` as it is written, until `going` says stop. Lines from before
+/// are [`read`]'s. Docker's `logs -f`, `journalctl -f`, or the log file
+/// read as it grows. A source that cannot be followed this way (Docker in
+/// Windows' WSL distro, the Windows gateway's rotating files) is an Err
+/// starting with [`NO_FOLLOW`]: the page reads it again every few seconds
+/// instead.
+pub fn follow(record: Option<&InstallationRecord>, source: Source, going: &dyn Fn() -> bool, sink: &mut dyn FnMut(&str)) -> Result<(), String> {
+    match follow_target(record, source)? {
+        Target::Cmd(prog, args) => follow_cmd(&prog, &args, going, sink),
+        Target::File(path) => follow_file(&path, going, sink),
+    }
+}
+
+/// [`follow`]'s answer for a source it cannot follow.
+pub const NO_FOLLOW: &str = "cannot be followed";
+
+enum Target {
+    Cmd(String, Vec<String>),
+    File(std::path::PathBuf),
+}
+
+fn follow_target(record: Option<&InstallationRecord>, source: Source) -> Result<Target, String> {
+    let no = || Err(format!("The {} log {NO_FOLLOW} here.", source.label()));
+    let docker = |c: &str| -> Result<Target, String> {
+        if cfg!(windows) {
+            return Err(format!("The {} log {NO_FOLLOW} here.", source.label()));
+        }
+        Ok(Target::Cmd("docker".into(), ["logs", "--follow", "--timestamps", "--tail", "0", c].map(String::from).to_vec()))
+    };
+    let journal = |unit: &str| Target::Cmd("journalctl".into(), ["-f", "-n", "0", "-u", unit, "--no-pager", "-o", "short-iso"].map(String::from).to_vec());
+    if source == Source::Gateway {
+        return match (gateway_files(), gateway_container(), gateway_unit()) {
+            (Some(_), _, _) => no(),
+            (None, Some(c), _) => docker(&c),
+            (None, None, Some(u)) => Ok(journal(&u)),
+            _ => Err("No gateway on this computer.".into()),
+        };
+    }
+    let Some(record) = record else {
+        return Err(format!("SENTIENT is not installed on this computer, so it has no {} log.", source.label()));
+    };
+    let names = record.stack.names();
+    match (record.engine, source) {
+        (Engine::Docker, Source::Sentient) => docker(&names.app),
+        (Engine::Docker, Source::Database) => docker(&names.pg),
+        (Engine::Docker, Source::ClickHouse) => docker(&names.ch),
+        (_, Source::Gateway) => unreachable!("above"),
+        (Engine::Native, Source::Sentient) => match sentient_installer_core::native::log_follow(&record.native_config()) {
+            sentient_installer_core::native::LogFollow::File(p) => Ok(Target::File(p)),
+            sentient_installer_core::native::LogFollow::Journal(u) => Ok(journal(&u)),
+        },
+        (Engine::Native, Source::Database) if cfg!(windows) => newest(&record.pg_dir.join("log"), ".log").map(Target::File).ok_or_else(|| "No PostgreSQL log file yet.".into()),
+        (Engine::Native, Source::Database) => Ok(newest(std::path::Path::new("/var/log/postgresql"), ".log").map(Target::File).unwrap_or_else(|| journal("postgresql*"))),
+        (Engine::Native, Source::ClickHouse) => {
+            let p = std::path::PathBuf::from("/var/log/clickhouse-server/clickhouse-server.log");
+            Ok(if p.exists() { Target::File(p) } else { journal("clickhouse-server") })
+        }
+    }
+}
+
+/// A program that writes the log as it grows (`docker logs -f`,
+/// `journalctl -f`): each line of its output and its error output to
+/// `sink`; ended when `going` says stop.
+fn follow_cmd(prog: &str, args: &[String], going: &dyn Fn() -> bool, sink: &mut dyn FnMut(&str)) -> Result<(), String> {
+    use std::io::BufRead;
+    use std::process::Stdio;
+    let mut child = sentient_installer_core::host::host_command(prog)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("{prog} could not be started: {e}"))?;
+    let (tx, rx) = std::sync::mpsc::channel::<String>();
+    let mut readers = Vec::new();
+    let out: Box<dyn std::io::Read + Send> = Box::new(child.stdout.take().ok_or("no output")?);
+    let err: Box<dyn std::io::Read + Send> = Box::new(child.stderr.take().ok_or("no output")?);
+    for r in [out, err] {
+        let tx = tx.clone();
+        readers.push(std::thread::spawn(move || {
+            for line in std::io::BufReader::new(r).lines() {
+                let Ok(line) = line else { break };
+                if tx.send(line).is_err() {
+                    break;
+                }
+            }
+        }));
+    }
+    drop(tx);
+    let mut ended = false;
+    while going() {
+        match rx.recv_timeout(FOLLOW_TICK) {
+            Ok(l) => sink(&l),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                ended = true;
+                break;
+            }
+        }
+    }
+    let _ = child.kill();
+    let status = child.wait();
+    for r in readers {
+        let _ = r.join();
+    }
+    if ended && going() {
+        let code = status.ok().and_then(|s| s.code());
+        return Err(format!("{prog} stopped following the log (exit {}).", code.map(|c| c.to_string()).unwrap_or_else(|| "?".into())));
+    }
+    Ok(())
+}
+
+/// A log file read as it grows: from its end now, every [`FOLLOW_TICK`]
+/// what was added; a file made again or cut shorter (rotated) is read
+/// from its start.
+fn follow_file(path: &std::path::Path, going: &dyn Fn() -> bool, sink: &mut dyn FnMut(&str)) -> Result<(), String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut pos = std::fs::metadata(path).map_err(|e| format!("{}: {e}", path.display()))?.len();
+    let mut partial = String::new();
+    while going() {
+        std::thread::sleep(FOLLOW_TICK);
+        let Ok(meta) = std::fs::metadata(path) else { continue };
+        let len = meta.len();
+        if len < pos {
+            pos = 0;
+            partial.clear();
+        }
+        if len == pos {
+            continue;
+        }
+        let Ok(mut f) = std::fs::File::open(path) else { continue };
+        if f.seek(SeekFrom::Start(pos)).is_err() {
+            continue;
+        }
+        let mut buf = Vec::new();
+        let Ok(n) = f.take(len - pos).read_to_end(&mut buf) else { continue };
+        pos += n as u64;
+        partial.push_str(&String::from_utf8_lossy(&buf));
+        // Whole lines only; a line still being written waits for its end.
+        while let Some(i) = partial.find('\n') {
+            let line: String = partial.drain(..=i).collect();
+            sink(line.trim_end_matches(['\r', '\n']));
+        }
+    }
+    Ok(())
+}
+
 /// A message [`read`] gives instead of a log (the source is not there or
 /// could not be read): an error for a save, never the file's content.
 pub fn is_failure_text(s: &str) -> bool {

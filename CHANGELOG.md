@@ -15,6 +15,14 @@ refreshes that repository's Downloads table.
 
 ## [Unreleased]
 
+### Changed
+- Logs: a followed log shows each new line as it is written, instead of
+  reading the last 500 lines again every 3 seconds. On a server the lines
+  come over the Platform Manager's one SSH connection (no new port); a
+  log that cannot be streamed (a Windows server, an older agent there)
+  is read every few seconds as before, and a stream that stops (the
+  connection dropped) reads the log again and follows on.
+
 ## [0.9.10] - 2026-11-22
 
 The Files page has Back, Forward and Up, a path you can type, and sorting by any column.

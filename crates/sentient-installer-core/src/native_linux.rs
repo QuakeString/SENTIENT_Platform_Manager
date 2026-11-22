@@ -1178,6 +1178,13 @@ pub fn service_control(sink: ProgressFn, unit: &str, action: &str) -> Result<(),
 
 /// The service log — the file the unit appends to, or the journal when the
 /// file is not readable from this account.
+/// Where SENTIENT's log is followed live (crate::native::log_follow): its
+/// log file when there is one, else its systemd unit's journal.
+pub fn log_follow(_cfg: &NativeConfig) -> crate::native::LogFollow {
+    let path = std::path::PathBuf::from(format!("{LOG_DIR}/sentient.log"));
+    if path.exists() { crate::native::LogFollow::File(path) } else { crate::native::LogFollow::Journal(APP_UNIT.to_string()) }
+}
+
 pub fn logs(_cfg: &NativeConfig, tail: u32) -> String {
     let path = format!("{LOG_DIR}/sentient.log");
     if let Ok(text) = std::fs::read_to_string(&path) {
