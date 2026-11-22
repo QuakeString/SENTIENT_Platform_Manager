@@ -15,6 +15,19 @@ refreshes that repository's Downloads table.
 
 ## [Unreleased]
 
+### Added
+- Files: Back, Forward and Up beside each pane's path bar (Alt+Left,
+  Alt+Right, Alt+Up; Backspace goes up). Each pane keeps its own history.
+- Files: the path can be typed. Click the path bar's empty part or press
+  Ctrl+L, type a folder (a full path, one under the folder shown, or `~`),
+  Enter goes there, Escape cancels. A folder that is not there or cannot be
+  read says so under the bar and the pane stays where it was; a server's
+  path is checked on the server.
+- Files: click a column header (Name, Size, Modified, Owner) to sort by it,
+  again to reverse; an arrow shows which and which way. Folders stay above
+  files; names sort naturally ("file2" before "file10"), case ignored. Each
+  pane keeps its sort from folder to folder (Name, ascending, at first).
+
 ## [0.9.9] - 2026-11-22
 
 Scrollbars are easier to see and stay clear of rounded corners.
