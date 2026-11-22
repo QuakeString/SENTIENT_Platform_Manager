@@ -1027,6 +1027,37 @@ fn run_job(args: &[String]) -> i32 {
         println!("{}", serde_json::to_string(&crate::sysmon::sample(&dir)).unwrap_or_default());
         return 0;
     }
+    // A log followed: logs-follow --source <key>. Each new line printed as
+    // it is written, until standard input closes (the Platform Manager
+    // cancelled it, or its connection ended) or the output is gone.
+    if job == "logs-follow" {
+        let record = InstallationRecord::load();
+        let sources = crate::logsource::available(record.as_ref());
+        let key = args.windows(2).find(|w| w[0] == "--source").map(|w| w[1].as_str()).unwrap_or("");
+        let Some(src) = crate::logsource::Source::from_key(key).filter(|s| sources.contains(s)) else {
+            eprintln!("No such log here: {key}");
+            return 2;
+        };
+        let open = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let o = open.clone();
+        std::thread::spawn(move || {
+            let _ = std::io::copy(&mut std::io::stdin(), &mut std::io::sink());
+            o.store(false, std::sync::atomic::Ordering::SeqCst);
+        });
+        let stdout = std::io::stdout();
+        let mut emit = |l: &str| {
+            use std::io::Write;
+            let mut o = stdout.lock();
+            writeln!(o, "{l}").and_then(|_| o.flush()).is_ok()
+        };
+        return match crate::logfollow::follow(record.as_ref(), src, &mut emit, &|| open.load(std::sync::atomic::Ordering::SeqCst)) {
+            Ok(()) => 0,
+            Err(e) => {
+                eprintln!("{e}");
+                1
+            }
+        };
+    }
     // The last lines of SENTIENT's log: logs [<lines>].
     if job == "logs" {
         // A gateway-only server has no SENTIENT installation record but

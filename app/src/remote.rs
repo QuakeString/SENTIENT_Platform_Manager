@@ -1947,6 +1947,39 @@ pub fn logs_from(inst: &Instance, source: crate::logsource::Source, lines: u32, 
     spm_job(inst, &format!("logs {lines} --source {}{}", source.key(), if today { " --today" } else { "" }))
 }
 
+/// Follow a server's log ([`crate::logfollow`] there, `--job logs-follow`):
+/// each new line goes to `emit` (false from it: stop) as the server writes
+/// it, over the open connection, until `going` says no. Err: it cannot be
+/// followed this way (no connection, an older agent) or the follow ended;
+/// the Logs page then reads again every few seconds.
+pub fn logs_follow(inst: &Instance, source: crate::logsource::Source, emit: &mut dyn FnMut(&str) -> bool, going: &dyn Fn() -> bool) -> Result<(), String> {
+    let mut st = match conn::stream(inst, vec!["logs-follow".into(), "--source".into(), source.key().into()]) {
+        Ok(st) => st,
+        Err(conn::Fail::PerCall) => return Err("The server's agent does not follow logs.".into()),
+        Err(conn::Fail::Err(e)) => return Err(e),
+    };
+    loop {
+        if !going() {
+            st.cancel();
+            return Ok(());
+        }
+        match st.lines.recv_timeout(std::time::Duration::from_millis(250)) {
+            Ok(r) => match r.line {
+                Some(l) => {
+                    if !emit(&l) {
+                        st.cancel();
+                        return Ok(());
+                    }
+                }
+                // Its last answer: it ended there.
+                None => return Err(if r.err.trim().is_empty() { "The server stopped following the log.".into() } else { r.err.trim().to_string() }),
+            },
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return Err("The connection to the server was lost.".into()),
+        }
+    }
+}
+
 /// A whole log written gzipped to a temporary file on the server for
 /// download (`logs-file`): (its path there, log bytes, file bytes).
 pub fn logs_file(inst: &Instance, source: crate::logsource::Source, lines: u32, today: bool) -> Result<(String, u64, u64), String> {

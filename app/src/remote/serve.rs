@@ -19,9 +19,16 @@
 //!
 //! Lines that are not a request are ignored and never echoed: sudo, when it
 //! did not need the password it was handed, leaves that line here.
+//!
+//! A job request with `stream` set (only sent to an agent whose [`Hello`]
+//! says `stream`) answers each line of its output as it is printed, as a
+//! [`Response`] with `line`, then its usual last answer. It runs until it
+//! ends or [`Work::Cancel`] names it: its standard input is then closed,
+//! which a follow job (`--job logs-follow`) ends on.
 
+use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, Write};
-use std::process::{Command, Stdio};
+use std::process::{ChildStdin, Command, Stdio};
 use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
@@ -37,6 +44,11 @@ pub struct Hello {
     /// Running as root (Linux) or elevated (Windows): requests for the
     /// administrator are run as they are. A per-user agent (no sudo) is not.
     pub root: bool,
+    /// Answers a `stream` request line by line, and knows [`Work::Cancel`]
+    /// (an older agent says nothing: the Platform Manager asks again every
+    /// few seconds instead).
+    #[serde(default)]
+    pub stream: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -48,6 +60,8 @@ pub enum Work {
     Sh { cmd: String, root: bool },
     /// `powershell -EncodedCommand <text>` (Windows).
     Ps(String),
+    /// End the streaming request with this id (its standard input closed).
+    Cancel(u64),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -56,6 +70,9 @@ pub struct Request {
     pub work: Work,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stdin: Option<String>,
+    /// A job's output answered line by line as it comes ([`Response::line`]).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub stream: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -71,6 +88,9 @@ pub struct Response {
     /// Not run here: the caller makes its own ssh call for it instead.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub refused: Option<String>,
+    /// One line of a streaming request's output; its last answer has none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line: Option<String>,
 }
 
 /// Run the serve loop on this process's standard input and output.
@@ -95,22 +115,96 @@ pub struct Host {
 /// The loop itself: generic over the streams for the tests.
 pub fn serve<R: BufRead, W: Write + Send + 'static>(input: R, output: W, host: Arc<Host>) {
     let out = Arc::new(Mutex::new(output));
-    write_line(&out, &serde_json::to_string(&Hello { spm_serve: SERVE, root: host.root }).unwrap_or_default());
+    write_line(&out, &serde_json::to_string(&Hello { spm_serve: SERVE, root: host.root, stream: true }).unwrap_or_default());
+    let streams: Streams = Arc::new(Mutex::new(StreamSet::default()));
     let mut workers = Vec::new();
     for line in input.lines() {
         let Ok(line) = line else { break };
         let Ok(req) = serde_json::from_str::<Request>(line.trim()) else { continue };
-        let (out, host) = (out.clone(), host.clone());
+        if let Work::Cancel(which) = req.work {
+            // Its input closed: a follow job ends on that.
+            let mut set = streams.lock().unwrap_or_else(|e| e.into_inner());
+            if set.open.remove(&which).is_none() {
+                // Not started yet: it ends as soon as it does.
+                set.cancelled.insert(which);
+            }
+            drop(set);
+            write_line(&out, &serde_json::to_string(&Response { id: req.id, code: Some(0), ..Default::default() }).unwrap_or_default());
+            continue;
+        }
+        let (out, host, streams) = (out.clone(), host.clone(), streams.clone());
         workers.push(std::thread::spawn(move || {
-            let r = handle(&host, req);
+            let r = if req.stream { handle_stream(&host, req, &out, &streams) } else { handle(&host, req) };
             write_line(&out, &serde_json::to_string(&r).unwrap_or_default());
         }));
         workers.retain(|w| !w.is_finished());
+    }
+    // The connection closed: streaming jobs end (their input closes),
+    // also one still starting.
+    {
+        let mut set = streams.lock().unwrap_or_else(|e| e.into_inner());
+        set.closed = true;
+        set.open.clear();
     }
     // Answers still on their way go out before the end.
     for w in workers {
         let _ = w.join();
     }
+}
+
+/// The streaming requests running: each one's standard input, closed to end it.
+#[derive(Default)]
+struct StreamSet {
+    open: HashMap<u64, ChildStdin>,
+    /// Cancelled before they started.
+    cancelled: HashSet<u64>,
+    /// The connection closed: any that starts now ends at once.
+    closed: bool,
+}
+
+type Streams = Arc<Mutex<StreamSet>>;
+
+/// A streaming job: each line of its output answered as it comes.
+fn handle_stream<W: Write>(host: &Host, req: Request, out: &Mutex<W>, streams: &Streams) -> Response {
+    let Work::Job(args) = &req.work else {
+        return Response { id: req.id, refused: Some("only a job streams".into()), ..Default::default() };
+    };
+    let mut c = Command::new(&host.exe);
+    c.arg("--job").args(args);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        c.creation_flags(0x0800_0000);
+    }
+    c.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = match c.spawn() {
+        Ok(ch) => ch,
+        Err(e) => return Response { id: req.id, code: None, err: format!("could not start: {e}"), ..Default::default() },
+    };
+    if let Some(i) = child.stdin.take() {
+        let mut set = streams.lock().unwrap_or_else(|e| e.into_inner());
+        // Cancelled already, or the connection closed: its input closes now.
+        if !set.cancelled.remove(&req.id) && !set.closed {
+            set.open.insert(req.id, i);
+        }
+    }
+    let err = child.stderr.take().map(|e| {
+        std::thread::spawn(move || {
+            let mut s = String::new();
+            let _ = std::io::Read::read_to_string(&mut std::io::BufReader::new(e), &mut s);
+            s
+        })
+    });
+    if let Some(o) = child.stdout.take() {
+        for line in std::io::BufReader::new(o).lines() {
+            let Ok(line) = line else { break };
+            write_line(out, &serde_json::to_string(&Response { id: req.id, line: Some(line), ..Default::default() }).unwrap_or_default());
+        }
+    }
+    let code = child.wait().ok().and_then(|s| s.code());
+    streams.lock().unwrap_or_else(|e| e.into_inner()).open.remove(&req.id);
+    let err = err.and_then(|t| t.join().ok()).unwrap_or_default();
+    Response { id: req.id, code, err, ..Default::default() }
 }
 
 fn write_line<W: Write>(out: &Mutex<W>, line: &str) {
@@ -147,6 +241,7 @@ fn handle(host: &Host, req: Request) -> Response {
                 }
             }
         }
+        Work::Cancel(_) => return Response { id: req.id, code: Some(0), ..Default::default() },
         Work::Ps(encoded) => {
             if !cfg!(windows) {
                 return refuse("no PowerShell here");
@@ -181,7 +276,7 @@ fn handle(host: &Host, req: Request) -> Response {
             code: o.status.code(),
             out: String::from_utf8_lossy(&o.stdout).to_string(),
             err: String::from_utf8_lossy(&o.stderr).to_string(),
-            refused: None,
+            ..Default::default()
         },
         Err(e) => Response { id: req.id, code: None, err: e.to_string(), ..Default::default() },
     }
@@ -219,15 +314,15 @@ mod tests {
 
     #[test]
     fn requests_and_answers_round_trip_as_one_line_each() {
-        let r = Request { id: 7, work: Work::Job(vec!["status-json".into()]), stdin: None };
+        let r = Request { id: 7, work: Work::Job(vec!["status-json".into()]), stdin: None, stream: false };
         let line = serde_json::to_string(&r).unwrap();
         assert!(!line.contains('\n'));
         assert_eq!(serde_json::from_str::<Request>(&line).unwrap(), r);
-        let a = Response { id: 7, code: Some(0), out: "a\nb\n".into(), err: String::new(), refused: None };
+        let a = Response { id: 7, code: Some(0), out: "a\nb\n".into(), ..Default::default() };
         let line = serde_json::to_string(&a).unwrap();
         assert!(!line.contains('\n'));
         assert_eq!(serde_json::from_str::<Response>(&line).unwrap(), a);
-        let sh = serde_json::to_string(&Request { id: 1, work: Work::Sh { cmd: "true".into(), root: true }, stdin: Some("x".into()) }).unwrap();
+        let sh = serde_json::to_string(&Request { id: 1, work: Work::Sh { cmd: "true".into(), root: true }, stdin: Some("x".into()), stream: false }).unwrap();
         assert_eq!(sh, r#"{"id":1,"work":{"sh":{"cmd":"true","root":true}},"stdin":"x"}"#);
     }
 
@@ -241,7 +336,9 @@ mod tests {
         serve(std::io::Cursor::new(input.as_bytes().to_vec()), buf.clone(), host);
         let text = buf.text();
         let lines: Vec<&str> = text.lines().collect();
-        assert_eq!(serde_json::from_str::<Hello>(lines[0]).unwrap(), Hello { spm_serve: SERVE, root: false });
+        assert_eq!(serde_json::from_str::<Hello>(lines[0]).unwrap(), Hello { spm_serve: SERVE, root: false, stream: true });
+        // An older agent's hello: no streaming.
+        assert!(!serde_json::from_str::<Hello>(r#"{"spm_serve":1,"root":true}"#).unwrap().stream);
         assert_eq!(lines.len(), 2);
         assert!(!text.contains("secret-password"));
         let a: Response = serde_json::from_str(lines[1]).unwrap();
@@ -264,6 +361,29 @@ mod tests {
         let one = answers.iter().find(|a| a.id == 1).unwrap();
         assert_eq!((one.code, one.out.as_str(), one.err.trim()), (Some(4), "hi", "oops"));
         assert!(answers.iter().find(|a| a.id == 2).unwrap().refused.is_some());
+    }
+
+    /// A streaming job: each output line its own answer, then the last
+    /// one; it ends once its input closes (cancelled, or the connection).
+    #[cfg(unix)]
+    #[test]
+    fn a_streaming_job_answers_line_by_line_until_its_input_closes() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("spm-serve-stream-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let exe = dir.join("agent");
+        std::fs::write(&exe, "#!/bin/sh\necho one\necho two\ncat >/dev/null\necho bye\n").unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let input = "{\"id\":5,\"work\":{\"job\":[\"logs-follow\"]},\"stream\":true}\n{\"id\":6,\"work\":{\"cancel\":5}}\n";
+        let buf = Shared::default();
+        serve(std::io::Cursor::new(input.as_bytes().to_vec()), buf.clone(), Arc::new(Host { exe: exe.clone(), root: false, account: None }));
+        let answers: Vec<Response> = buf.text().lines().skip(1).map(|l| serde_json::from_str(l).unwrap()).collect();
+        let lines: Vec<&str> = answers.iter().filter(|a| a.id == 5).filter_map(|a| a.line.as_deref()).collect();
+        assert_eq!(lines, ["one", "two", "bye"]);
+        let last = answers.iter().filter(|a| a.id == 5).last().unwrap();
+        assert_eq!((last.line.as_deref(), last.code), (None, Some(0)));
+        assert!(answers.iter().any(|a| a.id == 6 && a.code == Some(0)));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A writer the test reads back.

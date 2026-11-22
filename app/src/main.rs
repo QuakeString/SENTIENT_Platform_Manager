@@ -57,6 +57,7 @@ mod installer {
 mod jobs;
 mod log_level;
 mod logsource;
+mod logfollow;
 mod kept;
 mod leftovers;
 mod licence;

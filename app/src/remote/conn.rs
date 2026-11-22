@@ -310,7 +310,11 @@ fn connect(slot: &Arc<Slot>) -> Opened {
         for line in lines {
             let Ok(line) = line else { break };
             if let Ok(r) = serde_json::from_str::<Response>(line.trim()) {
-                let tx = link.pending.lock().unwrap_or_else(|e| e.into_inner()).remove(&r.id);
+                // A streaming request's line: it stays pending until its last answer.
+                let tx = {
+                    let mut p = link.pending.lock().unwrap_or_else(|e| e.into_inner());
+                    if r.line.is_some() { p.get(&r.id).cloned() } else { p.remove(&r.id) }
+                };
                 if let Some(tx) = tx {
                     let _ = tx.send(r);
                 }
@@ -401,6 +405,7 @@ fn call_on(slot: &Arc<Slot>, work: Work, stdin: Option<String>) -> Result<(Peer,
         Work::Job(a) => format!("job {}", a.first().map(String::as_str).unwrap_or("")),
         Work::Sh { .. } => "sh".to_string(),
         Work::Ps(_) => "ps".to_string(),
+        Work::Cancel(_) => "cancel".to_string(),
     };
     let r = call_link(slot, work, stdin);
     crate::timing::took(&format!("conn-call {what} ok={}", r.is_ok()), t0);
@@ -423,7 +428,7 @@ fn call_link(slot: &Arc<Slot>, work: Work, stdin: Option<String>) -> Result<(Pee
         }
         p.insert(id, tx);
     }
-    let line = serde_json::to_string(&Request { id, work, stdin }).map_err(|e| Fail::Err(e.to_string()))?;
+    let line = serde_json::to_string(&Request { id, work, stdin, stream: false }).map_err(|e| Fail::Err(e.to_string()))?;
     let sent = {
         let mut i = link.input.lock().unwrap_or_else(|e| e.into_inner());
         match i.as_mut() {
@@ -441,6 +446,78 @@ fn call_link(slot: &Arc<Slot>, work: Work, stdin: Option<String>) -> Result<(Pee
         Ok(r) => Ok((peer, r)),
         Err(_) => Err(lost()),
     }
+}
+
+/// A streaming request on a server's connection ([`stream`]): its lines
+/// come on [`Stream::lines`]; dropped (or [`Stream::cancel`]), the agent is
+/// told to end it.
+pub struct Stream {
+    link: Arc<Link>,
+    id: u64,
+    pub lines: mpsc::Receiver<Response>,
+    done: bool,
+}
+
+impl Stream {
+    /// End it there (the job's input closed); its last answer still comes.
+    pub fn cancel(&mut self) {
+        if std::mem::replace(&mut self.done, true) {
+            return;
+        }
+        let id = self.link.next.fetch_add(1, Ordering::SeqCst);
+        if let Ok(line) = serde_json::to_string(&Request { id, work: Work::Cancel(self.id), stdin: None, stream: false }) {
+            let mut i = self.link.input.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(w) = i.as_mut() {
+                let _ = writeln!(w, "{line}").and_then(|_| w.flush());
+            }
+        }
+    }
+}
+
+impl Drop for Stream {
+    fn drop(&mut self) {
+        self.cancel();
+        self.link.pending.lock().unwrap_or_else(|e| e.into_inner()).remove(&self.id);
+    }
+}
+
+/// Run `--job <args>` on the server with its output answered line by line
+/// as it comes. [`Fail::PerCall`]: no connection, or its agent does not
+/// stream (an older one): the caller reads the way it did before.
+pub fn stream(inst: &Instance, args: Vec<String>) -> Result<Stream, Fail> {
+    if disabled() {
+        return Err(Fail::PerCall);
+    }
+    stream_on(&slot_for(inst), args)
+}
+
+fn stream_on(slot: &Arc<Slot>, args: Vec<String>) -> Result<Stream, Fail> {
+    let link = wait_up(slot)?;
+    if !link.hello.stream {
+        return Err(Fail::PerCall);
+    }
+    let id = link.next.fetch_add(1, Ordering::SeqCst);
+    let (tx, rx) = mpsc::channel();
+    {
+        let mut p = link.pending.lock().unwrap_or_else(|e| e.into_inner());
+        if link.dead.load(Ordering::SeqCst) {
+            return Err(Fail::Err(super::explain("connection reset").unwrap_or_default()));
+        }
+        p.insert(id, tx);
+    }
+    let line = serde_json::to_string(&Request { id, work: Work::Job(args), stdin: None, stream: true }).map_err(|e| Fail::Err(e.to_string()))?;
+    let sent = {
+        let mut i = link.input.lock().unwrap_or_else(|e| e.into_inner());
+        match i.as_mut() {
+            Some(w) => writeln!(w, "{line}").and_then(|_| w.flush()).is_ok(),
+            None => false,
+        }
+    };
+    if !sent {
+        link.pending.lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
+        return Err(Fail::PerCall);
+    }
+    Ok(Stream { link, id, lines: rx, done: false })
 }
 
 /// The connection, once it is up (waiting while it is being made).
@@ -710,6 +787,43 @@ pub(crate) mod tests {
         let (_, r) = call_on(&slot, Work::Job(split_args("dir-list '/a b'").unwrap()), None).unwrap();
         assert_eq!((r.code, r.out.as_str()), (Some(0), "--job|dir-list|/a b\n"));
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A streaming job over the connection: its lines as they come, and
+    /// cancelled, it ends (its input closed) and says so with its last answer.
+    #[cfg(unix)]
+    #[test]
+    fn a_stream_brings_lines_as_they_come_until_cancelled() {
+        let dir = std::env::temp_dir().join(format!("spm-conn-stream-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let exe = dir.join("agent");
+        std::fs::write(&exe, "#!/bin/sh\necho first\nsleep 0.3\necho second\ncat >/dev/null\necho ended\n").unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let slot = new_slot("t".into(), in_process(exe.to_str().unwrap()));
+        let mut st = stream_on(&slot, vec!["logs-follow".into()]).unwrap();
+        let next = |st: &Stream| st.lines.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(next(&st).line.as_deref(), Some("first"));
+        let t = Instant::now();
+        assert_eq!(next(&st).line.as_deref(), Some("second"));
+        assert!(t.elapsed() >= Duration::from_millis(150), "came as printed, not at the end");
+        // Other requests still go while it runs.
+        assert_eq!(call_on(&slot, sh("echo beside"), None).unwrap().1.out, "beside\n");
+        st.cancel();
+        assert_eq!(next(&st).line.as_deref(), Some("ended"));
+        let last = next(&st);
+        assert_eq!((last.line, last.code), (None, Some(0)));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// An agent that does not stream (its hello says nothing): per call.
+    #[cfg(unix)]
+    #[test]
+    fn an_agent_without_streaming_is_asked_per_call() {
+        let slot = new_slot("t".into(), Arc::new(|| stand_in("echo '{\"spm_serve\":1,\"root\":false}'; cat >/dev/null")));
+        assert_eq!(stream_on(&slot, vec!["logs-follow".into()]).err(), Some(Fail::PerCall));
     }
 
     /// A dropped connection: the request on it fails (it is not sent
