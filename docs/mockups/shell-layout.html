@@ -1,0 +1,474 @@
+<title>SPM New Shell Layout</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans:wght@400;500;600;700&family=Noto+Sans+Mono:wght@400;500&display=swap">
+<style>
+:root{
+  --page:#eeeeee; --card:#ffffff; --side:#ffffff; --text:rgba(0,0,0,.87); --text2:rgba(0,0,0,.6); --border:rgba(0,0,0,.12);
+  --input:#cccccc; --primary:#187074; --on-primary:#ffffff; --tint:#f3f8f8; --sel:rgba(24,112,116,.10); --hover:#f4f4f4;
+  --ok-bg:#dcfce7; --ok:#047857; --warn-bg:#fef3c7; --warn:#92400e; --bad-bg:#fdecea; --bad:#c62828;
+  --mute:rgba(0,0,0,.06); --shadow:0 1px 3px rgba(0,0,0,.08); --pop:0 8px 24px rgba(0,0,0,.18);
+  --sheet:#e4e4e4; --tip:#37474f; --bar-a:64%; --ht:26%; --bt:7%;
+  --font:'Noto Sans',system-ui,'Segoe UI',sans-serif; --mono:'Noto Sans Mono',ui-monospace,Consolas,monospace;
+}
+@media (prefers-color-scheme: dark){ :root:not([data-theme="light"]){
+  --page:#21282a; --card:#2d363b; --side:#2d363b; --text:rgba(255,255,255,.87); --text2:rgba(255,255,255,.64); --border:rgba(255,255,255,.12);
+  --input:rgba(255,255,255,.24); --primary:#26a69a; --on-primary:rgba(0,0,0,.87); --tint:#2d3c40; --sel:rgba(38,166,154,.16); --hover:rgba(255,255,255,.04);
+  --ok-bg:#1f3d33; --ok:#6ee7b7; --warn-bg:#45391c; --warn:#fcd34d; --bad-bg:#4a2a2a; --bad:#ff8a80;
+  --mute:rgba(255,255,255,.08); --shadow:0 1px 3px rgba(0,0,0,.3); --pop:0 8px 24px rgba(0,0,0,.5); --sheet:#161c1e; --tip:#e0e0e0; --bar-a:58%; --ht:42%; --bt:13%; color-scheme:dark } }
+:root[data-theme="dark"]{
+  --page:#21282a; --card:#2d363b; --side:#2d363b; --text:rgba(255,255,255,.87); --text2:rgba(255,255,255,.64); --border:rgba(255,255,255,.12);
+  --input:rgba(255,255,255,.24); --primary:#26a69a; --on-primary:rgba(0,0,0,.87); --tint:#2d3c40; --sel:rgba(38,166,154,.16); --hover:rgba(255,255,255,.04);
+  --ok-bg:#1f3d33; --ok:#6ee7b7; --warn-bg:#45391c; --warn:#fcd34d; --bad-bg:#4a2a2a; --bad:#ff8a80;
+  --mute:rgba(255,255,255,.08); --shadow:0 1px 3px rgba(0,0,0,.3); --pop:0 8px 24px rgba(0,0,0,.5); --sheet:#161c1e; --tip:#e0e0e0; --bar-a:58%; --ht:42%; --bt:13%; color-scheme:dark }
+body{background:var(--sheet);color:var(--text);font-family:var(--font);font-size:14px;line-height:1.45;
+  padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));padding-block:24px 64px}
+main{max-width:1300px;margin:0 auto;display:flex;flex-direction:column;gap:36px}
+h1{font-size:24px;font-weight:500;margin:0;text-wrap:balance}
+h2{font-size:19px;font-weight:500;margin:0 0 4px;text-wrap:balance}
+p{margin:0}
+.top{display:flex;flex-wrap:wrap;gap:12px 20px;align-items:center;justify-content:space-between}
+.lead{color:var(--text2);max-width:80ch}
+.themes{display:inline-flex;border:1px solid var(--border);border-radius:8px;overflow:hidden;background:var(--card)}
+.themes button{font:inherit;border:0;background:transparent;color:var(--text2);padding:6px 14px;cursor:pointer}
+.themes button[aria-pressed="true"]{background:var(--tint);color:var(--primary);font-weight:500}
+section{display:flex;flex-direction:column;gap:10px}
+.cap{display:flex;gap:10px;align-items:baseline;flex-wrap:wrap}
+.cap span{color:var(--text2);font-size:13px}
+.code{font-family:var(--mono);font-size:12px;font-weight:500;color:var(--primary);background:var(--card);border:1px solid var(--border);border-radius:4px;padding:1px 6px}
+.scroll{overflow-x:auto;border-radius:10px;padding-bottom:4px}
+.notes{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:14px 18px;max-width:900px}
+.notes ul{margin:6px 0 0;padding-left:20px;display:flex;flex-direction:column;gap:4px}
+
+/* ---------- app window ---------- */
+.win{width:1260px;height:720px;border-radius:10px;overflow:hidden;border:1px solid var(--border);display:flex;background:var(--page);position:relative;box-shadow:var(--pop);flex:none}
+/* left panel, full height */
+.side{flex:none;width:232px;background:var(--side);border-right:1px solid var(--border);display:flex;flex-direction:column;position:relative;z-index:3}
+.brand{height:72px;flex:none;display:flex;align-items:center;gap:10px;padding:0 10px 0 16px;border-bottom:1px solid var(--border)}
+.brand .lg{width:36px;height:36px;flex:none;position:relative;border-radius:8px;display:flex;align-items:center;justify-content:center;color:var(--text2)}
+.brand .lg img{width:36px;height:36px;display:block}
+.brand .lg svg{display:none;width:20px;height:20px}
+.brand .lg.hov{background:var(--hover);outline:1px solid var(--border)}
+.brand .lg.hov img{display:none}.brand .lg.hov svg{display:block}
+.brand .fb{position:relative}
+.brand .fb .tipb{left:auto;right:0;top:calc(100% + 8px);transform:none}
+.brand .fb .tipb::before{left:auto;right:12px;top:-4px;transform:rotate(45deg)}
+.win.col .fb{display:none}
+.brand .lg .tipb{display:block;left:0;top:calc(100% + 8px);transform:none}
+.brand .lg .tipb::before{left:14px;top:-4px;transform:rotate(45deg)}
+.win.col .brand .lg .tipb{left:calc(100% + 10px);top:50%;transform:translateY(-50%)}
+.win.col .brand .lg .tipb::before{left:-4px;top:50%;transform:translateY(-50%) rotate(45deg)}
+.brand .bt{display:flex;flex-direction:column;line-height:1.15;min-width:0;flex:1}
+.brand .bt b{font-size:15px;font-weight:700;letter-spacing:.06em;color:var(--text)}
+.brand .bt small{font-size:10px;font-weight:600;letter-spacing:.08em;color:var(--primary);white-space:nowrap}
+.ib{width:32px;height:32px;border-radius:8px;display:inline-flex;align-items:center;justify-content:center;color:var(--text2);flex:none}
+.ib svg{width:18px;height:18px}
+.ib.hov{background:var(--hover);outline:1px solid var(--border)}
+.menu{flex:1;display:flex;flex-direction:column;gap:2px;padding:12px 10px 8px;min-height:0}
+.it{display:flex;align-items:center;gap:12px;height:38px;box-sizing:border-box;padding:0 12px;border-radius:8px;color:var(--text);white-space:nowrap;position:relative}
+.it svg{width:18px;height:18px;flex:none;color:var(--text2)}
+.it.on{background:var(--tint);color:var(--primary);font-weight:500}
+.it.on svg{color:var(--primary)}
+.it em{font-style:normal;margin-left:auto;color:var(--text2);font-size:13px}
+.menu hr{border:0;border-top:1px solid var(--border);margin:6px 2px}
+.foot{flex:none;border-top:1px solid var(--border);display:flex;align-items:center;gap:4px;padding:10px 10px 10px 12px;color:var(--text2)}
+.foot .v{flex:1;min-width:0;display:flex;align-items:center;gap:8px;padding:2px;border-radius:8px}
+.foot .v img{width:26px;height:26px;flex:none}
+.foot .v .vt *{white-space:nowrap}
+.foot .v .vt{display:flex;flex-direction:column;line-height:1.25;min-width:0}
+.foot .v .vt b{font-size:12.5px;font-weight:500;color:var(--text)}
+.foot .v .vt span{font-size:12px;color:var(--text2);font-variant-numeric:tabular-nums;display:flex;align-items:center;gap:6px}
+.foot .pref{width:34px;height:34px;border:1px solid var(--border);background:color-mix(in srgb,var(--card) 70%,transparent);color:var(--text)}
+.foot .pref svg{width:18px;height:18px}
+.foot .pref.act{background:var(--tint);color:var(--primary);border-color:var(--primary)}
+.acol{max-width:800px;width:100%;margin:0 auto;display:flex;flex-direction:column;gap:8px}
+.card.ahero{flex-direction:row;align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:6px}
+.ahero img{width:48px;height:48px}.ahero .ah{flex:1;min-width:200px}.ahero .ah b{display:block;font-size:16px;font-weight:500}.ahero .ah span{font-size:13px;color:var(--text2)}
+.cpt{font-size:12px;font-weight:500;color:var(--text2);padding:6px 2px 0;display:flex;align-items:center;gap:8px}
+.cpt .new{font-size:11px;color:var(--primary);background:var(--sel);border-radius:8px;padding:0 7px}
+.card.pp{padding:4px 18px;gap:0}
+.pp .prow{min-height:51px;box-sizing:border-box;padding:8px 0}
+.pp .prow.f{border-top:0}
+.pp .pl{display:flex;align-items:center;gap:6px;font-size:14px}
+.ihelp{display:inline-flex;width:15px;height:15px;border-radius:50%;border:1px solid var(--text2);color:var(--text2);font-size:10px;font-weight:600;align-items:center;justify-content:center;font-style:normal}
+.seg span svg{width:15px;height:15px;margin-right:6px}
+.sw2.offs{background:var(--input)}.sw2.offs::after{left:2px}
+.atiles{display:flex;gap:12px;flex-wrap:wrap}
+.atile{flex:1;min-width:200px;display:flex;gap:12px;align-items:flex-start;padding:12px;border-radius:8px;background:var(--card);border:1px solid var(--border)}
+.atile>svg{width:16px;height:16px;color:var(--primary);margin-top:2px;flex:none}
+.atile b{display:block;font-size:14px;font-weight:500}.atile span{font-size:13px;color:var(--text2)}
+.win.col .foot{padding:10px 0}
+.thb{width:36px;height:36px;display:flex;align-items:center;justify-content:center;border-radius:8px;position:relative}
+.thb svg{width:21px;height:21px}
+.thb.on{background:rgba(255,255,255,.18)}
+.tpop{position:absolute;z-index:8;top:66px;right:52px;width:200px;background:var(--card);color:var(--text);border-radius:12px;box-shadow:var(--pop);border:1px solid var(--border);padding:6px;white-space:normal}
+.tpop::before{content:"";position:absolute;top:-6px;right:48px;width:10px;height:10px;background:var(--card);border-left:1px solid var(--border);border-top:1px solid var(--border);transform:rotate(45deg)}
+.tpop div{display:flex;align-items:center;gap:10px;height:36px;padding:0 10px;border-radius:8px;font-size:14px}
+.tpop div svg{width:18px;height:18px;color:var(--text2)}
+.tpop div.on{background:var(--tint);color:var(--primary);font-weight:500}
+.tpop div.on svg{color:var(--primary)}
+.tpop div i{margin-left:auto;display:flex}.tpop div i svg{width:16px;height:16px;color:var(--primary)}
+.foot .v .up{font-size:11px;font-weight:600;color:var(--primary);background:var(--sel);border-radius:8px;padding:0 6px}
+/* collapsed */
+.win.col .side{width:64px}
+.win.col .brand{padding:0;justify-content:center}
+.win.col .brand .lg,.win.col .brand .lg img{width:36px;height:36px}
+.win.col .bt,.win.col .it span,.win.col .it em,.win.col .foot .v{display:none}
+.win.col .menu{padding:10px 8px}
+.win.col .it{justify-content:center;padding:0}
+.win.col .foot{flex-direction:column;padding:8px 0;gap:4px}
+.tipb{position:absolute;left:calc(100% + 10px);top:50%;transform:translateY(-50%);background:var(--tip);color:var(--card);font-size:13px;font-weight:500;padding:5px 10px;border-radius:6px;white-space:nowrap;box-shadow:var(--pop);z-index:9}
+.tipb::before{content:"";position:absolute;left:-4px;top:50%;width:8px;height:8px;background:var(--tip);transform:translateY(-50%) rotate(45deg)}
+/* right part */
+.main{flex:1;min-width:0;position:relative;display:flex;flex-direction:column}
+.bar{position:absolute;inset:0 0 auto 0;height:72px;z-index:2;display:flex;align-items:center;gap:14px;padding:0 16px 0 20px;color:#fff;white-space:nowrap;
+  background:color-mix(in srgb,var(--ic) var(--bar-a),transparent);
+  -webkit-backdrop-filter:blur(18px) saturate(1.4);backdrop-filter:blur(18px) saturate(1.4);
+  box-shadow:0 1px 0 rgba(255,255,255,.12) inset,0 6px 18px -10px rgba(0,0,0,.35)}
+.bar .sw{display:flex;align-items:center;gap:10px;background:rgba(0,0,0,.16);border-radius:8px;padding:0 12px;height:40px;font-weight:600;font-size:14px}
+.bar .sw small{font-weight:400;opacity:.9;font-size:13px}
+.bar .sw svg{width:16px;height:16px;opacity:.85}
+.bar .os{width:20px;height:20px;border-radius:50%;background:#fff;display:flex;align-items:center;justify-content:center;color:var(--ic)}
+.bar .os svg{width:13px;height:13px;opacity:1}
+.bar .dot{width:10px;height:10px;border-radius:50%;border:2px solid #fff;background:#22c55e;flex:none;box-sizing:content-box}
+.dot.warn{background:#f59e0b!important}.dot.bad{background:#ef4444!important}.dot.unk{background:#94a3b8!important}
+.sw .tipd{position:absolute;top:calc(100% + 8px);left:0;background:var(--tip);color:var(--card);font-size:13px;font-weight:500;padding:5px 10px;border-radius:6px;white-space:nowrap;box-shadow:var(--pop)}
+.bar .sw{position:relative}
+.bar .tag{background:#fff;color:var(--ic);font-size:11px;font-weight:700;border-radius:5px;padding:1px 7px;letter-spacing:.04em}
+.bar .div{width:1px;height:28px;background:rgba(255,255,255,.35);flex:none}
+.bar .pt{display:flex;align-items:center;gap:6px;min-width:0;flex:1}
+.bar .pt h3{overflow:hidden;text-overflow:ellipsis}
+.bar .pt h3{margin:0;font-size:20px;font-weight:500;letter-spacing:.01em}
+.bar .rb{width:32px;height:32px;border-radius:8px;display:flex;align-items:center;justify-content:center;color:#fff;opacity:.9}
+.bar .rb svg{width:18px;height:18px}
+.bar .sp{flex:1}
+.win.narrow .bar .mon i{display:none}
+.win.narrow{width:900px}
+.bar .mon{flex:none;position:relative;display:flex;gap:16px;font-size:13px;align-items:center;font-variant-numeric:tabular-nums}
+.bar .mon>span{display:flex;gap:7px;align-items:center}
+.bar .mon svg{width:18px;height:18px;opacity:.95}
+.bar .mon i{display:inline-block;width:36px;height:5px;border-radius:3px;background:rgba(255,255,255,.35);position:relative;overflow:hidden}
+.bar .mon i b{position:absolute;inset:0 auto 0 0;background:#fff;border-radius:3px}
+.bar .mon .val{display:inline-block;text-align:left}
+.bar .bell{width:36px;height:36px;display:flex;align-items:center;justify-content:center;border-radius:8px;position:relative}
+.bar .bell svg{width:22px;height:22px}
+.bar .bell .ud{position:absolute;top:6px;right:7px;width:8px;height:8px;border-radius:50%;background:#5eead4;border:1.5px solid #fff}
+.strip{position:absolute;left:0;right:0;top:72px;height:3px;z-index:2;background:color-mix(in srgb,var(--primary) 25%,transparent)}
+.strip::after{content:"";position:absolute;inset:0 auto 0 0;width:var(--p,40%);background:var(--primary)}
+.content{flex:1;min-height:0;overflow:hidden;position:relative}
+.inner{position:absolute;left:0;right:0;top:0;padding:92px 24px 24px;display:flex;flex-direction:column;gap:16px}
+.win.scrolled .inner{top:-118px}
+.scrollbar{position:absolute;right:3px;top:78px;width:6px;height:150px;border-radius:3px;background:var(--border);z-index:1}
+.win.scrolled .scrollbar{top:200px}
+/* page bits */
+.ptitle{display:flex;align-items:center;gap:12px}
+.ptitle .tt{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
+.ptitle h3{margin:0;font-size:19px;font-weight:500}
+.ptitle small{font-size:13px;color:var(--text2)}
+.ptitle .ib{border:1px solid var(--border);background:var(--card)}
+.gtiles{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.win.narrow .gtiles{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}
+.gt{border-radius:12px;border:1px solid color-mix(in srgb,var(--border) 100%,var(--card));box-shadow:0 1px 3px rgba(0,0,0,.10);background:color-mix(in srgb,var(--c) var(--bt),var(--card));display:flex;flex-direction:column;overflow:hidden}
+.gt.cur{border:2px solid var(--c)}
+.gt .gh{display:flex;align-items:center;gap:9px;padding:9px 12px;background:color-mix(in srgb,var(--c) var(--ht),var(--card))}
+.gt .gos{width:26px;height:26px;border-radius:7px;background:var(--c);color:#fff;display:flex;align-items:center;justify-content:center;flex:none}
+.gt .gos svg{width:16px;height:16px}
+.gt .gn{flex:1;min-width:0}
+.gt .gn b{display:block;font-size:14.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.gt .gn small{display:block;font-size:11.5px;color:var(--text2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.gt .pill{font-size:11.5px;padding:2px 8px}
+.gt .gb{padding:10px 12px 12px;display:flex;flex-direction:column;gap:9px;flex:1}
+.gt .gf{display:flex;flex-direction:column;gap:5px;font-size:13px;flex:1}
+.gt .gf>div{display:flex;align-items:center}.gt .gf>div>span:first-child{width:84px;flex:none;color:var(--text2)}
+.gt .gft{display:flex;gap:6px;align-items:center}
+.gt .ob{min-width:78px;height:28px;box-sizing:border-box;border-radius:8px;background:var(--c);color:#fff;font-size:13px;font-weight:500;display:flex;align-items:center;justify-content:center;padding:0 10px}
+.gt .sb{height:28px;box-sizing:border-box;border-radius:8px;border:1px solid var(--input);background:var(--card);font-size:13px;font-weight:500;display:flex;align-items:center;padding:0 10px}
+.gt .more{margin-left:auto;width:28px;height:28px;box-sizing:border-box;border-radius:8px;border:1px solid var(--input);background:var(--card);display:flex;align-items:center;justify-content:center;color:var(--text)}
+.gt .more svg{width:18px;height:18px;stroke-width:2.6}
+.legend{display:flex;flex-wrap:wrap;gap:12px}
+.legend .lg1{display:flex;flex-direction:column;gap:8px;width:290px}
+.legend .bar{position:relative;inset:auto;height:56px;border-radius:10px;padding:0 12px}
+.legend p{font-size:13px;color:var(--text2)}
+.card{background:var(--card);border:1px solid var(--border);border-radius:12px;box-shadow:var(--shadow);padding:16px 18px;display:flex;flex-direction:column;gap:12px;min-width:0}
+.tiles{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px}
+.tile{background:var(--card);border:1px solid var(--border);border-radius:12px;box-shadow:var(--shadow);overflow:hidden;display:flex;flex-direction:column}
+.tile .hd{height:8px;background:var(--c)}
+.tile .bd{padding:14px 16px;display:flex;flex-direction:column;gap:10px}
+.tile .nm{display:flex;align-items:center;gap:10px}
+.tile .nm .os{width:30px;height:30px;border-radius:8px;background:color-mix(in srgb,var(--c) 14%,transparent);color:var(--c);display:flex;align-items:center;justify-content:center;flex:none}
+.tile .nm .os svg{width:18px;height:18px}
+.tile .nm b{font-weight:600;font-size:15px;display:block}
+.tile .nm small{color:var(--text2);font-size:12.5px;display:block}
+.tile .row{display:flex;gap:6px;flex-wrap:wrap}
+.tile .kv{display:grid;grid-template-columns:auto 1fr;gap:4px 14px;font-size:13px}
+.tile .kv span:nth-child(odd){color:var(--text2)}
+.tile .ft{border-top:1px solid var(--border);padding:10px 16px;display:flex;gap:8px}
+.pill{display:inline-flex;align-items:center;gap:5px;border-radius:10px;padding:1px 9px;font-size:12px;font-weight:500;white-space:nowrap}
+.pill.ok{background:var(--ok-bg);color:var(--ok)}
+.pill.warn{background:var(--warn-bg);color:var(--warn)}
+.pill.bad{background:var(--bad-bg);color:var(--bad)}
+.pill.cur{background:var(--sel);color:var(--primary)}
+.pill.mute{background:var(--mute);color:var(--text2)}
+.pill .d{width:7px;height:7px;border-radius:50%;background:currentColor}
+.btn{display:inline-flex;align-items:center;gap:8px;height:32px;box-sizing:border-box;padding:0 14px;border-radius:8px;border:1px solid var(--input);background:var(--card);color:var(--text);font-weight:500;white-space:nowrap;font-size:14px}
+.btn.pri{background:var(--primary);border-color:var(--primary);color:var(--on-primary)}
+.btn svg{width:16px;height:16px}
+.sec{display:flex;align-items:center;gap:10px}
+.sec b{font-weight:500;font-size:15px}
+.sec .sp{flex:1}
+.mut{color:var(--text2)}
+.svc{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px}
+.svc .card{gap:8px}
+.svc .card .h{display:flex;align-items:center;gap:10px}
+.svc .card .h svg{width:20px;height:20px;color:var(--primary)}
+.svc .card .h b{font-weight:500;flex:1}
+.meta{display:grid;grid-template-columns:auto 1fr;gap:4px 14px;font-size:13px}
+.meta span:nth-child(odd){color:var(--text2)}
+.list .r{display:flex;align-items:center;gap:12px;padding:10px 0;border-top:1px solid var(--border);font-size:13.5px}
+.list .r:first-child{border-top:0}
+.list .r .t{font-family:var(--mono);font-size:12.5px;color:var(--text2);width:150px;flex:none}
+.list .r .m{flex:1;min-width:0}
+
+/* desktop + see-through */
+.desk{display:inline-block;padding:28px;border-radius:12px;background:
+ radial-gradient(circle at 18% 30%,#f59e0b 0,transparent 32%),radial-gradient(circle at 10% 80%,#0ea5e9 0,transparent 35%),
+ radial-gradient(circle at 70% 20%,#8b5cf6 0,transparent 40%),linear-gradient(135deg,#1e3a5f,#0f766e)}
+.desk .win{background:transparent}
+.desk .main{background:var(--page)}
+.desk .side{background:color-mix(in srgb,var(--side) 72%,transparent);-webkit-backdrop-filter:blur(28px) saturate(1.3);backdrop-filter:blur(28px) saturate(1.3)}
+.desk.solid .side{background:var(--side);backdrop-filter:none;-webkit-backdrop-filter:none}
+.desk.solid .bar{background:var(--ic);backdrop-filter:none;-webkit-backdrop-filter:none}
+.desk .win.narrow{width:900px}
+.banner{display:flex;gap:10px;align-items:center;border-radius:12px;padding:10px 14px;background:var(--warn-bg);color:var(--warn)}
+.banner svg{width:18px;height:18px;display:block}
+.scrim{position:absolute;inset:0;background:rgba(0,0,0,.32);z-index:5}
+.dlg{position:absolute;z-index:6;left:calc(232px + (100% - 232px)/2);top:50%;transform:translate(-50%,-50%);width:520px;background:var(--card);border-radius:12px;box-shadow:var(--pop);overflow:hidden}
+.dlg .dh{display:flex;align-items:center;padding:12px 12px 12px 20px;border-bottom:1px solid var(--border)}
+.dlg .dh b{flex:1;font-weight:500;font-size:16px}
+.dlg .db{padding:8px 20px 16px;display:flex;flex-direction:column}
+.dlg .about{display:flex;gap:12px;align-items:center;padding:10px 0 14px}
+.dlg .about img{width:40px;height:40px}
+.dlg .about b{display:block;font-weight:500}.dlg .about span{font-size:13px;color:var(--text2)}
+.prow{display:flex;align-items:center;gap:16px;padding:12px 0;border-top:1px solid var(--border)}
+.prow>div{flex:1;min-width:0}.prow b{display:block;font-weight:500}.prow span{font-size:13px;color:var(--text2)}
+.sw2{width:34px;height:18px;border-radius:9px;background:var(--primary);position:relative;display:inline-block;flex:none}
+.sw2::after{content:"";position:absolute;top:2px;left:18px;width:14px;height:14px;border-radius:50%;background:#fff}
+.seg{display:inline-flex;border:1px solid var(--input);border-radius:8px;overflow:hidden;height:32px;box-sizing:border-box;flex:none}
+.seg span{display:flex;align-items:center;padding:0 12px;color:var(--text2);font-size:13px}
+.seg span+span{border-left:1px solid var(--input)}
+.seg .on{background:var(--tint);color:var(--primary);font-weight:500}
+/* selected-item dimple options */
+.win.dimA .menu{padding-right:0;padding-left:16px;padding-top:16px}
+.menu{position:relative}
+.win.dimA .it{margin-right:10px;z-index:2;cursor:pointer}
+.win.dimA .menu hr{margin:14px 10px 14px 2px}
+.win.dimA .it.on{background:transparent;color:var(--primary)}
+.win.dimA .it span,.win.dimA .it em{position:relative}
+.sel{display:none}
+.win.dimA .sel{display:block;position:absolute;left:16px;right:-1px;height:38px;top:var(--y,16px);z-index:1;box-sizing:border-box;background:var(--page);border:1px solid var(--border);border-right:0;border-radius:10px 0 0 10px;transition:top .22s cubic-bezier(.3,.7,.2,1)}
+.win.dimA .sel::before,.win.dimA .sel::after{content:"";position:absolute;right:0;width:14px;height:14px;pointer-events:none}
+.win.dimA .sel::before{top:-14px;background:radial-gradient(circle at 0 0,transparent 12.9px,var(--border) 13.2px,var(--border) 13.8px,var(--page) 14.1px)}
+.win.dimA .sel::after{bottom:-14px;background:radial-gradient(circle at 0 100%,transparent 12.9px,var(--border) 13.2px,var(--border) 13.8px,var(--page) 14.1px)}
+/* tinted bar, like the tile headers (his ask 2026-11-16 03:06Z) */
+.bar{--tb:color-mix(in srgb,var(--ic) var(--ht),var(--card));color:var(--text);background:color-mix(in srgb,var(--tb) 82%,transparent);box-shadow:0 1px 0 var(--border)}
+.bar .sw{background:color-mix(in srgb,var(--ic) 14%,transparent)}
+.bar .sw small{color:var(--text2);opacity:1}
+.bar .os{background:var(--ic);color:#fff}
+.bar .dot{border-color:var(--card)}
+.bar .tag{background:var(--ic);color:#fff}
+.bar .div{background:var(--border)}
+.bar .rb,.bar .thb,.bar .bell{color:var(--text)}
+.bar .mon svg{color:var(--text2);opacity:1}
+.bar .mon i{background:color-mix(in srgb,var(--text) 14%,transparent)}
+.bar .mon i b{background:color-mix(in srgb,var(--ic) 65%,var(--text))}
+.bar .bell .ud{border-color:var(--card);background:var(--primary)}
+.thb.on{background:color-mix(in srgb,var(--ic) 16%,transparent)}
+.desk.solid .bar{background:var(--tb)}
+.legend .bar{background:var(--tb)}
+.mt{border-collapse:collapse;width:100%;font-size:13.5px}.mt th{text-align:left;font-weight:500;color:var(--text2);padding:6px 10px;border-bottom:1px solid var(--border)}.mt td{padding:7px 10px;border-bottom:1px solid var(--border);vertical-align:top}.mt td:first-child{white-space:nowrap;color:var(--text2)}.mt td:nth-child(3),.mt td:nth-child(4){white-space:nowrap}
+</style>
+
+<main>
+  <div class="top">
+    <div>
+      <h1>Platform Manager: new layout</h1>
+      <p class="lead">Click the menu items in any window: the selection slides to the new row. Round 2. Menu panel full height with the logo on top; fold button beside the name, and when folded the logo unfolds on hover. The menu and the coloured bar are see-through with a blur, switchable in preferences. Page titles stay in the page. The switcher dot shows the instance's health.</p>
+    </div>
+    <div class="themes" role="group" aria-label="Theme"><button data-t="">System</button><button data-t="light">Light</button><button data-t="dark">Dark</button></div>
+  </div>
+
+  <section><div class="cap"><span class="code">S1</span><b>Remote instance, page at the top</b><span>Menu shows the desktop behind it, blurred. Bar 72 px, tinted with the instance colour like the tile headers, see-through. Tiles as built today.</span></div><div class="scroll" id="s1"></div></section>
+  <section><div class="cap"><span class="code">S2</span><b>Scrolled, pointer on the fold button</b><span>Tiles pass under the bar, blurred. Unfolded, the fold button sits right of the name.</span></div><div class="scroll" id="s2"></div></section>
+  <section><div class="cap"><span class="code">S3</span><b>Menu folded, pointer on the logo</b><span>64 px of icons and no button; on hover the logo turns into the unfold button. Item names show as tooltips. The choice is remembered.</span></div><div class="scroll" id="s3"></div></section>
+  <section><div class="cap"><span class="code">S4</span><b>This computer, Status page, a warning</b><span>Amber dot: something needs a look (here disk space); hover says what. Thin progress strip under the bar for a running job.</span></div><div class="scroll" id="s4"></div></section>
+  <section><div class="cap"><span class="code">S5</span><b>Narrow window</b><span>Not enough room: the monitor bars drop, icon and value stay. Below 1000 px the menu folds by itself, as today.</span></div><div class="scroll" id="s5"></div></section>
+  <section><div class="cap"><span class="code">S6</span><b>See-through off</b><span>Same page with the preference off: solid menu and solid bar.</span></div><div class="scroll" id="s6"></div></section>
+  <section><div class="cap"><span class="code">S7</span><b>About and preferences, new Appearance group</b><span>The footer button (sliders icon) opens this page, as the (i) does today. Appearance: Theme and the see-through switch (on by default).</span></div><div class="scroll" id="s7"></div></section>
+  <section><div class="cap"><span class="code">S9</span><b>Theme picker in the bar</b><span>Left of the bell. Its icon shows the choice: sun, moon, or half dark circle for Follow system.</span></div><div class="scroll" id="s9"></div></section>
+  <section><div class="cap"><span class="code">D1</span><b>Selected item joins the page</b><span>The selected row takes the page colour and runs into the page, with curved corners above and below. Used in every unfolded state.</span></div><div class="scroll" id="d1"></div></section>
+  <section><div class="cap"><span class="code">S8</span><b>Switcher dot</b><span>The dot shows health, not the instance colour.</span></div><div id="s8"></div></section>
+
+  <div class="notes">
+    <b style="font-weight:500">What changes against today</b>
+    <ul>
+      <li>Logo and SENTIENT / PLATFORM MANAGER at the top of a full-height menu. Unfolded: a fold button right of the name. Folded: no button, the logo becomes the unfold button on hover.</li>
+      <li>Menu and bar are see-through with a blur (menu shows the desktop, bar shows the page). One switch in preferences turns both solid.</li>
+      <li>The bar is tinted with the instance colour like the tile headers (no longer the full colour), with normal dark or light text. Bar 72 px instead of 52 px; it spans only the page area. Page titles and their refresh buttons stay in the page.</li>
+      <li>Monitors as icons with bar and value; when the window is narrow only icon and value.</li>
+      <li>Switcher dot: green all fine, amber needs a look, red a fault (SENTIENT stopped, a database down, backup failed), grey not reachable or still checking.</li>
+      <li>Menu footer: app icon, name and version, an Update pill when a new version exists, and a sliders button opening About and preferences.</li>
+      <li>About and preferences gets an Appearance group: Theme and See-through menu and bar.</li>
+      <li>Theme picker moves to the bar, left of the bell: sun for Light, moon for Dark, half dark circle for Follow system.</li>
+      <li>Add button reads "Add instance".</li>
+      <li>To confirm in the build: the blur. The desktop blur behind the menu depends on the system (Windows 11 and KDE support it); where it is not available the menu stays see-through without blur, or solid if that reads badly.</li>
+    </ul>
+  </div>
+  <div class="notes" style="max-width:1100px">
+    <b style="font-weight:500">Motion plan (for your go)</b>
+    <p class="mut" style="margin-top:4px">Rules: every movement eases out, 100 to 400 ms, moves only position, size, opacity or colour, and runs at the screen's refresh rate. SPM already follows the system "reduce motion" setting; that switch turns all of these off. Each build is checked for dropped frames at x1 and x2.</p>
+    <div style="overflow-x:auto;margin-top:10px"><table class="mt"><thead><tr><th>Where</th><th>What moves</th><th>Time</th><th>Today</th></tr></thead><tbody><tr><td>Menu</td><td>Selection slides to the clicked row</td><td>220 ms</td><td>In mockup</td></tr><tr><td>Menu</td><td>Fold and unfold: width glides 232 to 64 px, names fade</td><td>200 ms</td><td>New</td></tr><tr><td>Pages</td><td>New page fades in and rises 6 px; no white flash</td><td>160 ms</td><td>Extend (fade exists)</td></tr><tr><td>Top bar</td><td>Switching instance: tint and switcher cross-fade to the new colour</td><td>250 ms</td><td>New</td></tr><tr><td>Top bar</td><td>Health dot changes colour smoothly; one soft pulse when it turns amber or red</td><td>300 ms</td><td>New</td></tr><tr><td>Top bar</td><td>CPU, memory and disk bars glide to the new value instead of jumping</td><td>400 ms</td><td>New</td></tr><tr><td>Popovers</td><td>Bell, theme picker, ⋯ menus, switcher list: fade and grow from 97 %</td><td>140 ms</td><td>New</td></tr><tr><td>Dialogs</td><td>Backdrop fades, dialog rises 8 px and fades in; closes faster</td><td>180 / 120 ms</td><td>New</td></tr><tr><td>Tooltips</td><td>Fade in after a short pause</td><td>100 ms</td><td>New</td></tr><tr><td>Loading</td><td>Skeleton shimmer stays; real values fade in in place</td><td>150 ms</td><td>Extend</td></tr><tr><td>Jobs</td><td>Progress strip width glides; when done it fills, then fades out</td><td>300 ms</td><td>Extend</td></tr><tr><td>Lists</td><td>Backups and notifications: a new row slides in, a removed row folds away</td><td>180 ms</td><td>New</td></tr><tr><td>Controls</td><td>Switch knob slides; segmented highlight slides like the menu</td><td>150 ms</td><td>New</td></tr><tr><td>Panels</td><td>Expanding sections (licence Details / Limits, job details) open by height</td><td>200 ms</td><td>New</td></tr><tr><td>Tiles</td><td>Hover lifts the tile shadow; the open tile's border fades in</td><td>120 ms</td><td>New</td></tr><tr><td>Buttons</td><td>Refresh spins (exists); Saved tick fades in, then out</td><td>150 ms</td><td>Exists / extend</td></tr></tbody></table></div>
+  </div>
+</main>
+
+<script>
+(function(){
+const root=document.documentElement;
+function setT(t){ if(t) root.setAttribute('data-theme',t); else root.removeAttribute('data-theme');
+  document.querySelectorAll('.themes button').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.t===t)));
+  try{localStorage.setItem('spm-shell-theme',t)}catch(e){} }
+let saved=''; try{saved=localStorage.getItem('spm-shell-theme')||''}catch(e){}
+setT(saved);
+document.querySelectorAll('.themes button').forEach(b=>b.addEventListener('click',()=>setT(b.dataset.t)));
+
+const P=s=>`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${s}</svg>`;
+const I={
+ status:P('<path d="M22 12h-4l-3 9L9 3l-3 9H2"/>'),
+ stats:P('<path d="M3 3v18h18"/><path d="m19 9-5 5-4-4-3 3"/>'),
+ power:P('<path d="M12 2v10"/><path d="M18.4 6.6a9 9 0 1 1-12.77.04"/>'),
+ logs:P('<rect x="3" y="3" width="18" height="18" rx="2"/><path d="m7 11 2-2-2-2"/><path d="M11 13h4"/>'),
+ folder:P('<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>'),
+ update:P('<path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 16h5v5"/>'),
+ gateway:P('<rect x="9" y="2" width="6" height="6" rx="1"/><rect x="2" y="16" width="6" height="6" rx="1"/><rect x="16" y="16" width="6" height="6" rx="1"/><path d="M5 16v-3a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v3"/><path d="M12 12V8"/>'),
+ backup:P('<rect x="2" y="3" width="20" height="5" rx="1"/><path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8"/><path d="M10 12h4"/>'),
+ mig:P('<path d="M8 3 4 7l4 4"/><path d="M4 7h16"/><path d="m16 21 4-4-4-4"/><path d="M20 17H4"/>'),
+ wrench:P('<path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>'),
+ gear:P('<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>'),
+ server:P('<rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><path d="M6 6h.01"/><path d="M6 18h.01"/>'),
+ bell:P('<path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/>'),
+ refresh:P('<path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/>'),
+ info:P('<circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>'),
+ monitor:P('<rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8"/><path d="M12 17v4"/>'),
+ cpu:P('<rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6" rx="1"/><path d="M15 2v2"/><path d="M15 20v2"/><path d="M2 15h2"/><path d="M2 9h2"/><path d="M20 15h2"/><path d="M20 9h2"/><path d="M9 2v2"/><path d="M9 20v2"/>'),
+ mem:P('<path d="M6 19v-3"/><path d="M10 19v-3"/><path d="M14 19v-3"/><path d="M18 19v-3"/><path d="M8 11V9"/><path d="M16 11V9"/><path d="M12 11V9"/><path d="M2 15h20"/><path d="M2 7a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v1.1a2 2 0 0 0 0 3.837V17a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-5.1a2 2 0 0 0 0-3.837Z"/>'),
+ hd:P('<path d="M22 12H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/><path d="M6 16h.01"/><path d="M10 16h.01"/>'),
+ fold:P('<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/><path d="m16 15-3-3 3-3"/>'),
+ unfold:P('<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/><path d="m14 9 3 3-3 3"/>'),
+ chevd:P('<path d="m6 9 6 6 6-6"/>'),
+ linux:P('<path d="M12 3c-2 0-3 1.6-3 4 0 1.5-.6 2.6-1.6 4C6 12.7 5 14.6 5 16.5 5 19 7.5 21 12 21s7-2 7-4.5c0-1.9-1-3.8-2.4-5.5-1-1.4-1.6-2.5-1.6-4 0-2.4-1-4-3-4Z"/><path d="M10 8h.01"/><path d="M14 8h.01"/>'),
+ win:P('<rect x="3" y="3" width="8" height="8"/><rect x="13" y="3" width="8" height="8"/><rect x="3" y="13" width="8" height="8"/><rect x="13" y="13" width="8" height="8"/>'),
+ db:P('<ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14a9 3 0 0 0 18 0V5"/><path d="M3 12a9 3 0 0 0 18 0"/>'),
+ plus:P('<path d="M12 5v14"/><path d="M5 12h14"/>'),
+ sliders:P('<path d="M21 4h-7"/><path d="M10 4H3"/><path d="M21 12h-9"/><path d="M8 12H3"/><path d="M21 20h-5"/><path d="M12 20H3"/><path d="M14 2v4"/><path d="M8 10v4"/><path d="M16 18v4"/>'),
+ sun:P('<circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/>'),
+ moon:P('<path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/>'),
+ halfc:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 1 0 18Z" fill="currentColor"/></svg>',
+ check:P('<path d="M20 6 9 17l-5-5"/>'),
+ down:P('<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/>'),
+ file:P('<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/>'),
+ book:P('<path d="M12 7v14"/><path d="M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"/>'),
+ x:P('<path d="M18 6 6 18"/><path d="m6 6 12 12"/>'),
+ dots:P('<circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/>'),
+ warn:P('<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/>'),
+};
+const ICON='data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxNDUuNjQ1IiBoZWlnaHQ9IjEzMSIgdmlld0JveD0iMCAwIDM4LjUzNTI0MSAzNC42NjA0MTgiICB4bWxuczpjMnBhPSJodHRwOi8vYzJwYS5vcmcvbWFuaWZlc3QiPgo8ZGVmcz4KPGxpbmVhckdyYWRpZW50IGlkPSJiZyIgeDE9IjAiIHkxPSIwIiB4Mj0iMSIgeTI9IjEiPjxzdG9wIG9mZnNldD0iMCIgc3RvcC1jb2xvcj0iIzAwZTZjMyIvPjxzdG9wIG9mZnNldD0iLjU1IiBzdG9wLWNvbG9yPSIjMDA4YThjIi8+PHN0b3Agb2Zmc2V0PSIxIiBzdG9wLWNvbG9yPSIjMDAzZDVjIi8+PC9saW5lYXJHcmFkaWVudD4KPGZpbHRlciBpZD0ic2giIHg9Ii0zMCUiIHk9Ii0zMCUiIHdpZHRoPSIxNjAlIiBoZWlnaHQ9IjE3MCUiPjxmZUdhdXNzaWFuQmx1ciBzdGREZXZpYXRpb249Ii45Ii8+PC9maWx0ZXI+CjwvZGVmcz4KPHJlY3QgeD0iLjMzNyIgeT0iLjM2OCIgd2lkdGg9IjM3Ljg1OSIgaGVpZ2h0PSIzMy45NzIiIHJ5PSI3LjQwNSIgZmlsbD0idXJsKCNiZykiIHN0cm9rZT0iIzAwZmZmZiIgc3Ryb2tlLXdpZHRoPSIuMjYiLz4KPGcgZmlsbD0iI2Y0ZjdmZiI+CjxwYXRoIHRyYW5zZm9ybT0ibWF0cml4KDQuMTM5NTI2OSwwLDAsNC4wMzQ2Mjk4LDg2LjI1MTQ5MSwtMTEwLjQzODc3KSIgZD0ibSAtMTMuMDM4MjQ0LDI4LjQ3Mzk0OCBjIDAsMCAtMC45MDY2NjUsMS43NTYyNzcgLTIuNjExMDI5LDEuNzU2Mjc3IGggLTMuOTk1NTE3IHYgMC4zMTkzMjQgaCA1LjY0ODU3NSB2IDQuMzEwODY0IGMgMCwwIDAsMCAwLDAgMC43MDU0MzEsMCAxLjI3NzI5NSwtMC41NzE4NjYgMS4yNzcyOTUsLTEuMjc3Mjk3IHYgLTUuMTA5MTY4IHoiLz4KPHBhdGggdHJhbnNmb3JtPSJtYXRyaXgoMS4yMTUxMzc5LDAsMCwxLjI4ODM2MjUsMTEyNy44ODE5LC0zODQuODcwMjkpIiBkPSJtIC05MDYuNTIzMSwzMDIuMTc2ODUgaCAtMTMuNjEwODkgYSA0LjAwMDA3NDQsNC4wMDAwNzQ0IDEzNS4wMDE5MyAwIDAgLTQuMDAwMjEsMy45OTk5NCBoIDEzLjYxMTE4IGEgMy45OTk5MTcxLDMuOTk5OTE3MSAxMzUgMCAwIDMuOTk5OTIsLTMuOTk5OTIgeiIvPgo8cGF0aCB0cmFuc2Zvcm09Im1hdHJpeCg0LjAzNDYzMDIsMCwwLDQuMDM0NjMwMiwtMTYxLjE3OTE4LC0xNTMuMzE3MjQpIiBkPSJtIDQxLjE3MTE5MSw0MS42NTYxMzkgaCA0LjAyNjc5OSBhIDEuMjc3Mjc5MiwxLjI3NzI3OTIgNDUuMDAwMDM0IDAgMSAxLjI3NzI3OSwxLjI3NzI4MSBsIDAsMC4zOTkxNjYgaCAtNC4wMjY4MDEgYSAxLjI3NzI3NzYsMS4yNzcyNzc2IDQ1LjAwMDAzNCAwIDEgLTEuMjc3Mjc3LC0xLjI3NzI3OSB6Ii8+CjxwYXRoIHRyYW5zZm9ybT0ibWF0cml4KDQuMDM0NjMwMiwwLDAsLTQuMDM0NjMwMiwtMTYxLjE3OTE4LDE5OC4yNzcyMSkiIGQ9Im0gNDEuMTcxMTg4LDQxLjY1NjE0IDQuMDI2ODAyLC0xMGUtNyBhIDEuMjc3Mjc4OSwxLjI3NzI3ODkgNDUuMDAwMDI5IDAgMSAxLjI3NzI3OSwxLjI3NzI4MSBsIDAsMC4zOTkxNjYgLTQuMDI2ODA0LDEwZS03IGEgMS4yNzcyNzczLDEuMjc3Mjc3MyA0NS4wMDAwMjkgMCAxIC0xLjI3NzI3NywtMS4yNzcyNzkgeiIvPgo8L2c+CjxlbGxpcHNlIGN4PSIyOC4zIiBjeT0iMjUuNiIgcng9IjkuNiIgcnk9IjguNiIgZmlsbD0iIzAwMjIyZSIgb3BhY2l0eT0iLjQ1IiBmaWx0ZXI9InVybCgjc2gpIi8+PGNpcmNsZSBjeD0iMjguMyIgY3k9IjI0IiByPSI5LjMiIGZpbGw9IiNlYWZmZmIiIHN0cm9rZT0iI2I0ZmZmZiIgc3Ryb2tlLXdpZHRoPSIuNSIvPjxyZWN0IHg9IjIyLjQiIHk9IjE4LjYiIHdpZHRoPSIxMS44IiBoZWlnaHQ9IjQuNiIgcng9IjEuMiIgZmlsbD0iIzBiNWE2NiIvPjxyZWN0IHg9IjIyLjQiIHk9IjI0LjYiIHdpZHRoPSIxMS44IiBoZWlnaHQ9IjQuNiIgcng9IjEuMiIgZmlsbD0iIzBiNWE2NiIvPjxjaXJjbGUgY3g9IjI0LjciIGN5PSIyMC45IiByPSIuOCIgZmlsbD0iIzJhZmY4MCIvPjxjaXJjbGUgY3g9IjI0LjciIGN5PSIyNi45IiByPSIuOCIgZmlsbD0iIzJhZmY4MCIvPjxyZWN0IHg9IjI3IiB5PSIyMC40IiB3aWR0aD0iNS40IiBoZWlnaHQ9IjEiIHJ4PSIuNSIgZmlsbD0iI2I0ZmZmZiIvPjxyZWN0IHg9IjI3IiB5PSIyNi40IiB3aWR0aD0iNS40IiBoZWlnaHQ9IjEiIHJ4PSIuNSIgZmlsbD0iI2I0ZmZmZiIvPjxtZXRhZGF0YT48YzJwYTptYW5pZmVzdD5BQUFXZ21wMWJXSUFBQUFlYW5WdFpHTXljR0VBRVFBUWdBQUFxZ0E0bTNFRFl6SndZUUFBQUJaY2FuVnRZZ0FBQUVkcWRXMWtZekp0WVFBUkFCQ0FBQUNxQURpYmNRTjFjbTQ2WXpKd1lUcGhOMlE1TnpZMk5TMHdaV0l3TFRRMk4yRXRZakE0TUMwM1ltTmlNbUV6WVdJek1ESUFBQUFEbDJwMWJXSUFBQUFwYW5WdFpHTXlZWE1BRVFBUWdBQUFxZ0E0bTNFRFl6SndZUzVoYzNObGNuUnBiMjV6QUFBQUFMeHFkVzFpQUFBQVJHcDFiV1JqWW05eUFCRUFFSUFBQUtvQU9KdHhFMk15Y0dFdWFXNW5jbVZrYVdWdWRDNTJNd0FBQUFBWVl6SnphTkM0U1NTb252ajYxK1JWT1l0eXAva0FBQUJ3WTJKdmNxTnBaR002Wm05eWJXRjBiV2x0WVdkbEwzTjJaeXQ0Yld4cWFXNXpkR0Z1WTJWSlJIZ3NlRzF3T21scFpEbzVOVFkzWlRoak5pMDBabVl4TFRSbFlUWXRZakU0WmkxalltVTBPR1psTkdabVlqaHNjbVZzWVhScGIyNXphR2x3YUhCaGNtVnVkRTltQUFBQjRtcDFiV0lBQUFCQmFuVnRaR05pYjNJQUVRQVFnQUFBcWdBNG0zRVRZekp3WVM1aFkzUnBiMjV6TG5ZeUFBQUFBQmhqTW5Ob2RLOWt1c2dTa2tCVmNvcmtoWXNwcXdBQUFabGpZbTl5b21kaFkzUnBiMjV6Z3FKbVlXTjBhVzl1YTJNeWNHRXViM0JsYm1Wa2FuQmhjbUZ0WlhSbGNuT2hhMmx1WjNKbFpHbGxiblJ6Z2FKamRYSnNlQzF6Wld4bUkycDFiV0ptUFdNeWNHRXVZWE56WlhKMGFXOXVjeTlqTW5CaExtbHVaM0psWkdsbGJuUXVkak5rYUdGemFGZ2dxU0xDWGtRMFdMSjByd0pTOWdjU3hxbEFWMTN3SlNiNzN6b0g5NkJKanNDa1ptRmpkR2x2Ym5nZFkyOXRMbUZ1ZEdoeWIzQnBZeTVqYkdGMVpHVXVjSEp2ZG1sa1pXUnFjR0Z5WVcxbGRHVnljNkY0SDJOdmJTNWhiblJvY205d2FXTXViM0pwWjJsdUxXTnZibVpwWkdWdVkyVm5kVzVyYm05M2JtdGtaWE5qY21sd2RHbHZibmhtUTJ4aGRXUmxJSEJ5YjNacFpHVmtJSFJvYVhNZ1ptbHNaU0JoZENCMGFHVWdjbVZ4ZFdWemRDQnZaaUJoSUhWelpYSWdZVzVrSUcxaGVTQm9ZWFpsSUdOeVpXRjBaV1FnYjNJZ2JXOWthV1pwWldRZ2RHaGxJR1pwYkdVZ1kyOXVkR1Z1ZEhNdWJYTnZablIzWVhKbFFXZGxiblNoWkc1aGJXVm1RMnhoZFdSbGNtRnNiRUZqZEdsdmJuTkpibU5zZFdSbFpQVUFBQURJYW5WdFlnQUFBRUJxZFcxa1kySnZjZ0FSQUJDQUFBQ3FBRGliY1JOak1uQmhMbWhoYzJndVpHRjBZUUFBQUFBWVl6SnphTnlkeEFSS1c1Njl3YWNxQStOWUhaNEFBQUNBWTJKdmNxVmpZV3huWm5Ob1lUSTFObU53WVdSTUFBQUFBQUFBQUFBQUFBQUFaR2hoYzJoWUlNdVZkTDkydW1INEZQR3IvaDEvV1B3VmtVcDFhd1pOajlPQTV3dVNLUDlSWkc1aGJXVnVhblZ0WW1ZZ2JXRnVhV1psYzNScVpYaGpiSFZ6YVc5dWM0R2laWE4wWVhKMEdRaUtabXhsYm1kMGFCa2VCQUFBQWo1cWRXMWlBQUFBSjJwMWJXUmpNbU5zQUJFQUVJQUFBS29BT0p0eEEyTXljR0V1WTJ4aGFXMHVkaklBQUFBQ0QyTmliM0tsWTJGc1oyWnphR0V5TlRacGMybG5ibUYwZFhKbGVFMXpaV3htSTJwMWJXSm1QUzlqTW5CaEwzVnlianBqTW5CaE9tRTNaRGszTmpZMUxUQmxZakF0TkRZM1lTMWlNRGd3TFRkaVkySXlZVE5oWWpNd01pOWpNbkJoTG5OcFoyNWhkSFZ5WldwcGJuTjBZVzVqWlVsRWVDeDRiWEE2YVdsa09qVTJaR0U0WW1Wa0xXTTFaVEF0TkdObE1pMWlPR0ppTFRneVlUazJZbVV5TkdZeU0zSmpjbVZoZEdWa1gyRnpjMlZ5ZEdsdmJuT0RvbU4xY214NExYTmxiR1lqYW5WdFltWTlZekp3WVM1aGMzTmxjblJwYjI1ekwyTXljR0V1YVc1bmNtVmthV1Z1ZEM1Mk0yUm9ZWE5vV0NDcElzSmVSRFJZc25TdkFsTDJCeExHcVVCWFhmQWxKdnZmT2dmM29FbU93S0pqZFhKc2VDcHpaV3htSTJwMWJXSm1QV015Y0dFdVlYTnpaWEowYVc5dWN5OWpNbkJoTG1GamRHbHZibk11ZGpKa2FHRnphRmdnY0Z5Zk4vMDB6TVhWc1EvQUJ3WmI4L3BPSmN4THpibTM2b0h1dktOWitOT2lZM1Z5YkhncGMyVnNaaU5xZFcxaVpqMWpNbkJoTG1GemMyVnlkR2x2Ym5Ndll6SndZUzVvWVhOb0xtUmhkR0ZrYUdGemFGZ2dsN2lWZEdUWmJxc0J5NUNnOTNLWkcvTlYzVkE4NDdDVnVzU2QvVTV2OXkxMFkyeGhhVzFmWjJWdVpYSmhkRzl5WDJsdVptK2paRzVoYldWdlFXNTBhSEp2Y0dsaklFWnBiR1Z6WjNabGNuTnBiMjVsTVM0d0xqQnJjM0JsWTFabGNuTnBiMjVsTWk0MExqQUFBQkE0YW5WdFlnQUFBQ2hxZFcxa1l6Smpjd0FSQUJDQUFBQ3FBRGliY1FOak1uQmhMbk5wWjI1aGRIVnlaUUFBQUJBSVkySnZjdEtFV1FJU29nRW1HQ0ZaQWdvd2dnSUdNSUlCamFBREFnRUNBaFJBNWFBSzdzSTUwTDY0Zy9vR1FnVTlaMVVUQURBS0JnZ3Foa2pPUFFRREF6QkpNUmN3RlFZRFZRUUtFdzVCYm5Sb2NtOXdhV01zSUZCQ1F6RXVNQ3dHQTFVRUF4TWxRVzUwYUhKdmNHbGpJRU52Ym5SbGJuUWdRM0psWkdWdWRHbGhiSE1nVW05dmRDQkRRVEFlRncweU5qQTRNRGN4T0RRek5UWmFGdzB5T0RBNE1EWXhPVFF6TlRaYU1FUXhGekFWQmdOVkJBb1REa0Z1ZEdoeWIzQnBZeXdnVUVKRE1Ta3dKd1lEVlFRREV5QkJiblJvY205d2FXTWdRMnhoZFdSbElFTnZiblJsYm5RZ1UybG5ibWx1WnpCWk1CTUdCeXFHU000OUFnRUdDQ3FHU000OUF3RUhBMElBQkpoNkNtdkxVQmdGRk5VMHZVS2xPVnRFNmRqZDE3TDVTdXdYMExlbUZpc0JNM2RrZC8zY3lqeEZBM1FvNVM0NmZYMC9paFkwVlo3bWZiOUtGNzAzdDVPaldEQldNQTRHQTFVZER3RUIvd1FFQXdJSGdEQVZCZ05WSFNVRURqQU1CZ29yQmdFRUFZUG9YZ0lCTUF3R0ExVWRFd0VCL3dRQ01BQXdId1lEVlIwakJCZ3dGb0FVemxIaUJJRk9aRnNqK09QRXo1bytuTUhYWE1Jd0NnWUlLb1pJemowRUF3TURad0F3WkFJd01YTWRGSjRCZXRMTFZZN09SdUU5bm9xYmJBWk9abi9hQXJYeVR3RkFaZktyUHp4RjJ2UG9KTmYxK1VDZGcxWEdBakJ3WDF6ZDlXR3FZa3FtTDVTRnF3MVF5U2pyMXpKZnBKTTkrMXJkRHdTUExNT1BPakt1aVhqb1UvcFVVZUc5UndtaFkzQmhaRmtObmdBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFQWllRR2ZKU1pycXVNVVVpTHFaeVdERXU1bDhCL0svTnA3YWs0WGF0a2pTKzlsd25JdDZVWXl5NFc5UGIwZW43L3BPVm5vNWo5SURZczlOYXNNcnFoWEtQUWM9PC9jMnBhOm1hbmlmZXN0PjwvbWV0YWRhdGE+PC9zdmc+';
+const MENU=[['status','Status'],['stats','Statistics'],['power','Control'],['logs','Logs'],['folder','Files'],['update','Update'],['gateway','Gateway'],['backup','Backup and restore'],['mig','Migration'],['wrench','Repair and uninstall'],['gear','Platform settings']];
+
+function shell(o){
+  const tipAt=o.tip;
+  const menu=MENU.map(([ic,l])=>`<div class="it${l===o.page?' on':''}">${I[ic]}<span>${l}</span>${l===tipAt?`<div class="tipb">${l}</div>`:''}</div>`).join('');
+  const inst=`<div class="it${o.page==='Instances'?' on':''}">${I.server}<span>Instances</span><em>6</em></div>`;
+  const dot=`<span class="dot ${o.health||''}"></span>`;
+  const sw=`<div class="sw">${dot}<span class="os">${I[o.os||'linux']}</span>${o.name} <small>${o.addr}</small>${I.chevd}${o.dtip?`<div class="tipd">${o.dtip}</div>`:''}</div>${o.remote?'<span class="tag">REMOTE</span>':''}`;
+  const lg=`<div class="lg${o.col&&o.logoHover?' hov':''}"><img src="${ICON}" alt="">${o.col?I.unfold:I.fold}${o.logoHover?`<div class="tipb">${o.col?'Unfold menu':'Fold menu'}</div>`:''}</div>`;
+  return `<div class="desk${o.solid?' solid':''}"><div class="win${o.col?'':(o.dim==='B'?' dimB':' dimA')}${o.col?' col':''}${o.scrolled?' scrolled':''}${o.narrow?' narrow':''}" style="--ic:${o.color}">
+   <div class="side">
+     <div class="brand">${lg}<div class="bt"><b>SENTIENT</b><small>PLATFORM MANAGER</small></div>${o.col?'':`<span class="ib fb${o.foldHover?' hov':''}">${I.fold}${o.foldHover?'<div class="tipb">Fold menu</div>':''}</span>`}</div>
+     <div class="menu"><div class="sel"></div>${menu}<hr>${inst}</div>
+     <div class="foot"><div class="v"><img src="${ICON}" alt=""><div class="vt"><b>Platform Manager</b><span>0.8.0-rc12<em class="up" style="font-style:normal">Update</em></span></div></div><span class="ib pref${o.pref?' act':''}" title="About and preferences">${I.sliders}</span></div>
+   </div>
+   <div class="main">
+     <div class="bar">${sw}<span class="sp"></span>
+       <div class="mon"><span title="CPU">${I.cpu}<i><b style="width:${o.cpu}%"></b></i><span class="val" style="width:34px">${o.cpu}%</span></span>
+         <span title="Memory">${I.mem}<i><b style="width:${o.memp}%"></b></i><span class="val" style="width:74px">${o.mem}</span></span>
+         <span title="Disk free">${I.hd}<i><b style="width:${o.diskp}%"></b></i><span class="val" style="width:52px">${o.disk}</span></span>
+         <div class="thb${o.themePop?' on':''}" title="Theme: follow system">${I.halfc}</div>${o.themePop?`<div class="tpop"><div>${I.sun}Light</div><div>${I.moon}Dark</div><div class="on">${I.halfc}Follow system<i>${I.check}</i></div></div>`:''}
+         <div class="bell" title="Notifications">${I.bell}${o.unread?'<span class="ud"></span>':''}</div></div>
+     </div>
+     ${o.strip?`<div class="strip" style="--p:${o.strip}"></div>`:''}
+     <div class="content"><div class="inner">${o.body}</div><div class="scrollbar"></div></div>
+   </div>${o.over||''}</div></div>`;
+}
+
+const LX='linux', WX='win';
+const T=[
+ {n:'This computer',sub:'Windows 11 Pro · localhost',c:'#187074',os:WX,st:'Running',tone:'ok',f:['4.4.0.2','PostgreSQL + TimescaleDB, 2.4 GB','186 GB free','16 Nov 07:12','3 days']},
+ {n:'BSMPL SENTIENT',sub:'10.20.4.15 over SSH · Ubuntu 24.04, Docker',c:'#7b4fb0',os:LX,st:'Running',tone:'ok',cur:true,f:['4.4.0.2','PostgreSQL + ClickHouse, 43 GB','212 GB free','16 Nov 06:00','12 days']},
+ {n:'INVENIA IIoT',sub:'129.154.247.56 over SSH · Oracle Linux 9, Docker',c:'#22a356',os:LX,st:'Running',tone:'ok',f:['4.4.0.2','PostgreSQL + TimescaleDB, 8.1 GB','64.1 GB free','16 Nov 02:00','5 days']},
+ {n:'SUNOIL',sub:'192.168.1.40 over SSH · Debian 12, Docker',c:'#d97706',os:LX,st:'Stopped',tone:'bad',f:['4.4.0.2','PostgreSQL + ClickHouse, 19 GB','41 GB free','15 Nov 23:00','']},
+ {n:'saf.invenia.in',sub:'saf.invenia.in over SSH · Ubuntu 22.04, Docker',c:'#2563eb',os:LX,st:'Running',tone:'ok',f:['latest','PostgreSQL + ClickHouse, 77 GB','9.8 GB free','16 Nov 01:00','2 days'],warnDisk:true},
+ {n:'Test bench',sub:'192.168.1.77 over SSH · Fedora 41, Docker',c:'#db2777',os:LX,st:'Running',tone:'ok',f:['4.3.0.58','PostgreSQL, 0.6 GB','88 GB free','None','1 day'],warnBk:true},
+];
+const L=['SENTIENT','Database','Disk','Last backup','Up for'];
+function tile(t){
+  const facts=t.f.map((v,i)=>{ if(!v) return ''; const w=(i===2&&t.warnDisk)||(i===3&&t.warnBk);
+    return `<div><span>${L[i]}</span>${w?`<span><span class="pill warn">${v}</span></span>`:`<span>${v}</span>`}</div>`}).join('');
+  return `<div class="gt${t.cur?' cur':''}" style="--c:${t.c}"><div class="gh"><span class="gos">${I[t.os]}</span><div class="gn"><b>${t.n}</b><small>${t.sub}</small></div><span class="pill ${t.tone}">${t.st}</span></div>
+   <div class="gb"><div class="gf">${facts}</div><div class="gft">${t.cur?'<span class="ob">Open now</span>':'<span class="ob">Open</span>'}${t.n==='This computer'?'':'<span class="sb">Edit</span><span class="sb">Remove</span>'}<span class="more">${I.dots}</span></div></div></div>`;
+}
+function tiles(){
+  return `<div class="ptitle"><div class="tt"><h3>Instances</h3><small>Every SENTIENT this program looks after. 6 instances: 5 running, 1 stopped.</small></div><span class="btn pri">${I.plus}Add instance</span></div>
+  <div class="gtiles">${T.concat(T.slice(1,5).map(t=>({...t,n:t.n+' staging',cur:false}))).map(tile).join('')}</div>`;
+}
+function status(){
+  const svc=[['SENTIENT','4.4.0.2','Up for','3 days'],['PostgreSQL','18.1','Size','2.4 GB'],['TimescaleDB','2.22','Chunks','184']].map(([n,v,k,d])=>`<div class="card"><div class="h">${n==='SENTIENT'?I.server:I.db}<b>${n}</b><span class="pill ok"><span class="d"></span>Running</span></div><div class="meta"><span>Version</span><span>${v}</span><span>${k}</span><span>${d}</span></div></div>`).join('');
+  const ev=[['16 Nov 07:12','Backup written and verified, 1.8 GB'],['16 Nov 06:58','SENTIENT updated to 4.4.0.2'],['15 Nov 23:40','Disk space below 20 % on C:'],['15 Nov 18:13','Platform Manager updated to 0.8.0-rc12']].map(([t,m])=>`<div class="r"><span class="t">${t}</span><span class="m">${m}</span></div>`).join('');
+  return `<div class="ptitle"><div class="tt"><h3>Status</h3></div><span class="ib" title="Refresh">${I.refresh}</span></div>
+  <div class="banner"><span>${I.warn}</span><span>Disk space low on C:, 18 % free.</span></div>
+  <div class="svc">${svc}</div><div class="card"><div class="sec"><b>Recent activity</b></div><div class="list">${ev}</div></div>`;
+}
+function about(){
+  const row=(l,c,h,first)=>`<div class="prow${first?' f':''}"><div class="pl">${l}${h?'<i class="ihelp">i</i>':''}</div>${c}</div>`;
+  const sw='<span class="sw2"></span>';
+  const seg=(a,on)=>`<span class="seg">${a.map(x=>`<span${x===on?' class="on"':''}>${x}</span>`).join('')}</span>`;
+  const segi=`<span class="seg"><span>${I.sun}Light</span><span>${I.moon}Dark</span><span class="on">${I.halfc}Follow system</span></span>`;
+  const tile=(ic,t,d)=>`<div class="atile">${I[ic]}<div><b>${t}</b><span>${d}</span></div></div>`;
+  return `<div class="acol">
+  <div class="card ahero"><img src="${ICON}" alt=""><div class="ah"><b>SENTIENT Platform Manager</b><span>Version 0.8.0-rc12 (build 827c281)</span></div><span class="pill cur">0.8.0-rc13 available</span><span class="btn">What's new</span><span class="btn">Check for updates</span></div>
+  <div class="cpt">APPEARANCE <span class="new">New</span></div>
+  <div class="card pp">${row('Theme',segi,false,true)}${row('See-through menu and bar',sw,true)}</div>
+  <div class="cpt">PREFERENCES</div>
+  <div class="card pp">${row('Language','<span>English</span>',false,true)}${row('Update channel',seg(['Stable','Release candidate'],'Release candidate'),true)}${row('Check for updates',seg(['Once a day','Only when I ask'],'Once a day'))}${row('Show in the system tray',sw,true)}${row('Start at sign-in',sw,true)}${row('Closing the window quits','<span class="sw2 offs"></span>',true)}</div>
+  <div class="cpt">SUPPORT</div>
+  <div class="atiles">${tile('file','Open the log','What the Platform Manager did, with times.')}${tile('down','Create a support file','Logs, versions and settings in one file, without passwords.')}${tile('book','Documentation','Opens docs.invenia.in in the browser.')}</div>
+  </div>`;
+}
+const R={remote:true,name:'BSMPL SENTIENT',addr:'10.20.4.15',color:'#7b4fb0',cpu:12,memp:58,mem:'4.6 / 8 GB',diskp:35,disk:'212 GB',unread:true,page:'Instances'};
+const LOC={remote:false,os:'win',name:'This computer',addr:'Windows 11',color:'#187074',cpu:23,memp:71,mem:'11.3 / 16 GB',diskp:82,disk:'186 GB',page:'Status'};
+const put=(id,h)=>document.getElementById(id).innerHTML=h;
+put('s1',shell({...R,body:tiles()}));
+put('s2',shell({...R,body:tiles(),scrolled:true,foldHover:true}));
+put('s3',shell({...R,body:tiles(),col:true,logoHover:true}));
+put('s4',shell({...LOC,health:'warn',dtip:'Disk space low on C:',body:status(),strip:'40%'}));
+put('s5',shell({...R,body:tiles(),col:true,narrow:true}));
+put('s6',shell({...R,body:tiles(),solid:true}));
+put('d1',shell({...LOC,health:'warn',body:status(),dim:'A'}));
+put('s9',shell({...R,body:tiles(),themePop:true}));
+put('s7',shell({...R,page:'About',body:about(),pref:true}));
+const lg=(h,c,txt,name)=>`<div class="lg1"><div class="bar" style="--ic:${c}"><div class="sw"><span class="dot ${h}"></span><span class="os">${I.linux}</span>${name}${I.chevd}</div></div><p>${txt}</p></div>`;
+put('s8',`<div class="legend">${lg('','#7b4fb0','Green: everything is fine.','BSMPL SENTIENT')}${lg('warn','#7b4fb0','Amber: needs a look (disk low, backup old, update waiting on a restart).','BSMPL SENTIENT')}${lg('bad','#7b4fb0','Red: a fault (SENTIENT stopped, a database down, last backup failed).','BSMPL SENTIENT')}${lg('unk','#7b4fb0','Grey: not reachable, or still checking.','BSMPL SENTIENT')}</div>`);
+function placeSel(menu,anim){const on=menu.querySelector('.it.on');const sel=menu.querySelector('.sel');if(!on||!sel)return;
+  if(!anim){sel.style.transition='none';}sel.style.setProperty('--y',on.offsetTop+'px');if(!anim){sel.offsetHeight;sel.style.transition='';}}
+document.querySelectorAll('.win.dimA .menu').forEach(m=>{placeSel(m,false);
+  m.querySelectorAll('.it').forEach(it=>it.addEventListener('click',()=>{m.querySelectorAll('.it.on').forEach(x=>x.classList.remove('on'));it.classList.add('on');placeSel(m,true);}));});
+document.fonts&&document.fonts.ready.then(()=>document.querySelectorAll('.win.dimA .menu').forEach(m=>placeSel(m,false)));
+})();
+</script>

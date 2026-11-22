@@ -1,0 +1,268 @@
+<title>SPM Setup Guide</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans:wght@400;500;600;700&family=Noto+Sans+Mono:wght@400;500&display=swap">
+<style>
+:root{
+  --page:#eeeeee; --card:#ffffff; --text:rgba(0,0,0,.87); --text2:rgba(0,0,0,.6); --border:rgba(0,0,0,.12);
+  --input:#cccccc; --primary:#187074; --on-primary:#ffffff; --tint:#f3f8f8; --hover:#f4f4f4; --code:#f6f8f8;
+  --warn-bg:#fef3c7; --warn:#92400e; --scrim:rgba(0,0,0,.32); --pop:0 8px 24px rgba(0,0,0,.18); --sheet:#e4e4e4;
+  --font:'Noto Sans',system-ui,'Segoe UI',sans-serif; --mono:'Noto Sans Mono',ui-monospace,Consolas,monospace;
+}
+@media (prefers-color-scheme: dark){ :root:not([data-theme="light"]){
+  --page:#21282a; --card:#2d363b; --text:rgba(255,255,255,.87); --text2:rgba(255,255,255,.64); --border:rgba(255,255,255,.12);
+  --input:rgba(255,255,255,.24); --primary:#26a69a; --on-primary:rgba(0,0,0,.87); --tint:#2d3c40; --hover:rgba(255,255,255,.04); --code:#253034;
+  --warn-bg:#45391c; --warn:#fcd34d; --scrim:rgba(0,0,0,.5); --pop:0 8px 24px rgba(0,0,0,.5); --sheet:#161c1e; color-scheme:dark } }
+:root[data-theme="dark"]{
+  --page:#21282a; --card:#2d363b; --text:rgba(255,255,255,.87); --text2:rgba(255,255,255,.64); --border:rgba(255,255,255,.12);
+  --input:rgba(255,255,255,.24); --primary:#26a69a; --on-primary:rgba(0,0,0,.87); --tint:#2d3c40; --hover:rgba(255,255,255,.04); --code:#253034;
+  --warn-bg:#45391c; --warn:#fcd34d; --scrim:rgba(0,0,0,.5); --pop:0 8px 24px rgba(0,0,0,.5); --sheet:#161c1e; color-scheme:dark }
+body{background:var(--sheet);color:var(--text);font-family:var(--font);font-size:14px;line-height:1.45;
+  padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));padding-block:24px 64px}
+main{max-width:1300px;margin:0 auto;display:flex;flex-direction:column;gap:28px}
+h1{font-size:24px;font-weight:500;margin:0;text-wrap:balance}
+p{margin:0}
+.top{display:flex;flex-wrap:wrap;gap:12px 20px;align-items:center;justify-content:space-between}
+.lead{color:var(--text2);max-width:80ch;margin-top:4px}
+.seg{display:inline-flex;border:1px solid var(--border);border-radius:8px;overflow:hidden;background:var(--card)}
+.seg button{font:inherit;border:0;background:transparent;color:var(--text2);padding:6px 14px;cursor:pointer}
+.seg button[aria-pressed="true"]{background:var(--tint);color:var(--primary);font-weight:500}
+.ctl{display:flex;flex-wrap:wrap;gap:10px 14px;align-items:center}
+.ctl label{color:var(--text2);font-size:13px}
+.notes{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:14px 18px;max-width:900px}
+.notes ul{margin:6px 0 0;padding-left:20px;display:flex;flex-direction:column;gap:4px}
+.scroll{overflow-x:auto;padding-bottom:4px}
+
+/* window: dimmed app behind the dialog */
+.win{width:1260px;height:760px;border-radius:10px;overflow:hidden;border:1px solid var(--border);background:var(--page);position:relative;box-shadow:var(--pop);flex:none}
+.win::before{content:"";position:absolute;inset:0;background:
+  linear-gradient(var(--card),var(--card)) 0 0/232px 100% no-repeat,
+  linear-gradient(var(--tint),var(--tint)) 232px 0/100% 72px no-repeat}
+.scrim{position:absolute;inset:0;background:var(--scrim);display:flex;align-items:center;justify-content:center;gap:0}
+
+/* dialog */
+.dlg{background:var(--card);border-radius:8px;box-shadow:var(--pop);display:flex;flex-direction:column;max-height:720px;overflow:hidden;transition:width .26s cubic-bezier(.22,1,.36,1)}
+.dlg.add{width:600px}
+.dlg.add.wide{width:1100px}
+.dh{height:56px;flex:none;display:flex;align-items:center;justify-content:space-between;padding:0 12px 0 20px;border-bottom:1px solid var(--border)}
+.dh h3{margin:0;font-size:17px;font-weight:600}
+.x{width:32px;height:32px;border-radius:6px;display:flex;align-items:center;justify-content:center;color:var(--text2)}
+.x:hover{background:var(--hover)}
+.body{display:flex;min-height:0;flex:1}
+.form{width:600px;flex:none;padding:14px 20px 0;overflow:hidden;display:flex;flex-direction:column}
+.form .intro{color:var(--text2);padding-bottom:12px;border-bottom:1px solid var(--border)}
+.row{display:grid;grid-template-columns:150px 1fr;align-items:center;gap:12px;padding:9px 0;border-bottom:1px solid var(--border);min-height:38px}
+.row .l{display:flex;align-items:center;gap:6px}
+.i{width:14px;height:14px;color:var(--text2);flex:none}
+.inp{height:34px;border:1px solid var(--input);border-radius:8px;padding:0 12px;display:flex;align-items:center;color:var(--text);background:var(--card);min-width:0;overflow:hidden;white-space:nowrap}
+.inp.ph{color:var(--text2)}
+.inp.foc{border-color:var(--primary)}
+.tog{display:inline-flex;border:1px solid var(--input);border-radius:8px;overflow:hidden;height:34px}
+.tog span{padding:0 16px;display:flex;align-items:center;color:var(--text2)}
+.tog span.on{background:var(--tint);color:var(--primary);font-weight:500}
+.btn{height:34px;border-radius:8px;border:1px solid var(--input);padding:0 14px;display:inline-flex;align-items:center;gap:6px;background:var(--card);color:var(--text);font-weight:500;white-space:nowrap;cursor:default}
+.btn.pri{background:var(--primary);border-color:var(--primary);color:var(--on-primary)}
+.btn.ghost{border-color:transparent;background:transparent;color:var(--primary);height:30px;padding:0 10px}
+.btn.ghost:hover,.btn.ghost.on{background:var(--tint)}
+.btn.ghost.on{border-color:var(--border)}
+.btn svg{width:15px;height:15px}
+.dots{display:flex;gap:8px;align-items:center}
+.dots i{width:24px;height:24px;border-radius:50%;display:block}
+.dots i.on{outline:2px solid var(--primary);outline-offset:2px}
+.hint{color:var(--text2);font-size:13px;margin-top:4px}
+.foot{margin-top:auto;display:flex;justify-content:flex-end;gap:10px;padding:14px 0 16px}
+
+/* guide pane */
+.guide{flex:1;min-width:0;border-left:1px solid var(--border);display:flex;flex-direction:column;background:var(--card)}
+.gh{flex:none;display:flex;align-items:center;gap:12px;padding:12px 16px 12px 20px;border-bottom:1px solid var(--border)}
+.gh b{font-size:15px;font-weight:600}
+.gh .sp{flex:1}
+.gs{overflow:auto;padding:16px 20px 20px;display:flex;flex-direction:column;gap:18px}
+.gnote{color:var(--text2)}
+.jump{color:var(--primary);font-weight:500;cursor:pointer;text-decoration:underline;text-underline-offset:2px}
+.step{display:grid;grid-template-columns:26px 1fr;gap:4px 12px}
+.num{width:26px;height:26px;border-radius:50%;background:var(--tint);color:var(--primary);font-weight:600;font-size:13px;display:flex;align-items:center;justify-content:center}
+.step h4{margin:0;font-size:14px;font-weight:600;line-height:26px}
+.step .c{grid-column:2;display:flex;flex-direction:column;gap:8px;min-width:0}
+.sub{font-size:13px;color:var(--text2)}
+.cmd{display:flex;align-items:center;gap:8px;background:var(--code);border:1px solid var(--border);border-radius:8px;padding:4px 4px 4px 12px;min-height:36px}
+.cmd code{flex:1;min-width:0;font-family:var(--mono);font-size:12.5px;line-height:1.55;white-space:pre-wrap;overflow-wrap:anywhere}
+.cp{flex:none;width:28px;height:28px;border-radius:6px;display:flex;align-items:center;justify-content:center;color:var(--text2);border:1px solid transparent}
+.cp:hover{background:var(--hover);border-color:var(--border)}
+.cp svg{width:15px;height:15px}
+.cp.done{color:var(--primary)}
+.where{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:500;color:var(--text2);border:1px solid var(--border);border-radius:6px;padding:1px 8px;align-self:flex-start}
+.where svg{width:13px;height:13px}
+.key{border:1px solid var(--border);border-radius:8px;padding:14px 16px;display:flex;flex-direction:column;gap:14px;background:var(--card)}
+.key .kh{display:flex;align-items:center;gap:8px;font-weight:600}
+.key .kh svg{width:16px;height:16px;color:var(--primary)}
+.warn{background:var(--warn-bg);color:var(--warn);border-radius:8px;padding:8px 12px;font-size:13px}
+.ref{color:var(--text2);font-size:13px}
+.kbd{font-family:var(--mono);font-size:12.5px;background:var(--code);border:1px solid var(--border);border-radius:4px;padding:0 5px}
+
+/* popup variant */
+.dlg.guidepop{width:720px;position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);height:680px;z-index:2}
+.scrim2{position:absolute;inset:0;background:var(--scrim);z-index:1;border-radius:8px}
+.stack{position:relative}
+.dlg.guidepop .guide{border-left:0}
+.dlg.guidepop .ostog{margin-left:auto}
+</style>
+
+<main>
+  <div class="top">
+    <div>
+      <h1>Setup guide inside the Platform Manager</h1>
+      <p class="lead">Setup guide no longer opens the website. It opens the steps inside the Add a remote instance dialog, for the system you picked, and includes how to make an SSH key.</p>
+    </div>
+    <div class="seg" role="group" aria-label="Theme">
+      <button data-th="light" aria-pressed="false">Light</button><button data-th="dark" aria-pressed="false">Dark</button>
+    </div>
+  </div>
+
+  <div class="ctl">
+    <label>State</label>
+    <div class="seg" id="st">
+      <button data-s="g1" aria-pressed="true">G1 Beside the form</button><button data-s="g2" aria-pressed="false">G2 Popup</button>
+    </div>
+    <label>System</label>
+    <div class="seg" id="os">
+      <button data-o="linux" aria-pressed="true">Linux</button><button data-o="windows" aria-pressed="false">Windows</button>
+    </div>
+    <label>This computer</label>
+    <div class="seg" id="host">
+      <button data-h="windows" aria-pressed="true">Windows</button><button data-h="linux" aria-pressed="false">Linux</button>
+    </div>
+  </div>
+
+  <div class="scroll"><div class="win" id="win"></div></div>
+
+  <div class="notes">
+    <b>How it works</b>
+    <ul>
+      <li><b>G1 (recommended):</b> Setup guide widens the dialog and shows the steps on the right, so the form stays in view while you follow them. Pressing it again, or the close button, folds the guide away. Switching System between Linux and Windows switches the guide too.</li>
+      <li><b>G2:</b> the guide opens as its own dialog over the form, with its own Linux and Windows switch. Close returns to the form as you left it.</li>
+      <li>Commands already carry the address, port and user typed in the form (here 192.168.1.20, admin) and a copy button. Each command says where to run it: on this computer or on the server.</li>
+      <li>"This computer" is not a choice in the app: the Platform Manager knows whether it runs on Windows or Linux and shows the matching key commands. The switch above only lets you preview both.</li>
+      <li>The text is the same as the website page "Manage SENTIENT on other computers", plus the new SSH key steps. Nothing opens a browser.</li>
+    </ul>
+  </div>
+</main>
+
+<script>
+const IC={
+ info:'<svg class="i" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="6.3"/><path d="M8 7.2v4M8 4.9v.1"/></svg>',
+ book:'<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><path d="M2.5 3.2c1.8-.6 3.8-.4 5.5.8 1.7-1.2 3.7-1.4 5.5-.8v9.4c-1.8-.6-3.8-.4-5.5.8-1.7-1.2-3.7-1.4-5.5-.8z"/><path d="M8 4v9.4"/></svg>',
+ x:'<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M4 4l8 8M12 4l-8 8"/></svg>',
+ copy:'<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="5.2" y="5.2" width="8.3" height="8.3" rx="1.6"/><path d="M10.8 3.2V3a1.4 1.4 0 0 0-1.4-1.4H3A1.4 1.4 0 0 0 1.6 3v6.4A1.4 1.4 0 0 0 3 10.8h.2"/></svg>',
+ check:'<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5l3.2 3L13 4.8"/></svg>',
+ pc:'<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="1.8" y="2.6" width="12.4" height="8.4" rx="1.3"/><path d="M5.5 13.6h5M8 11v2.6"/></svg>',
+ srv:'<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2" y="2.2" width="12" height="5" rx="1.2"/><rect x="2" y="8.8" width="12" height="5" rx="1.2"/><path d="M4.6 4.7h.1M4.6 11.3h.1"/></svg>',
+ key:'<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="5.2" cy="10.8" r="3"/><path d="M7.4 8.6L13.5 2.5M11.3 4.7l1.6 1.6M9.8 6.2l1.2 1.2"/></svg>',
+ eye:'<svg class="i" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M1.5 8s2.4-4.3 6.5-4.3S14.5 8 14.5 8 12.1 12.3 8 12.3 1.5 8 1.5 8z"/><circle cx="8" cy="8" r="1.8"/></svg>'
+};
+let S={st:'g1',os:'linux',host:'windows'};
+const U='admin', A='192.168.1.20';
+const esc=s=>s.replace(/&/g,'&amp;').replace(/</g,'&lt;');
+const cmd=c=>`<div class="cmd"><code>${esc(c)}</code><span class="cp" title="Copy" onclick="cp(this)">${IC.copy}</span></div>`;
+const where=w=>w==='pc'?`<span class="where">${IC.pc}On this computer</span>`:`<span class="where">${IC.srv}On the server</span>`;
+const step=(n,h,c)=>`<div class="step"><span class="num">${n}</span><h4>${h}</h4><div class="c">${c}</div></div>`;
+function keyBlock(){
+  const w=S.host==='windows', lx=S.os==='linux';
+  const kp=w?'$env:USERPROFILE\\.ssh\\sentient_spm':'~/.ssh/sentient_spm';
+  const gen=w?`ssh-keygen -t ed25519 -f "${kp}"`:`ssh-keygen -t ed25519 -f ${kp}`;
+  let put;
+  if(lx){
+    put = w
+      ? cmd(`type "${kp}.pub" | ssh ${U}@${A} "mkdir -p ~/.ssh && chmod 700 ~/.ssh && cat >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys"`)+`<p class="sub">It asks for the user's password once.</p>`
+      : cmd(`ssh-copy-id -i ${kp}.pub ${U}@${A}`)+`<p class="sub">It asks for the user's password once.</p>`;
+    put = where('pc')+put;
+  } else {
+    put = where('pc')+cmd(w?`Get-Content "${kp}.pub" | Set-Clipboard`:`cat ${kp}.pub`)
+      +`<p class="sub">${w?'This copies the public key.':'Copy the line it shows.'} Then, in PowerShell as administrator:</p>`
+      +where('srv')+cmd(`Add-Content -Path C:\\ProgramData\\ssh\\administrators_authorized_keys -Value 'paste the key here'`)
+      +cmd(`icacls C:\\ProgramData\\ssh\\administrators_authorized_keys /inheritance:r /grant "Administrators:F" /grant "SYSTEM:F"`)
+      +`<p class="sub">Windows reads an administrator's keys from this file, not from the user's own folder.</p>`;
+  }
+  return `<div class="key" id="keysec"><div class="kh">${IC.key}Create an SSH key</div>
+   <p class="gnote">Skip this if you already have a key, or if you sign in with a password.</p>
+   ${step('a','Make the key',where('pc')+(w?'<p class="sub">In PowerShell:</p>':'<p class="sub">In a terminal:</p>')+cmd(gen)+`<p class="sub">Press Enter to save it there. A passphrase is optional; if you set one, enter it as Key passphrase.</p>`)}
+   ${step('b','Put the public key on the server',put)}
+   ${step('c','Choose the key in the form',`<p>Key file: <span class="kbd">${esc(w?'C:\\Users\\mz\\.ssh\\sentient_spm':'/home/mz/.ssh/sentient_spm')}</span></p><p class="sub">Choose the file without .pub. The .pub file is the one that goes on the server.</p>`)}
+  </div>`;
+}
+function guideSteps(){
+  if(S.os==='linux') return [
+    `<p class="gnote">The Platform Manager reaches the server over SSH. Sign in as root, or as a user that may use sudo. No SSH key yet? <span class="jump" onclick="document.getElementById('keysec').scrollIntoView({behavior:'smooth',block:'start'})">Create one</span>.</p>`,
+    step(1,'Install the SSH server',where('srv')+'<p class="sub">Debian and Ubuntu:</p>'+cmd('sudo apt install openssh-server')+'<p class="sub">Red Hat, Rocky, Alma and Fedora:</p>'+cmd('sudo dnf install openssh-server')),
+    step(2,'Start it now and with the system',where('srv')+cmd('sudo systemctl enable --now ssh')+'<p class="sub">On the Red Hat family the service is called sshd.</p>'),
+    step(3,'Allow TCP port 22',where('srv')+'<p class="sub">Only if a firewall is on. For example:</p>'+cmd('sudo ufw allow 22/tcp')),
+    keyBlock(),
+    step(4,'Check the key fingerprint',`<p class="sub">When you select Connect, the Platform Manager shows the server's fingerprint. Compare it with:</p>`+where('srv')+cmd('ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub')),
+    `<div class="warn">When sudo asks for a password and you sign in with a key, enter that password as sudo password.</div>`
+  ].join('');
+  return [
+    `<p class="gnote">The Platform Manager reaches the server over SSH. Sign in with an account in the Administrators group. No SSH key yet? <span class="jump" onclick="document.getElementById('keysec').scrollIntoView({behavior:'smooth',block:'start'})">Create one</span>.</p>`,
+    step(1,'Turn on OpenSSH Server',where('srv')+'<p class="sub">Settings, System, Optional features, Add a feature, OpenSSH Server. Or in PowerShell as administrator:</p>'+cmd('Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0')),
+    step(2,'Start it now and with Windows',where('srv')+cmd('Start-Service sshd\nSet-Service sshd -StartupType Automatic')),
+    step(3,'Check the firewall',where('srv')+'<p class="sub">Installing the feature adds the rule OpenSSH SSH Server (sshd), which allows TCP port 22. To check it:</p>'+cmd('Get-NetFirewallRule -Name *OpenSSH-Server* | Select-Object Name, Enabled')),
+    keyBlock(),
+    step(4,'Check the key fingerprint',`<p class="sub">When you select Connect, the Platform Manager shows the server's fingerprint. Compare it with:</p>`+where('srv')+cmd('ssh-keygen -lf C:\\ProgramData\\ssh\\ssh_host_ed25519_key.pub'))
+  ].join('');
+}
+function guidePane(pop){
+  const t=S.os==='linux'?'Linux':'Windows';
+  const head = pop
+    ? ''
+    : `<div class="gh">${IC.book.replace('<svg','<svg width="16" height="16" style="color:var(--primary)"')}<b>Prepare a ${t} server</b><span class="sp"></span><span class="x" title="Close the guide">${IC.x}</span></div>`;
+  return `<div class="guide">${head}<div class="gs">${guideSteps()}</div></div>`;
+}
+function form(on){
+  const lx=S.os==='linux';
+  return `<div class="form">
+   <p class="intro">A computer running SENTIENT that this Platform Manager reaches over SSH.</p>
+   <div class="row"><span class="l">Name</span><span class="inp">Plant B server</span></div>
+   <div class="row"><span class="l">Colour ${IC.info}</span><span class="dots"><i style="background:#6b4fa3"></i><i style="background:#b9531f"></i><i style="background:#4a7a2a"></i><i class="on" style="background:#a43a5c"></i><i style="background:#8a6d1c"></i><i style="background:#c8430f"></i></span></div>
+   <div class="row" style="align-items:start"><span class="l" style="height:34px">System ${IC.info}</span><div>
+     <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><span class="tog"><span class="${lx?'on':''}">Linux</span><span class="${lx?'':'on'}">Windows</span></span>
+     <span class="btn ghost ${on?'on':''}" onclick="toggleGuide()">${IC.book}Setup guide</span></div>
+     <p class="hint">Connecting checks the system and keeps what it finds.</p></div></div>
+   <div class="row"><span class="l">Address</span><span style="display:grid;grid-template-columns:1fr auto 84px;gap:10px;align-items:center"><span class="inp">${A}</span><span>Port</span><span class="inp">22</span></span></div>
+   <div class="row"><span class="l">User ${IC.info}</span><span class="inp">${U}</span></div>
+   <div class="row"><span class="l">Sign in with</span><span><span class="tog"><span class="on">Key file</span><span>Password</span></span></span></div>
+   <div class="row"><span class="l">Key file</span><span style="display:grid;grid-template-columns:1fr auto;gap:10px"><span class="inp ph">Choose a private key file</span><span class="btn">Choose...</span></span></div>
+   <div class="row"><span class="l">Key passphrase ${IC.info}</span><span class="inp ph" style="justify-content:space-between">Only if the key has one ${IC.eye}</span></div>
+   <div class="row"><span class="l">sudo password ${IC.info}</span><span class="inp ph" style="justify-content:space-between">Only when sudo asks for one ${IC.eye}</span></div>
+   <div class="foot"><span class="btn">Cancel</span><span class="btn pri">Connect</span></div>
+  </div>`;
+}
+let open=true;
+function render(){
+  const w=document.getElementById('win');
+  if(S.st==='g1'){
+    w.innerHTML=`<div class="scrim"><div class="dlg add ${open?'wide':''}">
+      <div class="dh"><h3>Add a remote instance</h3><span class="x">${IC.x}</span></div>
+      <div class="body">${form(open)}${open?guidePane(false):''}</div></div></div>`;
+  } else {
+    const lx=S.os==='linux';
+    w.innerHTML=`<div class="scrim"><div class="stack"><div class="dlg add">
+      <div class="dh"><h3>Add a remote instance</h3><span class="x">${IC.x}</span></div>
+      <div class="body">${form(true)}</div></div><div class="scrim2"></div>
+      <div class="dlg guidepop"><div class="dh"><h3>Setup guide</h3><span class="tog ostog" style="margin-right:10px"><span class="${lx?'on':''}" onclick="setOs('linux')">Linux</span><span class="${lx?'':'on'}" onclick="setOs('windows')">Windows</span></span><span class="x">${IC.x}</span></div>
+      <div class="body">${guidePane(true)}</div></div></div></div>`;
+  }
+  for(const [id,k,a] of [['st','st','s'],['os','os','o'],['host','host','h']])
+    document.querySelectorAll('#'+id+' button').forEach(b=>b.setAttribute('aria-pressed',b.dataset[a]===S[k]));
+}
+function toggleGuide(){ if(S.st==='g1'){open=!open;render();} }
+function setOs(o){S.os=o;render();}
+function cp(el){const t=el.parentNode.querySelector('code').textContent;
+  try{navigator.clipboard.writeText(t).catch(()=>{});}catch(e){}
+  el.classList.add('done');el.innerHTML=IC.check;setTimeout(()=>{el.classList.remove('done');el.innerHTML=IC.copy},1200);}
+document.querySelectorAll('#st button').forEach(b=>b.onclick=()=>{S.st=b.dataset.s;open=true;render()});
+document.querySelectorAll('#os button').forEach(b=>b.onclick=()=>{S.os=b.dataset.o;render()});
+document.querySelectorAll('#host button').forEach(b=>b.onclick=()=>{S.host=b.dataset.h;render()});
+const root=document.documentElement;
+function syncTh(){const d=root.getAttribute('data-theme')||(matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light');
+  document.querySelectorAll('[data-th]').forEach(b=>b.setAttribute('aria-pressed',b.dataset.th===d));}
+document.querySelectorAll('[data-th]').forEach(b=>b.onclick=()=>{root.setAttribute('data-theme',b.dataset.th);syncTh()});
+syncTh();render();
+</script>
