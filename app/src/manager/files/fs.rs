@@ -101,6 +101,75 @@ impl Place {
     }
 }
 
+/// A path typed in the path bar, made the side's own full path: `~` is
+/// `home`, a relative one is under `cur`, `.` and `..` are taken out, quotes
+/// around it and a trailing separator dropped. On a server the path is the
+/// SFTP form (`/`; a Windows server's "C:\x" is "/C:/x"). Whether it is
+/// there is the listing's to say (on the server itself).
+pub fn typed_path(typed: &str, cur: &str, home: &str, server: Option<bool>) -> Result<String, String> {
+    let t = typed.trim();
+    let t = t.strip_prefix('"').and_then(|r| r.strip_suffix('"')).unwrap_or(t).trim();
+    if t.is_empty() {
+        return Err("Type the folder's path.".into());
+    }
+    match server {
+        None => {
+            let p = if t == "~" {
+                PathBuf::from(home)
+            } else if let Some(r) = t.strip_prefix("~/").or_else(|| t.strip_prefix("~\\")) {
+                Path::new(home).join(r)
+            } else if Path::new(t).is_absolute() {
+                PathBuf::from(t)
+            } else {
+                Path::new(cur).join(t)
+            };
+            let mut out = PathBuf::new();
+            for c in p.components() {
+                match c {
+                    std::path::Component::CurDir => {}
+                    std::path::Component::ParentDir => {
+                        // Never above the root.
+                        if out.parent().is_some() {
+                            out.pop();
+                        }
+                    }
+                    c => out.push(c.as_os_str()),
+                }
+            }
+            if !out.is_absolute() {
+                return Err(format!("{t} is not a full path."));
+            }
+            Ok(out.to_string_lossy().to_string())
+        }
+        Some(windows) => {
+            let mut s = t.replace('\\', "/");
+            if windows && s.as_bytes().get(1) == Some(&b':') {
+                s.insert(0, '/');
+            }
+            let s = if s == "~" {
+                home.to_string()
+            } else if let Some(r) = s.strip_prefix("~/") {
+                sftp::join(home, r)
+            } else if s.starts_with('/') {
+                s
+            } else {
+                sftp::join(cur, &s)
+            };
+            let mut parts: Vec<&str> = Vec::new();
+            for part in s.split('/') {
+                match part {
+                    "" | "." => {}
+                    ".." => {
+                        parts.pop();
+                    }
+                    p => parts.push(p),
+                }
+            }
+            Ok(format!("/{}", parts.join("/")))
+        }
+    }
+}
+
 pub trait Fs: Send {
     fn list(&mut self, path: &str) -> Result<Listing, String>;
     /// (is a folder, size), or None when nothing is there.
@@ -566,6 +635,30 @@ mod tests {
         assert!(!may_write(1000, &[1000], 0, 0, 0o755));
         assert!(may_write(1000, &[27], 0, 27, 0o775));
         assert!(may_write(1000, &[], 0, 0, 0o777));
+    }
+
+    #[test]
+    fn typed_paths() {
+        use super::typed_path;
+        // A server: SFTP form, relative to the folder shown, ~ is home.
+        assert_eq!(typed_path(" /opt/sentient/ ", "/x", "/home/ops", Some(false)).unwrap(), "/opt/sentient");
+        assert_eq!(typed_path("backups", "/opt/sentient", "/home/ops", Some(false)).unwrap(), "/opt/sentient/backups");
+        assert_eq!(typed_path("../..", "/opt/sentient", "/home/ops", Some(false)).unwrap(), "/");
+        assert_eq!(typed_path("/../../etc", "/", "/home/ops", Some(false)).unwrap(), "/etc");
+        assert_eq!(typed_path("~/logs", "/", "/home/ops", Some(false)).unwrap(), "/home/ops/logs");
+        assert_eq!(typed_path("~", "/", "/home/ops", Some(false)).unwrap(), "/home/ops");
+        assert_eq!(typed_path("\"/opt/a b\"", "/", "/h", Some(false)).unwrap(), "/opt/a b");
+        assert_eq!(typed_path(r"C:\Users\ops\", "/", "/C:/Users/ops", Some(true)).unwrap(), "/C:/Users/ops");
+        assert_eq!(typed_path("Downloads", "/C:/Users/ops", "/C:/Users/ops", Some(true)).unwrap(), "/C:/Users/ops/Downloads");
+        assert!(typed_path("   ", "/", "/", Some(false)).is_err());
+        // This computer.
+        #[cfg(unix)]
+        {
+            assert_eq!(typed_path("/usr/./share/../lib/", "/", "/home/mz", None).unwrap(), "/usr/lib");
+            assert_eq!(typed_path("Documents", "/home/mz", "/home/mz", None).unwrap(), "/home/mz/Documents");
+            assert_eq!(typed_path("~/Downloads", "/", "/home/mz", None).unwrap(), "/home/mz/Downloads");
+            assert_eq!(typed_path("/..", "/", "/home/mz", None).unwrap(), "/");
+        }
     }
 
     #[test]

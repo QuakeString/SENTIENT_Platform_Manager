@@ -8,6 +8,9 @@
 //! (crate::manager::files::transfers). A folder the account may not change
 //! is read only, with "Open as administrator" on a server (sudo, its
 //! password asked once).
+//! Back, Forward and Up beside the path bar keep a history per pane; the
+//! bar turns into a text field for a typed path (Ctrl+L), checked where the
+//! pane's files are before the pane goes there.
 
 pub(crate) mod fs;
 pub(crate) mod transfers;
@@ -128,6 +131,15 @@ struct Pane {
     cols: [f32; 3],
     /// The pane's width as last drawn (which columns fit).
     width: Rc<std::cell::Cell<f32>>,
+    /// Back and Forward: the folders left, newest last.
+    hist: Vec<String>,
+    fwd: Vec<String>,
+    /// The path bar as a text field (a click on its empty part, Ctrl+L).
+    edit: Option<Entity<InputState>>,
+    /// Why the typed path did not open (the field stays, the folder too).
+    edit_error: Option<String>,
+    /// The typed path is being checked (on the server, for a server).
+    checking: bool,
 }
 
 impl Pane {
@@ -156,6 +168,11 @@ impl Pane {
             updated_at: None,
             cols: COLS,
             width: Rc::new(std::cell::Cell::new(0.)),
+            hist: Vec::new(),
+            fwd: Vec::new(),
+            edit: None,
+            edit_error: None,
+            checking: false,
         }
     }
 
@@ -222,6 +239,11 @@ pub struct FilesPage {
     splitting: bool,
     /// The short note at the bottom ("Location copied"), and since when.
     toast: Option<(String, std::time::Instant)>,
+    /// A typed path opened: the keyboard back to its pane.
+    refocus: Option<(usize, FocusHandle)>,
+    /// Screens: the path field open on a side, a path typed in it
+    /// (SPM_DEBUG_FILES_EDIT=<side>[:<typed path>]).
+    debug_edit: Option<(usize, String)>,
     _subs: Vec<Subscription>,
     _tasks: Vec<Task<()>>,
 }
@@ -240,7 +262,7 @@ impl FilesPage {
         }), cx.observe(&transfers, |_, _, cx| cx.notify())];
         let single = remote.is_none();
         let right = remote.map(Place::Remote).unwrap_or(Place::Local);
-        let mut me = FilesPage { panes: [Pane::new(Place::Local, cx), Pane::new(right, cx)], single, drag_over: None, drag_count: 0, transfers, split: 0.5, splitting: false, toast: None, _subs: subs, _tasks: Vec::new() };
+        let mut me = FilesPage { panes: [Pane::new(Place::Local, cx), Pane::new(right, cx)], single, drag_over: None, drag_count: 0, transfers, split: 0.5, splitting: false, toast: None, refocus: None, debug_edit: None, _subs: subs, _tasks: Vec::new() };
         let saved = crate::manager::session::load();
         me.split = saved.files_split.unwrap_or(0.5).clamp(0.1, 0.9);
         if let Some(c) = saved.files_cols {
@@ -275,6 +297,10 @@ impl FilesPage {
     /// SPM_DEBUG_FILES_STATE=drag|copying|ask|delete).
     #[cfg(debug_assertions)]
     fn debug_state(&mut self, cx: &mut Context<Self>) {
+        if let Ok(v) = std::env::var("SPM_DEBUG_FILES_EDIT") {
+            let (side, typed) = v.split_once(':').unwrap_or((v.as_str(), ""));
+            self.debug_edit = Some((side.parse().unwrap_or(0usize).min(1), typed.to_string()));
+        }
         if let Ok(sel) = std::env::var("SPM_DEBUG_FILES_SELECT") {
             for part in sel.split(';') {
                 if let Some((side, names)) = part.split_once(':') {
@@ -475,6 +501,10 @@ impl FilesPage {
                         if let Some(l) = pane.back.take() {
                             pane.path = l.path.clone();
                             pane.listing = Some(l);
+                            // Back where it was: the step there is not one.
+                            if pane.hist.last() == Some(&pane.path) {
+                                pane.hist.pop();
+                            }
                         } else {
                             pane.listing = None;
                         }
@@ -576,15 +606,145 @@ impl FilesPage {
     fn open_dir(&mut self, side: usize, name: &str, cx: &mut Context<Self>) {
         let p = &self.panes[side];
         let path = p.place.join(&p.path, name);
-        self.load(side, path, None, cx);
+        self.go(side, path, None, cx);
+    }
+
+    /// Open another folder as a step Back can undo (a folder opened, a
+    /// crumb, a chip, Up, a typed path); Forward's steps are dropped.
+    fn go(&mut self, side: usize, path: String, select: Option<String>, cx: &mut Context<Self>) {
+        let pane = &mut self.panes[side];
+        if !pane.path.is_empty() && pane.path != path {
+            if pane.hist.last() != Some(&pane.path) {
+                pane.hist.push(pane.path.clone());
+            }
+            pane.fwd.clear();
+        }
+        self.cancel_edit(side, cx);
+        self.load(side, path, select, cx);
+    }
+
+    fn go_back(&mut self, side: usize, cx: &mut Context<Self>) {
+        let pane = &mut self.panes[side];
+        let Some(to) = pane.hist.pop() else { return };
+        if !pane.path.is_empty() {
+            pane.fwd.push(pane.path.clone());
+        }
+        let from = Self::name_in(&pane.path, &to);
+        self.cancel_edit(side, cx);
+        self.load(side, to, from, cx);
+    }
+
+    fn go_forward(&mut self, side: usize, cx: &mut Context<Self>) {
+        let pane = &mut self.panes[side];
+        let Some(to) = pane.fwd.pop() else { return };
+        if !pane.path.is_empty() {
+            pane.hist.push(pane.path.clone());
+        }
+        self.cancel_edit(side, cx);
+        self.load(side, to, None, cx);
+    }
+
+    /// Back to a folder above: the one it came from is picked there.
+    fn name_in(from: &str, to: &str) -> Option<String> {
+        let rest = from.strip_prefix(to)?.trim_start_matches(['/', '\\']);
+        rest.split(['/', '\\']).next().filter(|n| !n.is_empty()).map(String::from)
     }
 
     fn up(&mut self, side: usize, cx: &mut Context<Self>) {
         let p = &self.panes[side];
         if let Some(up) = p.place.parent(&p.path) {
             let from = p.path.trim_end_matches(['/', '\\']).rsplit(['/', '\\']).next().map(String::from);
-            self.load(side, up, from, cx);
+            self.go(side, up, from, cx);
         }
+    }
+
+    /// The path bar as a text field with the full path, all of it picked.
+    fn start_edit(&mut self, side: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let p = &self.panes[side];
+        if p.edit.is_some() || p.path.is_empty() {
+            return;
+        }
+        let windows = matches!(&p.place, Place::Remote(i) if crate::remote::is_windows(i));
+        let text = os_path(&p.path, windows);
+        let input = cx.new(|cx| InputState::new(window, cx).default_value(text));
+        let sub = cx.subscribe_in(&input, window, move |this: &mut Self, input, e: &InputEvent, window, cx| match e {
+            InputEvent::PressEnter { .. } => {
+                let typed = input.read(cx).value().to_string();
+                this.submit_edit(side, typed, window, cx);
+            }
+            InputEvent::Change => {
+                if this.panes[side].edit_error.take().is_some() {
+                    cx.notify();
+                }
+            }
+            // Clicked away: the bar again (not while the path is checked).
+            InputEvent::Blur if !this.panes[side].checking => this.cancel_edit(side, cx),
+            _ => {}
+        });
+        input.update(cx, |s, cx| {
+            s.focus(window, cx);
+            s.select_all(window, cx);
+        });
+        self._subs.push(sub);
+        let pane = &mut self.panes[side];
+        pane.edit = Some(input);
+        pane.edit_error = None;
+        cx.notify();
+    }
+
+    fn cancel_edit(&mut self, side: usize, cx: &mut Context<Self>) {
+        let pane = &mut self.panes[side];
+        if pane.edit.take().is_some() || pane.edit_error.take().is_some() {
+            pane.checking = false;
+            cx.notify();
+        }
+    }
+
+    /// Enter in the path field: the typed folder is listed (on the server,
+    /// for a server) before the pane goes there; one that is not there or
+    /// may not be read keeps the field and the folder, the reason under it.
+    fn submit_edit(&mut self, side: usize, typed: String, window: &mut Window, cx: &mut Context<Self>) {
+        let p = &mut self.panes[side];
+        if p.checking {
+            return;
+        }
+        let server = match &p.place {
+            Place::Local => None,
+            Place::Remote(i) => Some(crate::remote::is_windows(i)),
+        };
+        let cur = p.path.clone();
+        p.checking = true;
+        p.edit_error = None;
+        let focus = p.focus.clone();
+        cx.notify();
+        let _ = window;
+        self.run(
+            side,
+            move |f| {
+                let home = f.home();
+                let path = fs::typed_path(&typed, &cur, &home, server)?;
+                let l = f.list(&path)?;
+                Ok(l)
+            },
+            move |this, r, cx| {
+                let pane = &mut this.panes[side];
+                pane.checking = false;
+                if pane.edit.is_none() {
+                    // Cancelled while it was checked.
+                    return;
+                }
+                match r {
+                    Ok(l) => {
+                        let path = l.path.clone();
+                        pane.seen.insert(path.clone(), (l, std::time::Instant::now()));
+                        this.go(side, path, None, cx);
+                        this.refocus = Some((side, focus));
+                    }
+                    Err(e) => pane.edit_error = Some(e),
+                }
+            },
+            cx,
+        );
     }
 
     /// The second press of a double click on a folder opens it, at once:
@@ -893,7 +1053,7 @@ impl FilesPage {
     }
 
     fn key(&mut self, side: usize, e: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
-        if self.panes[side].rename.is_some() || self.panes[side].new_folder.is_some() {
+        if self.panes[side].rename.is_some() || self.panes[side].new_folder.is_some() || self.panes[side].edit.is_some() {
             return;
         }
         let k = &e.keystroke;
@@ -910,6 +1070,9 @@ impl FilesPage {
             "f2" => self.start_rename(side, window, cx),
             "backspace" => self.up(side, cx),
             "up" if k.modifiers.alt => self.up(side, cx),
+            "left" if k.modifiers.alt => self.go_back(side, cx),
+            "right" if k.modifiers.alt => self.go_forward(side, cx),
+            "l" if ctrl => self.start_edit(side, window, cx),
             "enter" => {
                 let p = &self.panes[side];
                 if let Some(r) = p.rows().into_iter().find(|r| p.selected.len() == 1 && p.selected.contains(&r.name) && r.dir) {
@@ -1002,34 +1165,92 @@ impl FilesPage {
         let skeleton = p.loading && p.listing.is_none();
         trace_change(side, "bar", &format!("path={} skeleton={skeleton} rows={} error={}", p.path, rows.len(), p.error.is_some()));
         let last = crumbs.len().saturating_sub(1);
+        // The bar and its text field are one box: the standard control
+        // height, 8 px corners, the thin border (the focus colour while
+        // typing), so switching between them moves nothing.
+        let bar_box = |id: String| {
+            ui::input_box()
+                .id(SharedString::from(id))
+                .flex_1()
+                .min_w_0()
+                .relative()
+                .rounded(px(8.))
+                .border_1()
+                .overflow_hidden()
+                .text_sm()
+        };
+        let bar = match p.edit.clone() {
+            Some(input) => {
+                let focus = p.focus.clone();
+                bar_box(format!("f-path-edit-{side}"))
+                    .border_color(if p.edit_error.is_some() { theme.danger } else { theme.ring })
+                    .px(px(2.))
+                    // Escape: the bar again, the folder as it was; before the
+                    // window's Escape (which closes a dialog).
+                    .capture_key_down(cx.listener(move |this, e: &KeyDownEvent, window, cx| {
+                        if e.keystroke.key == "escape" {
+                            this.cancel_edit(side, cx);
+                            window.focus(&focus, cx);
+                            cx.stop_propagation();
+                        }
+                    }))
+                    .child(div().flex_1().min_w_0().child(Input::new(&input).appearance(false).disabled(p.checking)))
+                    .when(p.checking, |b| b.child(div().pr(px(8.)).text_color(theme.muted_foreground).child("Checking…")))
+                    .child(probe(format!("files-path-edit {side}")))
+                    .into_any_element()
+            }
+            None => bar_box(format!("f-path-{side}"))
+                .px(px(10.))
+                .gap_1()
+                .items_center()
+                .border_color(theme.border)
+                .cursor_text()
+                // Its empty part: the path as text, to type another.
+                .on_click(cx.listener(move |this, _, window, cx| this.start_edit(side, window, cx)))
+                .child(probe(format!("files-path {side}")))
+                .children(crumbs.into_iter().enumerate().flat_map(|(i, (name, path))| {
+                    let sep = (i > 0).then(|| div().text_color(theme.muted_foreground).child("›").into_any_element());
+                    let part = div()
+                        .id(SharedString::from(format!("f-crumb-{side}-{i}")))
+                        .relative()
+                        .flex_shrink_0()
+                        .px_1()
+                        .rounded(px(4.))
+                        .cursor_pointer()
+                        .hover(|d| d.bg(theme.list_hover))
+                        .when(i == last, |d| d.text_color(theme.foreground).font_weight(FontWeight::MEDIUM))
+                        .when(i != last, |d| d.text_color(theme.muted_foreground))
+                        .child(name)
+                        .child(probe(format!("files-crumb {side} {i}")))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            // A crumb jumps there; not the bar's own click.
+                            cx.stop_propagation();
+                            this.go(side, path.clone(), None, cx);
+                        }))
+                        .into_any_element();
+                    sep.into_iter().chain([part])
+                }))
+                .into_any_element(),
+        };
+        // Back, Forward and Up, at the bar's left: each off where it can't go.
+        let nav = |id: &str, icon: IconName, tip: &'static str, on: bool, go: fn(&mut Self, usize, &mut Context<Self>)| {
+            crate::ui::probed(
+                crate::ui::button(SharedString::from(format!("f-{id}-{side}")))
+                    .ghost()
+                    .icon(icon)
+                    .tooltip(tip)
+                    .disabled(!on)
+                    .on_click(cx.listener(move |this, _, _, cx| go(this, side, cx))),
+            )
+        };
+        let can_up = !p.path.is_empty() && p.place.parent(&p.path).is_some();
         let bar = h_flex()
-            .h(px(34.))
-            .px(px(10.))
-            .gap_1()
+            .gap(crate::ui::button_gap())
             .items_center()
-            .rounded(px(8.))
-            .border_1()
-            .border_color(theme.border)
-            .overflow_hidden()
-            .text_sm()
-            .children(crumbs.into_iter().enumerate().flat_map(|(i, (name, path))| {
-                let sep = (i > 0).then(|| div().text_color(theme.muted_foreground).child("›").into_any_element());
-                let part = div()
-                    .id(SharedString::from(format!("f-crumb-{side}-{i}")))
-                    .relative()
-                    .flex_shrink_0()
-                    .px_1()
-                    .rounded(px(4.))
-                    .cursor_pointer()
-                    .hover(|d| d.bg(theme.list_hover))
-                    .when(i == last, |d| d.text_color(theme.foreground).font_weight(FontWeight::MEDIUM))
-                    .when(i != last, |d| d.text_color(theme.muted_foreground))
-                    .child(name)
-                    .child(probe(format!("files-crumb {side} {i}")))
-                    .on_click(cx.listener(move |this, _, _, cx| this.load(side, path.clone(), None, cx)))
-                    .into_any_element();
-                sep.into_iter().chain([part])
-            }));
+            .child(nav("back", IconName::ArrowLeft, "Back (Alt+Left)", !p.hist.is_empty(), Self::go_back))
+            .child(nav("forward", IconName::ArrowRight, "Forward (Alt+Right)", !p.fwd.is_empty(), Self::go_forward))
+            .child(nav("up", IconName::ArrowUp, "Up (Alt+Up)", can_up, Self::up))
+            .child(bar);
 
         // Shortcuts; the one the folder is in is marked.
         let marked = p.shortcuts.iter().find(|(_, _, s)| s.trim_end_matches(['/', '\\']) == p.path.trim_end_matches(['/', '\\'])).map(|(_, _, s)| s.clone());
@@ -1052,7 +1273,7 @@ impl FilesPage {
                 .child(shortcut_icon(icon).size_3p5())
                 .child(label.clone())
                 .child(probe(format!("files-chip {side} {}", label.replace(' ', "_"))))
-                .on_click(cx.listener(move |this, _, _, cx| this.load(side, path.clone(), None, cx)))
+                .on_click(cx.listener(move |this, _, _, cx| this.go(side, path.clone(), None, cx)))
         }));
 
         // C6: read only, and the way out on a server.
@@ -1083,7 +1304,7 @@ impl FilesPage {
             .child(bar)
             // A folder that did not open: why, under the bar (the bar is
             // back on the folder before).
-            .children(p.error.clone().map(|e| div().id(SharedString::from(format!("f-error-{side}"))).text_sm().text_color(theme.danger).child(e)))
+            .children(p.edit_error.clone().or_else(|| p.error.clone()).map(|e| div().id(SharedString::from(format!("f-error-{side}"))).text_sm().text_color(theme.danger).child(e)))
             .child(chips)
             .children(banner);
 
@@ -1370,6 +1591,21 @@ impl FilesPage {
 
 impl Render for FilesPage {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if let Some((_, f)) = self.refocus.take() {
+            window.focus(&f, cx);
+        }
+        // Screens: the path field once its side has a folder.
+        if let Some((side, typed)) = self.debug_edit.take() {
+            if self.panes[side].listing.is_some() {
+                self.start_edit(side, window, cx);
+                if let (false, Some(input)) = (typed.is_empty(), self.panes[side].edit.clone()) {
+                    input.update(cx, |i, cx| i.set_value(typed.clone(), window, cx));
+                    self.submit_edit(side, typed, window, cx);
+                }
+            } else {
+                self.debug_edit = Some((side, typed));
+            }
+        }
         let theme = cx.theme().clone();
         if !cx.has_active_drag() && self.drag_over.is_some() && std::env::var_os("SPM_DEBUG_FILES_STATE").is_none() {
             self.drag_over = None;
