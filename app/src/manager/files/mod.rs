@@ -131,6 +131,10 @@ struct Pane {
     cols: [f32; 3],
     /// The pane's width as last drawn (which columns fit).
     width: Rc<std::cell::Cell<f32>>,
+    /// The column the rows are sorted by, and backwards (kept from folder
+    /// to folder; Name, ascending, at first).
+    sort: SortCol,
+    desc: bool,
     /// Back and Forward: the folders left, newest last.
     hist: Vec<String>,
     fwd: Vec<String>,
@@ -168,6 +172,8 @@ impl Pane {
             updated_at: None,
             cols: COLS,
             width: Rc::new(std::cell::Cell::new(0.)),
+            sort: SortCol::Name,
+            desc: false,
             hist: Vec::new(),
             fwd: Vec::new(),
             edit: None,
@@ -176,13 +182,11 @@ impl Pane {
         }
     }
 
-    /// The listing's entries as shown: folders first, then by name (hidden
-    /// ones last); the
-    /// parts of copies under way are hidden.
+    /// The listing's entries as shown: folders first, then by the pane's
+    /// sort (a header click); the parts of copies under way are hidden.
     fn rows(&self) -> Vec<Entry> {
         let mut rows: Vec<Entry> = self.listing.as_ref().map(|l| l.entries.iter().filter(|e| !e.name.ends_with(".spm-part")).cloned().collect()).unwrap_or_default();
-        // Hidden names (".env") after the others, in each group.
-        rows.sort_by(|a, b| b.dir.cmp(&a.dir).then(a.name.starts_with('.').cmp(&b.name.starts_with('.'))).then(a.name.to_lowercase().cmp(&b.name.to_lowercase())));
+        sort_rows(&mut rows, self.sort, self.desc);
         rows
     }
 
@@ -297,6 +301,22 @@ impl FilesPage {
     /// SPM_DEBUG_FILES_STATE=drag|copying|ask|delete).
     #[cfg(debug_assertions)]
     fn debug_state(&mut self, cx: &mut Context<Self>) {
+        // Screens: a sort (SPM_DEBUG_FILES_SORT=<side>:<name|size|modified|owner>:<asc|desc>, several joined with ";").
+        if let Ok(v) = std::env::var("SPM_DEBUG_FILES_SORT") {
+            for part in v.split(';') {
+                let f: Vec<&str> = part.split(':').collect();
+                if let [side, col, dir] = f[..] {
+                    let side: usize = side.parse().unwrap_or(0usize).min(1);
+                    self.panes[side].sort = match col {
+                        "size" => SortCol::Size,
+                        "modified" => SortCol::Modified,
+                        "owner" => SortCol::Owner,
+                        _ => SortCol::Name,
+                    };
+                    self.panes[side].desc = dir == "desc";
+                }
+            }
+        }
         if let Ok(v) = std::env::var("SPM_DEBUG_FILES_EDIT") {
             let (side, typed) = v.split_once(':').unwrap_or((v.as_str(), ""));
             self.debug_edit = Some((side.parse().unwrap_or(0usize).min(1), typed.to_string()));
@@ -1085,6 +1105,71 @@ impl FilesPage {
     }
 }
 
+/// A column the Files rows sort by.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum SortCol {
+    Name,
+    Size,
+    Modified,
+    Owner,
+}
+
+/// Folders first, always; then by `col` (backwards with `desc`), equal
+/// ones by name. Name: natural order ("file2" before "file10"), case
+/// ignored, hidden names (".env") after the others. Size: bytes. Modified:
+/// time. Owner: the owner's name.
+fn sort_rows(rows: &mut [Entry], col: SortCol, desc: bool) {
+    use std::cmp::Ordering;
+    let by_name = |a: &Entry, b: &Entry| a.name.starts_with('.').cmp(&b.name.starts_with('.')).then_with(|| natural_cmp(&a.name, &b.name));
+    rows.sort_by(|a, b| {
+        let key = match col {
+            SortCol::Name => by_name(a, b),
+            SortCol::Size => a.size.cmp(&b.size).then_with(|| by_name(a, b)),
+            SortCol::Modified => a.mtime.cmp(&b.mtime).then_with(|| by_name(a, b)),
+            SortCol::Owner => natural_cmp(&a.owner, &b.owner).then_with(|| by_name(a, b)),
+        };
+        b.dir.cmp(&a.dir).then(if desc { key.reverse() } else { key }).then(Ordering::Equal)
+    });
+}
+
+/// Natural order, case ignored: runs of digits compare as numbers.
+fn natural_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    let (a, b) = (a.to_lowercase(), b.to_lowercase());
+    let (mut x, mut y) = (a.chars().peekable(), b.chars().peekable());
+    loop {
+        match (x.peek().copied(), y.peek().copied()) {
+            (None, None) => return a.cmp(&b),
+            (None, Some(_)) => return Ordering::Less,
+            (Some(_), None) => return Ordering::Greater,
+            (Some(c), Some(d)) if c.is_ascii_digit() && d.is_ascii_digit() => {
+                let mut n = String::new();
+                while let Some(c) = x.peek().copied().filter(char::is_ascii_digit) {
+                    n.push(c);
+                    x.next();
+                }
+                let mut m = String::new();
+                while let Some(d) = y.peek().copied().filter(char::is_ascii_digit) {
+                    m.push(d);
+                    y.next();
+                }
+                let (nt, mt) = (n.trim_start_matches('0'), m.trim_start_matches('0'));
+                let o = nt.len().cmp(&mt.len()).then_with(|| nt.cmp(mt)).then_with(|| n.len().cmp(&m.len()));
+                if o != Ordering::Equal {
+                    return o;
+                }
+            }
+            (Some(c), Some(d)) => {
+                if c != d {
+                    return c.cmp(&d);
+                }
+                x.next();
+                y.next();
+            }
+        }
+    }
+}
+
 /// A press that opens a folder: the second of a double click, without
 /// Shift or Ctrl (those change the selection).
 fn opens_on_press(click_count: usize, m: Modifiers) -> bool {
@@ -1322,15 +1407,54 @@ impl FilesPage {
                 .when(shown[1], |r| r.child(div().w(px(w[1])).flex_shrink_0().flex().justify_end().overflow_hidden().child(time)))
                 .when(shown[2], |r| r.child(div().w(px(w[2])).flex_shrink_0().pl(px(8.)).overflow_hidden().children(owner)))
         };
-        // A header cell with its left edge as a handle that widens it.
-        let handle = |col: usize, label: &'static str, end: bool| -> AnyElement {
+        // A header cell: a click sorts by it (again: backwards), the arrow
+        // in a slot of its own (always there, so nothing moves); its left
+        // edge a handle that widens it (Size, Modified, Owner).
+        let (sort, desc) = (p.sort, p.desc);
+        let sorter = |key: SortCol, label: &'static str, end: bool, cx: &mut Context<Self>| -> Stateful<Div> {
+            let on = sort == key;
+            let arrow = div()
+                .w(px(12.))
+                .flex_shrink_0()
+                .flex()
+                .justify_center()
+                .when(on, |d| d.child(Icon::new(if desc { IconName::ChevronDown } else { IconName::ChevronUp }).size(px(12.)).text_color(theme.foreground)));
+            let text = div().when(on, |d| d.text_color(theme.foreground)).child(label);
+            let (first, second) = if end { (arrow.into_any_element(), text.into_any_element()) } else { (text.into_any_element(), arrow.into_any_element()) };
+            h_flex()
+                .id(SharedString::from(format!("f-sort-{side}-{label}")))
+                .relative()
+                .h(px(22.))
+                .px(px(4.))
+                .gap(px(2.))
+                .items_center()
+                .rounded(px(4.))
+                .cursor_pointer()
+                .hover(|d| d.bg(theme.list_hover).text_color(theme.foreground))
+                // Right-aligned columns: the arrow before the label, which
+                // stays over its values.
+                .child(first)
+                .child(second)
+                .child(probe(format!("files-sort {side} {label}")))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    let p = &mut this.panes[side];
+                    if p.sort == key {
+                        p.desc = !p.desc;
+                    } else {
+                        p.sort = key;
+                        p.desc = false;
+                    }
+                    cx.notify();
+                }))
+        };
+        let handle = |col: usize, key: SortCol, label: &'static str, end: bool, cx: &mut Context<Self>| -> AnyElement {
             div()
                 .relative()
                 .size_full()
                 .flex()
                 .items_center()
                 .when(end, |d| d.justify_end())
-                .child(label)
+                .child(sorter(key, label, end, cx))
                 .child(
                     div()
                         .id(SharedString::from(format!("f-colh-{side}-{col}")))
@@ -1347,6 +1471,8 @@ impl FilesPage {
                         .child(div().w(px(2.)).h(px(14.)).rounded_full().group_hover(SharedString::from(format!("f-colg-{side}-{col}")), |d| d.bg(theme.primary)))
                         .on_drag(ColDrag { side, col }, |_, _, _, cx| cx.new(|_| NoDrag))
                         .on_click(cx.listener(move |this, e: &ClickEvent, _, cx| {
+                            // Not a sort: the handle's own click.
+                            cx.stop_propagation();
                             // Twice: back to its width before dragging.
                             if e.click_count() >= 2 {
                                 this.panes[side].cols[col] = COLS[col];
@@ -1365,7 +1491,11 @@ impl FilesPage {
             .border_color(theme.border)
             .text_size(px(12.5))
             .text_color(theme.muted_foreground)
-            .child(cols(div().child("Name").into_any_element(), handle(0, "Size", true), handle(1, "Modified", true), Some(handle(2, "Owner", false))))
+            .child({
+                let name = div().ml(px(-4.)).flex().child(sorter(SortCol::Name, "Name", false, cx)).into_any_element();
+                let (size, time, owner) = (handle(0, SortCol::Size, "Size", true, cx), handle(1, SortCol::Modified, "Modified", true, cx), handle(2, SortCol::Owner, "Owner", false, cx));
+                cols(name, size, time, Some(owner))
+            })
             .on_drag_move::<ColDrag>(cx.listener(move |this, e: &DragMoveEvent<ColDrag>, _, cx| {
                 let d = e.drag(cx).clone();
                 if d.side != side {
@@ -1898,6 +2028,26 @@ mod location_tests {
     }
 
     use super::os_path;
+
+    #[test]
+    fn sorting_keeps_folders_first_and_names_natural() {
+        use super::{SortCol, sort_rows, Entry};
+        let e = |n: &str, dir: bool, size: u64, t: i64, o: &str| Entry { name: n.into(), dir, size, mtime: Some(t), owner: o.into() };
+        let rows = vec![e("file10.txt", false, 50, 3, "root"), e("File2.txt", false, 900, 1, "ops"), e(".env", false, 5, 9, "ops"), e("logs", true, 0, 2, "root"), e("Backups", true, 0, 5, "ops")];
+        let names = |col, desc| {
+            let mut r = rows.clone();
+            sort_rows(&mut r, col, desc);
+            r.into_iter().map(|e| e.name).collect::<Vec<_>>()
+        };
+        assert_eq!(names(SortCol::Name, false), ["Backups", "logs", "File2.txt", "file10.txt", ".env"]);
+        assert_eq!(names(SortCol::Name, true), ["logs", "Backups", ".env", "file10.txt", "File2.txt"]);
+        assert_eq!(names(SortCol::Size, false), ["Backups", "logs", ".env", "file10.txt", "File2.txt"]);
+        assert_eq!(names(SortCol::Size, true), ["logs", "Backups", "File2.txt", "file10.txt", ".env"]);
+        assert_eq!(names(SortCol::Modified, true), ["Backups", "logs", ".env", "file10.txt", "File2.txt"]);
+        assert_eq!(names(SortCol::Owner, false), ["Backups", "logs", "File2.txt", ".env", "file10.txt"]);
+        assert_eq!(super::natural_cmp("a02", "a2"), std::cmp::Ordering::Greater);
+        assert_eq!(super::natural_cmp("v9", "V10"), std::cmp::Ordering::Less);
+    }
 
     #[test]
     fn locations_as_the_system_writes_them() {

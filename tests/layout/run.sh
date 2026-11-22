@@ -118,6 +118,8 @@ for w in $CW; do for s in $SCALES; do for t in $THEMES; do list+=("local backup 
 # Files: the path bar as a text field, and with a path that is not there
 # (its error under it); FILES_EDITS empty leaves them out.
 for g in ${FILES_EDITS-SPM_DEBUG_FILES_EDIT=0 SPM_DEBUG_FILES_EDIT=0:/no/such/folder}; do for w in $WIDTHS; do for s in $SCALES; do for t in $THEMES; do list+=("local files $w $s $t $g"); done; done; done; done
+# Files sorted by a header: several columns, both directions.
+for g in ${FILES_SORTS-SPM_DEBUG_FILES_SORT=0:size:desc SPM_DEBUG_FILES_SORT=0:modified:asc SPM_DEBUG_FILES_SORT=0:name:desc}; do for w in $WIDTHS; do for s in $SCALES; do for t in $THEMES; do list+=("local files $w $s $t $g"); done; done; done; done
 for g in ${GUIDES-SPM_DEBUG_ADD_GUIDE=linux SPM_DEBUG_ADD_GUIDE=windows}; do for w in $WIDTHS; do for s in $SCALES; do for t in $THEMES; do list+=("local instances $w $s $t $g"); done; done; done; done
 # "Move data to another disk" at each step, a sub-flow of Migration (the
 # canned server; the menu must keep Migration selected), from the minimum
@@ -191,6 +193,7 @@ if [ -n "${INSTANCE:-}" ]; then
   for p in $PAGES_REMOTE; do for w in $WIDTHS; do for s in $SCALES; do for t in $THEMES; do list+=("remote $p $w $s $t"); done; done; done; done
   # Files: the server pane's path field, and a path the server does not have.
   for g in ${REMOTE_FILES_EDITS-SPM_DEBUG_FILES_EDIT=1 SPM_DEBUG_FILES_EDIT=1:/no/such/folder}; do for w in $WIDTHS; do for s in $SCALES; do for t in $THEMES; do list+=("remote files $w $s $t $g"); done; done; done; done
+  for g in ${REMOTE_FILES_SORTS-SPM_DEBUG_FILES_SORT=1:owner:asc SPM_DEBUG_FILES_SORT=1:size:asc SPM_DEBUG_FILES_SORT=1:modified:desc}; do for w in $WIDTHS; do for s in $SCALES; do for t in $THEMES; do list+=("remote files $w $s $t $g"); done; done; done; done
   # Platform settings with changes not applied (the Apply bar): valid
   # changes, a field not valid on a short and on a long tab, the leave
   # prompt (SPM_DEBUG_SETTINGS_PENDING).
