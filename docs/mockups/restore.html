@@ -1,0 +1,895 @@
+<meta charset="utf-8">
+<title>SPM Restore and Data Move</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans:wght@400;500;600;700&family=Noto+Sans+Mono:wght@400;500&display=swap">
+<style>
+/* Tokens: app/assets/sentient-theme.json (light/dark), as in the sibling mockups. */
+:root{
+  --page:#eeeeee; --card:#ffffff; --side:#ffffff; --text:rgba(0,0,0,.87); --text2:rgba(0,0,0,.65); --border:rgba(0,0,0,.12);
+  --input:#cccccc; --primary:#187074; --on-primary:#ffffff; --tint:#f3f8f8; --sel:rgba(24,112,116,.10); --hover:#f4f4f4;
+  --ok-bg:#dcfce7; --ok:#047857; --warn-bg:#fef3c7; --warn:#92400e; --bad-bg:#fde2e2; --bad:#c62828; --danger:#ef4444; --on-danger:#fff;
+  --info-bg:#dbeafe; --info:#1d4ed8; --mute:rgba(0,0,0,.06); --sec:#eeeeee; --switch:#c3cacd;
+  --shadow:0 1px 3px rgba(0,0,0,.08); --pop:0 8px 24px rgba(0,0,0,.18); --scrim:rgba(0,0,0,.40);
+  --sheet:#e4e4e4; --ht:26%; --hs:40%; --logbg:#eeeeee;
+  --ann:#6d28d9; --ann-bg:rgba(109,40,217,.08); --annx:#047857; --annx-bg:rgba(4,120,87,.08);
+  --font:'Noto Sans',system-ui,'Segoe UI',sans-serif; --mono:'Noto Sans Mono',ui-monospace,Consolas,monospace;
+}
+@media (prefers-color-scheme: dark){ :root:not([data-theme="light"]){
+  --page:#21282a; --card:#2d363b; --side:#2d363b; --text:rgba(255,255,255,.87); --text2:rgba(255,255,255,.70); --border:rgba(255,255,255,.12);
+  --input:rgba(255,255,255,.24); --primary:#26a69a; --on-primary:rgba(0,0,0,.87); --tint:#2d3c40; --sel:rgba(38,166,154,.16); --hover:rgba(255,255,255,.04);
+  --ok-bg:#1f3d33; --ok:#6ee7b7; --warn-bg:#45391c; --warn:#fcd34d; --bad-bg:#4a2a2a; --bad:#ff8a80; --danger:#f87171; --on-danger:rgba(0,0,0,.87);
+  --info-bg:rgba(96,165,250,.14); --info:#93c5fd; --mute:rgba(255,255,255,.08); --sec:rgba(255,255,255,.08); --switch:#56626a;
+  --shadow:0 1px 3px rgba(0,0,0,.3); --pop:0 8px 24px rgba(0,0,0,.5); --scrim:rgba(0,0,0,.55); --sheet:#161c1e; --ht:42%; --hs:48%; --logbg:#21282a;
+  --ann:#c4b5fd; --ann-bg:rgba(196,181,253,.12); --annx:#6ee7b7; --annx-bg:rgba(110,231,183,.10); color-scheme:dark } }
+:root[data-theme="dark"]{
+  --page:#21282a; --card:#2d363b; --side:#2d363b; --text:rgba(255,255,255,.87); --text2:rgba(255,255,255,.70); --border:rgba(255,255,255,.12);
+  --input:rgba(255,255,255,.24); --primary:#26a69a; --on-primary:rgba(0,0,0,.87); --tint:#2d3c40; --sel:rgba(38,166,154,.16); --hover:rgba(255,255,255,.04);
+  --ok-bg:#1f3d33; --ok:#6ee7b7; --warn-bg:#45391c; --warn:#fcd34d; --bad-bg:#4a2a2a; --bad:#ff8a80; --danger:#f87171; --on-danger:rgba(0,0,0,.87);
+  --info-bg:rgba(96,165,250,.14); --info:#93c5fd; --mute:rgba(255,255,255,.08); --sec:rgba(255,255,255,.08); --switch:#56626a;
+  --shadow:0 1px 3px rgba(0,0,0,.3); --pop:0 8px 24px rgba(0,0,0,.5); --scrim:rgba(0,0,0,.55); --sheet:#161c1e; --ht:42%; --hs:48%; --logbg:#21282a;
+  --ann:#c4b5fd; --ann-bg:rgba(196,181,253,.12); --annx:#6ee7b7; --annx-bg:rgba(110,231,183,.10); color-scheme:dark }
+body{margin:0;background:var(--sheet);color:var(--text);font-family:var(--font);font-size:14px;line-height:1.45;
+  padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));padding-block:24px 64px}
+main{max-width:1300px;margin:0 auto;display:flex;flex-direction:column;gap:36px}
+h1{font-size:24px;font-weight:500;margin:0;text-wrap:balance}
+h2{font-size:19px;font-weight:500;margin:0 0 4px;text-wrap:balance}
+p{margin:0}
+.top{display:flex;flex-wrap:wrap;gap:12px 20px;align-items:center;justify-content:space-between}
+.lead{color:var(--text2);max-width:86ch}
+.themes{display:inline-flex;border:1px solid var(--border);border-radius:8px;overflow:hidden;background:var(--card)}
+.themes button{font:inherit;border:0;background:transparent;color:var(--text2);padding:6px 14px;cursor:pointer}
+.themes button[aria-pressed="true"]{background:var(--tint);color:var(--primary);font-weight:500}
+.code{font-family:var(--mono);font-size:12px;font-weight:500;color:var(--primary);background:var(--card);border:1px solid var(--border);border-radius:4px;padding:1px 6px;text-decoration:none;white-space:nowrap}
+.notes{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:14px 18px;max-width:1000px}
+.notes ul{margin:6px 0 0;padding-left:20px;display:flex;flex-direction:column;gap:4px}
+.notes h3{margin:0;font-size:15px;font-weight:500}
+
+/* index = the flow board in small */
+.index{display:flex;flex-direction:column;gap:10px;background:var(--card);border:1px solid var(--border);border-radius:12px;padding:14px 18px}
+.index .ln{display:flex;flex-wrap:wrap;gap:6px 4px;align-items:center}
+.index .ln>b{font-weight:500;width:170px;flex:none}
+.index .ar{color:var(--text2);padding:0 2px}
+.index .br{color:var(--text2);font-size:12px;padding:0 4px}
+@media (max-width:700px){.index .ln>b{width:100%}}
+.legend{display:flex;gap:16px;flex-wrap:wrap;color:var(--text2);font-size:13px;align-items:center}
+
+/* storyboard */
+section.lane{display:flex;flex-direction:column;gap:0}
+.lanehd{margin-bottom:14px}
+.frame{display:flex;flex-direction:column;gap:8px;scroll-margin-top:16px}
+.frame>.cap{display:flex;gap:10px;align-items:baseline;flex-wrap:wrap}
+.frame>.cap b{font-weight:500}
+.frame>.cap span{color:var(--text2);font-size:13px}
+.scroll{overflow-x:auto;border-radius:10px;padding-bottom:2px}
+.arrow{display:flex;align-items:center;gap:10px;padding:6px 0 6px 40px;color:var(--text2);font-size:13px;min-height:44px}
+.arrow svg{width:22px;height:34px;flex:none;color:var(--primary)}
+.arrow .act{border:1px solid var(--border);background:var(--card);border-radius:14px;padding:2px 10px;color:var(--text)}
+.arrow a{color:var(--primary)}
+.branch{display:flex;flex-wrap:wrap;gap:6px;align-items:center;padding:4px 0 4px 40px;color:var(--text2);font-size:13px}
+
+/* annotation badges: not part of the UI */
+.bx{display:inline-flex;align-items:center;font:600 10px/1 var(--mono);letter-spacing:.05em;text-transform:uppercase;padding:3px 5px;border-radius:4px;border:1px dashed;white-space:nowrap;flex:none;vertical-align:middle;cursor:help}
+.bx.e{color:var(--annx);background:var(--annx-bg)}
+.bx.n{color:var(--ann);background:var(--ann-bg)}
+
+/* ---------- the app window (app/src/manager/shell.rs, ui.rs) ---------- */
+.win{width:1260px;height:720px;border-radius:10px;overflow:hidden;border:1px solid var(--border);display:flex;background:var(--page);position:relative;box-shadow:var(--pop);flex:none}
+.side{flex:none;width:232px;box-sizing:border-box;background:var(--side);border-right:1px solid var(--border);display:flex;flex-direction:column}
+.brand{height:60px;flex:none;display:flex;align-items:center;gap:10px;padding:0 10px 0 16px}
+.brand .lg{width:32px;height:32px;border-radius:8px;background:linear-gradient(135deg,#26a69a,#187074);color:#fff;display:flex;align-items:center;justify-content:center;flex:none}
+.brand .lg svg{width:20px;height:20px}
+.brand .bt{display:flex;flex-direction:column;line-height:17px;flex:1;min-width:0}
+.brand .bt b{font-size:15px;font-weight:700}
+.brand .bt small{font-size:10px;font-weight:600;color:var(--primary);white-space:nowrap}
+.brand .fold{width:32px;height:32px;display:flex;align-items:center;justify-content:center;color:var(--text2)}
+.brand .fold svg{width:18px;height:18px}
+.menu{flex:1;display:flex;flex-direction:column;gap:2px;padding:12px 0 8px 12px;min-height:0}
+.it{display:flex;align-items:center;gap:12px;height:34px;box-sizing:border-box;padding:0 12px 0 11px;margin-right:10px;border-radius:8px;color:var(--text);white-space:nowrap;position:relative}
+.it svg{width:18px;height:18px;flex:none;color:var(--text2)}
+.it.on{background:var(--page);color:var(--primary);font-weight:600;margin-right:-1px;border-radius:10px 0 0 10px;border:1px solid var(--border);border-right:0}
+.it.on svg{color:var(--primary)}
+.it .nw{margin-left:auto;font-size:11px;color:var(--text2);background:var(--sec);border-radius:8px;padding:0 7px}
+.it em{font-style:normal;margin-left:auto;color:var(--text2);font-size:13px}
+.menu hr{border:0;border-top:1px solid var(--border);margin:8px 10px 8px 0}
+.foot{flex:none;border-top:1px solid var(--border);display:flex;align-items:center;gap:8px;padding:9px 10px 9px 19px}
+.foot .lg{width:26px;height:26px;border-radius:7px;background:linear-gradient(135deg,#26a69a,#187074);color:#fff;display:flex;align-items:center;justify-content:center}
+.foot .lg svg{width:16px;height:16px}
+.foot .vt{flex:1;display:flex;flex-direction:column;line-height:16px}
+.foot .vt b{font-size:12.5px;font-weight:500}.foot .vt span{font-size:12px;color:var(--text2)}
+.foot .pref{width:32px;height:32px;border:1px solid var(--border);border-radius:8px;display:flex;align-items:center;justify-content:center}
+.foot .pref svg{width:18px;height:18px}
+.main{flex:1;min-width:0;display:flex;flex-direction:column;position:relative}
+.bar{flex:none;height:60px;display:flex;align-items:center;gap:14px;padding:0 16px 0 20px;white-space:nowrap;color:var(--text);
+  background:color-mix(in srgb,var(--ic) var(--ht),var(--card))}
+.bar .sw{display:flex;align-items:center;gap:10px;background:color-mix(in srgb,var(--ic) var(--hs),var(--card));border-radius:8px;padding:0 12px 0 14px;height:36px;font-weight:600}
+.bar .sw small{font-weight:400;font-size:13px;color:var(--text2)}
+.bar .sw svg{width:16px;height:16px;color:var(--text2)}
+.bar .dot{width:9px;height:9px;border-radius:50%;background:#22c55e;border:2px solid #fff;flex:none}
+.bar .dot.off{background:transparent;border-color:var(--text2)}
+.bar .tag{background:#1f9d55;color:#fff;font-size:11px;font-weight:700;border-radius:5px;padding:1px 7px;letter-spacing:.03em}
+.bar .tag.win{background:var(--ic)}
+.bar .mon{margin-left:auto;display:flex;gap:24px;font-size:13px;align-items:center;font-variant-numeric:tabular-nums}
+.bar .mon>span{display:flex;gap:8px;align-items:center}
+.bar .mon svg{width:16px;height:16px}
+.bar .mon i{display:inline-block;width:36px;height:5px;border-radius:3px;background:color-mix(in srgb,var(--text) 22%,transparent);position:relative;overflow:hidden}
+.bar .mon i b{position:absolute;inset:0 auto 0 0;background:color-mix(in srgb,var(--ic) 70%,var(--text));border-radius:3px}
+.bar .mon i.hi b{background:var(--danger)}
+.bar .ico{width:32px;height:32px;display:flex;align-items:center;justify-content:center;position:relative}
+.bar .ico svg{width:20px;height:20px}
+.bar .ico .bd{position:absolute;top:0;right:-2px;background:#e11d48;color:#fff;font-size:10px;font-weight:700;border-radius:9px;padding:0 4px;line-height:15px}
+.bar .chip{display:flex;align-items:center;gap:8px;background:color-mix(in srgb,var(--ic) var(--hs),var(--card));border-radius:14px;padding:3px 12px;font-size:13px}
+.bar .chip i{width:44px;height:4px;border-radius:2px;background:color-mix(in srgb,var(--primary) 25%,transparent);position:relative;overflow:hidden;display:inline-block}
+.bar .chip i b{position:absolute;inset:0 auto 0 0;background:var(--primary)}
+.strip{height:3px;flex:none;position:relative;overflow:hidden;background:color-mix(in srgb,var(--primary) 25%,transparent)}
+.strip::after{content:"";position:absolute;inset:0 auto 0 0;width:var(--p,40%);background:var(--primary)}
+.strip.bad::after{background:var(--danger)}
+.pagec{flex:1;min-height:0;overflow:hidden;padding:18px;display:flex;flex-direction:column;gap:14px;position:relative}
+.ptitle{display:flex;align-items:flex-start;gap:12px}
+.ptitle .tt{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
+.ptitle h3{margin:0;font-size:22px;font-weight:400;line-height:30px}
+.ptitle small{font-size:13px;color:var(--text2)}
+.ib{width:28px;height:28px;border-radius:8px;display:inline-flex;align-items:center;justify-content:center;color:var(--text2);flex:none}
+.ib.ob{border:1px solid var(--input);background:var(--card);color:var(--text)}
+.ib svg{width:16px;height:16px}
+.card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:14px 16px;display:flex;flex-direction:column;gap:10px;min-width:0}
+.card.g0{gap:0}
+.ch{display:flex;align-items:center;gap:10px;min-height:28px}
+.ch>b{font-weight:500;flex:1;min-width:0}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;height:28px;box-sizing:border-box;padding:0 10px;border-radius:6px;border:1px solid var(--input);background:var(--card);color:var(--text);white-space:nowrap;font-size:14px}
+.btn svg{width:15px;height:15px}
+.btn.pri{background:var(--primary);border-color:var(--primary);color:var(--on-primary)}
+.btn.dan{background:var(--danger);border-color:var(--danger);color:var(--on-danger)}
+.btn.off{opacity:.45}
+.btn.ghost{border-color:transparent;background:transparent;color:var(--primary)}
+.btn.sm{height:24px;padding:0 8px;font-size:13px}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.sp{flex:1}
+.mut{color:var(--text2)}
+.small{font-size:13px}
+.mono{font-family:var(--mono);font-size:13px}
+.pill{display:inline-flex;align-items:center;gap:4px;border-radius:10px;padding:1px 8px;font-size:12px;white-space:nowrap}
+.pill.ok{background:var(--ok-bg);color:var(--ok)}
+.pill.bad{background:var(--bad-bg);color:var(--bad)}
+.pill.warn{background:var(--warn-bg);color:var(--warn)}
+.pill.mute{background:var(--sec);color:var(--text2)}
+.pill.cur{background:var(--sec);color:var(--text)}
+.pill.run{background:var(--sel);color:var(--primary)}
+.ihelp{display:inline-flex;width:14px;height:14px;border-radius:50%;border:1.3px solid var(--text2);color:var(--text2);font-size:9.5px;font-weight:700;align-items:center;justify-content:center;font-style:normal;flex:none;cursor:help;font-family:var(--font)}
+/* card_row: label 186, value, action column 118 with its own line */
+.crow{display:flex;gap:16px;align-items:stretch}
+.crow>.l{flex:1;min-width:0;min-height:53px;box-sizing:border-box;padding:8px 0;display:flex;align-items:center;border-bottom:1px solid var(--border)}
+.crow>.l>.k{width:186px;flex:none;color:var(--text2);display:flex;gap:6px;align-items:center}
+.crow>.l>.v{flex:1;min-width:0;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.crow>.a{width:118px;flex:none;display:flex;align-items:center;justify-content:flex-end;border-bottom:1px solid var(--border);gap:6px}
+.crow.last>.l,.crow.last>.a{border-bottom:0}
+.crow.wide>.a{width:auto;min-width:118px}
+.sw2{width:36px;height:20px;border-radius:10px;background:var(--switch);position:relative;display:inline-block;flex:none}
+.sw2::after{content:"";position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:#fff}
+.sw2.on{background:var(--primary)}.sw2.on::after{left:18px}
+.seg{display:inline-flex;border:1px solid var(--border);border-radius:8px;overflow:hidden;background:var(--card)}
+.seg span{display:flex;align-items:center;gap:6px;height:30px;padding:0 11px;color:var(--text2)}
+.seg span svg{width:15px;height:15px}
+.seg .on{background:var(--tint);color:var(--primary);font-weight:500}
+.seg .dis{opacity:.45}
+.seg span{white-space:nowrap}
+.seg.sm span{height:24px;padding:0 8px;font-size:12.5px}
+.inp{height:28px;box-sizing:border-box;border:1px solid var(--input);border-radius:6px;padding:0 10px;display:flex;align-items:center;gap:8px;background:var(--card);min-width:0}
+.inp.focus{border-color:var(--primary);box-shadow:0 0 0 2px color-mix(in srgb,var(--primary) 25%,transparent)}
+.inp.err{border-color:var(--danger)}
+.inp .ph{color:var(--text2)}
+.inp svg{width:15px;height:15px;color:var(--text2);margin-left:auto}
+/* table (backup.rs table_header/table_row) */
+.th,.tr{display:flex;align-items:center;padding:0 4px;gap:0}
+.th{height:30px;font-size:12.5px;color:var(--text2);border-bottom:1px solid var(--border)}
+.tr{min-height:43px;font-size:14px;font-variant-numeric:tabular-nums}
+.tr+.tr{border-top:1px solid var(--border)}
+.tr.sel{background:var(--sel)}
+.c1{flex:1;min-width:0;display:flex;gap:8px;align-items:center;overflow:hidden;white-space:nowrap}
+.cm{width:132px;flex:none}.cs{width:100px;flex:none}.cc{width:130px;flex:none}.cmenu{width:36px;flex:none;display:flex;justify-content:flex-end}
+.cr{width:96px;flex:none;display:flex;justify-content:flex-end}
+.tr .ib{width:24px;height:24px}
+/* radio card (ui.rs radio_card_el) */
+.opt{display:flex;gap:12px;align-items:flex-start;border:1px solid var(--border);border-radius:12px;padding:14px 16px;background:var(--card)}
+.opt .rd{width:18px;height:18px;border-radius:50%;border:2px solid var(--text2);box-sizing:border-box;flex:none;margin-top:2px;position:relative}
+.opt.sel{border-color:var(--primary);background:var(--tint)}
+.opt.sel .rd{border-color:var(--primary)}.opt.sel .rd::after{content:"";position:absolute;inset:3px;border-radius:50%;background:var(--primary)}
+.opt.dis{opacity:.5}
+.opt .ot{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
+.opt .ot>b{font-weight:500;font-size:15px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.opt .ot>span{color:var(--text2);font-size:13px}
+.opt .ix{width:18px;height:18px;flex:none;margin-top:2px;color:var(--primary)}
+.opts{display:flex;flex-direction:column;gap:8px}
+.opts.g2{display:grid;grid-template-columns:1fr 1fr}
+/* outcome (ui.rs outcome) and banners */
+.out{display:flex;gap:10px;align-items:flex-start;border-radius:8px;padding:8px 10px;font-size:14px}
+.out svg{width:16px;height:16px;flex:none;margin-top:2px}
+.out.good{background:var(--ok-bg);color:var(--ok)}
+.out.bad{background:var(--bad-bg);color:var(--bad)}
+.out.warn{background:var(--warn-bg);color:var(--warn)}
+.out.info{background:var(--info-bg);color:var(--info)}
+.out .tx{flex:1;min-width:0}
+.blk{border:1px solid color-mix(in srgb,var(--danger) 45%,var(--border));border-radius:12px;background:var(--card);padding:14px 16px;display:flex;flex-direction:column;gap:10px}
+.blk.w{border-color:color-mix(in srgb,#f59e0b 50%,var(--border))}
+.blk .bh{display:flex;gap:10px;align-items:center;font-weight:500;font-size:15px}
+.blk .bh svg{width:18px;height:18px;color:var(--bad);flex:none}
+.blk.w .bh svg{color:var(--warn)}
+.fix{margin:0;padding-left:20px;display:flex;flex-direction:column;gap:6px}
+.fix li::marker{color:var(--text2)}
+/* job view (migration.rs job_view) */
+.chk{display:flex;align-items:center;gap:10px;font-size:14px;min-height:23px}
+.chk .m{width:14px;display:inline-flex;justify-content:center;color:var(--ok);flex:none;font-size:13px}
+.chk.bad,.chk.bad .m{color:var(--bad)}
+.chk.now .m{color:var(--primary)}
+.chk.todo{color:var(--text2)}.chk.todo .m{color:var(--text2)}
+.chk .sub{color:var(--text2);font-size:13px;margin-left:auto;font-variant-numeric:tabular-nums}
+.spin{width:12px;height:12px;border-radius:50%;border:2px solid color-mix(in srgb,var(--primary) 30%,transparent);border-top-color:var(--primary);box-sizing:border-box;display:inline-block}
+.logbox{background:var(--logbg);border-radius:6px;padding:8px 8px;font-family:var(--mono);font-size:13px;line-height:20px;white-space:pre;overflow:hidden}
+.pbar{height:6px;border-radius:3px;background:var(--mute);overflow:hidden;flex:1}
+.pbar i{display:block;height:100%;background:var(--primary);border-radius:3px}
+.pbar.bad i{background:var(--danger)}
+.skel{height:12px;border-radius:6px;background:linear-gradient(90deg,var(--mute),color-mix(in srgb,var(--mute) 40%,transparent),var(--mute))}
+/* stepper */
+.stepper{display:flex;align-items:center;gap:6px;flex-wrap:nowrap;font-size:13px;color:var(--text2);white-space:nowrap}
+.stepper span{display:flex;gap:6px;align-items:center}
+.stepper i{font-style:normal;width:20px;height:20px;border-radius:50%;border:1px solid var(--input);display:inline-flex;align-items:center;justify-content:center;font-size:11.5px;font-weight:600}
+.stepper .dn i{background:var(--sel);border-color:transparent;color:var(--primary)}
+.stepper .on{color:var(--text);font-weight:500}
+.stepper .on i{background:var(--primary);border-color:var(--primary);color:var(--on-primary)}
+.stepper .ln{width:18px;height:1px;background:var(--border)}
+/* grid table */
+.gt{display:grid;border:1px solid var(--border);border-radius:8px;overflow:hidden;font-size:13.5px}
+.gt>div{padding:7px 10px;border-top:1px solid var(--border);display:flex;align-items:center;gap:6px;min-width:0}
+.gt>.h{border-top:0;font-size:12.5px;color:var(--text2);background:color-mix(in srgb,var(--mute) 50%,transparent)}
+.gt .bad{color:var(--bad)}.gt .ok{color:var(--ok)}
+.gt .num{font-variant-numeric:tabular-nums;justify-content:flex-end}
+.kv{display:grid;grid-template-columns:186px minmax(0,1fr);gap:0 16px}
+.kv>*{padding:8px 0;border-top:1px solid var(--border);display:flex;gap:8px;align-items:center;min-width:0;flex-wrap:wrap}
+.kv>.f{border-top:0}
+.kv .k{color:var(--text2)}
+.box{width:16px;height:16px;border-radius:4px;border:2px solid var(--text2);box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;flex:none}
+.box.on{background:var(--primary);border-color:var(--primary);color:var(--on-primary)}
+.box svg{width:12px;height:12px}
+.cbx{display:flex;gap:10px;align-items:center}
+/* dialogs (modal.rs): header 48, body 20/12/16, footer 20/14 */
+.scrim{position:absolute;inset:0;background:var(--scrim);display:flex;align-items:flex-start;justify-content:center;z-index:6;padding-top:64px}
+.dlg{background:var(--card);border-radius:12px;box-shadow:var(--pop);width:560px;max-width:92%;display:flex;flex-direction:column;border:1px solid var(--border)}
+.dlg.w{width:720px}
+.dlg .dh{display:flex;align-items:center;gap:10px;height:48px;padding:0 12px 0 20px;border-bottom:1px solid var(--border);font-weight:500;font-size:16px;flex:none}
+.dlg .dh .sp{flex:1}
+.dlg .db{padding:12px 20px 16px;display:flex;flex-direction:column;gap:12px}
+.dlg .df{display:flex;gap:8px;justify-content:flex-end;padding:14px 20px;border-top:1px solid var(--border);align-items:center}
+.drv{display:flex;gap:10px;align-items:center}
+.drv svg{width:18px;height:18px;color:var(--text2);flex:none}
+</style>
+
+<main>
+  <div class="top">
+    <div style="display:flex;flex-direction:column;gap:6px">
+      <h1>Platform Manager: Restore, and Move data to another disk</h1>
+      <p class="lead">One board for approval, nothing built. Windows are drawn at the app's size (60 px top bar, 232 px menu, 18 px page padding, 14 px gaps, cards 14 × 16) on a remote instance, so the bar takes the instance's colour. The dashed badges are notes, not UI: <span class="bx e">exists</span> the backup engine or the app does it today, <span class="bx n">new</span> it has to be built. Hover a badge for the reason.</p>
+    </div>
+    <div class="themes" role="group" aria-label="Theme">
+      <button data-t="light">Light</button><button data-t="dark">Dark</button><button data-t="">System</button>
+    </div>
+  </div>
+  <nav class="index" id="index"></nav>
+  <div id="board" style="display:flex;flex-direction:column;gap:36px"></div>
+  <section class="notes" id="matrixnotes"></section>
+  <section class="notes" id="summary" style="max-width:1260px"></section>
+  <section class="notes" id="questions"></section>
+</main>
+
+<script>
+(function(){
+const qs=new URLSearchParams(location.search);
+const root=document.documentElement;
+function setT(t){ if(t) root.setAttribute('data-theme',t); else root.removeAttribute('data-theme');
+  document.querySelectorAll('.themes button').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.t===t)));
+  try{localStorage.setItem('spm-mock-theme',t)}catch(e){} }
+let saved=''; try{saved=localStorage.getItem('spm-mock-theme')||''}catch(e){}
+setT(qs.get('t')??saved);
+document.querySelectorAll('.themes button').forEach(b=>b.addEventListener('click',()=>setT(b.dataset.t)));
+
+const P=s=>`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${s}</svg>`;
+const I={
+ status:P('<path d="M22 12h-4l-3 9L9 3l-3 9H2"/>'), stats:P('<path d="M3 3v18h18"/><path d="m19 9-5 5-4-4-3 3"/>'),
+ power:P('<path d="M12 2v10"/><path d="M18.4 6.6a9 9 0 1 1-12.77.04"/>'), logs:P('<rect x="3" y="3" width="18" height="18" rx="2"/><path d="m7 11 2-2-2-2"/><path d="M11 13h4"/>'),
+ folder:P('<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>'),
+ update:P('<path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 16h5v5"/>'),
+ gateway:P('<rect x="9" y="2" width="6" height="6" rx="1"/><rect x="2" y="16" width="6" height="6" rx="1"/><rect x="16" y="16" width="6" height="6" rx="1"/><path d="M5 16v-3a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v3"/><path d="M12 12V8"/>'),
+ backup:P('<rect x="2" y="3" width="20" height="5" rx="1"/><path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8"/><path d="M10 12h4"/>'),
+ mig:P('<path d="M8 3 4 7l4 4"/><path d="M4 7h16"/><path d="m16 21 4-4-4-4"/><path d="M20 17H4"/>'),
+ wrench:P('<path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>'),
+ key:P('<circle cx="7.5" cy="15.5" r="5.5"/><path d="m21 2-9.6 9.6"/><path d="m15.5 7.5 3 3L22 7l-3-3"/>'),
+ gear:P('<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>'),
+ server:P('<rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><path d="M6 6h.01"/><path d="M6 18h.01"/>'),
+ bell:P('<path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/>'),
+ refresh:P('<path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/>'),
+ cpu:P('<rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6" rx="1"/><path d="M15 2v2M15 20v2M2 15h2M2 9h2M20 15h2M20 9h2M9 2v2M9 20v2"/>'),
+ mem:P('<path d="M6 19v-3M10 19v-3M14 19v-3M18 19v-3M8 11V9M16 11V9M12 11V9M2 15h20M2 7a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v1.1a2 2 0 0 0 0 3.837V17a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-5.1a2 2 0 0 0 0-3.837Z"/>'),
+ hd:P('<path d="M22 12H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/><path d="M6 16h.01"/><path d="M10 16h.01"/>'),
+ contrast:P('<circle cx="12" cy="12" r="10"/><path d="M12 18a6 6 0 0 0 0-12v12z"/>'),
+ fold:P('<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/><path d="m16 15-3-3 3-3"/>'),
+ sliders:P('<path d="M21 4h-7M10 4H3M21 12h-9M8 12H3M21 20h-5M12 20H3M14 2v4M8 10v4M16 18v4"/>'),
+ down:P('<path d="m6 9 6 6 6-6"/>'), chev:P('<path d="m9 18 6-6-6-6"/>'), back:P('<path d="m15 18-6-6 6-6"/>'),
+ warn:P('<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/>'),
+ xc:P('<circle cx="12" cy="12" r="10"/><path d="m15 9-6 6"/><path d="m9 9 6 6"/>'), checkc:P('<circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/>'),
+ check:P('<path d="M20 6 9 17l-5-5"/>'), x:P('<path d="M18 6 6 18"/><path d="m6 6 12 12"/>'), info:P('<circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>'),
+ restore:P('<path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/>'),
+ upload:P('<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m17 8-5-5-5 5"/><path d="M12 3v12"/>'),
+ laptop:P('<rect x="3" y="4" width="18" height="12" rx="2"/><path d="M2 20h20"/>'),
+ lock:P('<rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>'),
+ eye:P('<path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/>'),
+ db:P('<ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14a9 3 0 0 0 18 0V5"/><path d="M3 12a9 3 0 0 0 18 0"/>'),
+ arrowR:P('<path d="M5 12h14"/><path d="m12 5 7 7-7 7"/>'), cal:P('<rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/>'),
+ trash:P('<path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/>'),
+ plus:P('<path d="M12 5v14M5 12h14"/>'), log:P('<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 13h6M10 17h6"/>'),
+ move:P('<path d="M5 12h14"/><path d="m15 8 4 4-4 4"/><rect x="2" y="7" width="4" height="10" rx="1"/>'),
+ win:P('<rect x="3" y="3" width="8" height="8"/><rect x="13" y="3" width="8" height="8"/><rect x="3" y="13" width="8" height="8"/><rect x="13" y="13" width="8" height="8"/>'),
+};
+const LOGO='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><rect x="3" y="4" width="18" height="7" rx="2"/><rect x="3" y="13" width="18" height="7" rx="2"/><path d="M7 7.5h.01M7 16.5h.01"/></svg>';
+
+// badges
+const E=(t='')=>`<span class="bx e" title="${t}">exists</span>`;
+const N=(t='')=>`<span class="bx n" title="${t}">new</span>`;
+const H=t=>`<span class="ihelp" title="${t}">i</span>`;
+const btn=(l,k='',ic='')=>`<span class="btn ${k}">${ic?I[ic]:''}${l}</span>`;
+const pill=(t,k='mute')=>`<span class="pill ${k}">${t}</span>`;
+const out=(k,t,ic)=>`<div class="out ${k}">${I[ic||({good:'checkc',bad:'xc',warn:'warn',info:'info'})[k]]}<div class="tx">${t}</div></div>`;
+
+const INST={
+  iiot:{name:'INVENIA IIoT',addr:'10.20.0.14 over SSH',ic:'#1f9d55',tag:'REMOTE'},
+  plantb:{name:'Plant B',addr:'10.20.0.31 over SSH',ic:'#2563eb',tag:'REMOTE'},
+  local:{name:'This computer',addr:'',ic:'#187074',tag:''},
+};
+const MENU=[['status','Status'],['stats','Statistics'],['power','Control'],['logs','Logs'],['folder','Files','New'],['update','Update'],['gateway','Gateway'],['backup','Backup and restore'],['mig','Migration'],['wrench','Repair and uninstall'],['key','Licence'],['gear','Platform settings']];
+function shell(o){
+  const ins=INST[o.inst||'iiot'];
+  const menu=MENU.map(([ic,l,nw])=>`<div class="it${l===o.page?' on':''}">${I[ic]}<span>${l}</span>${nw?`<span class="nw">${nw}</span>`:''}</div>`).join('');
+  const chip=o.chip?`<div class="chip">${o.chip}</div>`:'';
+  const disk=o.disk||['102.0 GB free',30];
+  return `<div class="win" style="--ic:${ins.ic};${o.h?`height:${o.h}px`:''}">
+   <div class="side"><div class="brand"><div class="lg">${LOGO}</div><div class="bt"><b>SENTIENT</b><small>PLATFORM MANAGER</small></div><span class="fold">${I.fold}</span></div>
+    <div class="menu">${menu}<hr><div class="it">${I.server}<span>Instances</span><em>6</em></div></div>
+    <div class="foot"><span class="lg">${LOGO}</span><span class="vt"><b>Platform Manager</b><span>0.8.0</span></span><span class="pref">${I.sliders}</span></div></div>
+   <div class="main">
+    <div class="bar"><div class="sw"><span class="dot${o.inst==='local'?' off':''}"></span>${ins.name}${ins.addr?` <small>${ins.addr}</small>`:''}${I.down}${ins.tag?`<span class="tag">${o.os==='win'?'WINDOWS':ins.tag}</span>`:''}</div>
+     <div class="mon">${chip}${o.chip?'':`<span>${I.cpu}<i><b style="width:26%"></b></i>26%</span>`}<span>${I.mem}<i><b style="width:30%"></b></i>9.2 / 31 GB</span><span>${I.hd}<i class="${disk[1]>85?'hi':''}"><b style="width:${disk[1]}%"></b></i>${disk[0]}</span></div>
+     <span class="ico">${I.contrast}</span><span class="ico">${I.bell}<span class="bd">3</span></span></div>
+    ${o.strip?`<div class="strip${o.stripBad?' bad':''}" style="--p:${o.strip}"></div>`:''}
+    <div class="pagec">${o.body}</div>
+   </div>${o.over||''}</div>`;
+}
+const title=(t,sub='',extra='')=>`<div class="ptitle"><div class="tt"><h3>${t}</h3>${sub?`<small>${sub}</small>`:''}</div>${extra}<span class="ib ob">${I.refresh}</span></div>`;
+const card=(t,inner,right='',cls='')=>`<div class="card ${cls}">${t!==null?`<div class="ch"><b>${t}</b>${right}</div>`:''}${inner}</div>`;
+const crow=(k,v,a='',help='',last=false,wide=false)=>`<div class="crow${last?' last':''}${wide?' wide':''}"><div class="l"><span class="k">${k}${help?H(help):''}</span><span class="v">${v}</span></div><div class="a">${a}</div></div>`;
+const dlg=(t,body,foot,w='',ic='')=>`<div class="scrim"><div class="dlg ${w}"><div class="dh">${ic?I[ic].replace('<svg','<svg style="width:18px;height:18px;color:var(--text2)"'):''}<span>${t}</span><span class="sp"></span><span class="ib">${I.x}</span></div><div class="db">${body}</div><div class="df">${foot}</div></div></div>`;
+const box=(on)=>`<span class="box${on?' on':''}">${on?I.check:''}</span>`;
+const opt=(t,d,sel,dis,extra='')=>`<div class="opt${sel?' sel':''}${dis?' dis':''}"><span class="rd"></span><div class="ot"><b>${t}</b><span>${d}</span>${extra}</div></div>`;
+const chk=(st,t,sub='')=>{const m={done:'✓',bad:'✕',now:'<span class="spin"></span>',todo:'○'}[st];return `<div class="chk ${st==='done'?'':st}"><span class="m">${m}</span><span>${t}</span>${sub?`<span class="sub">${sub}</span>`:''}</div>`};
+
+// ---------- the Backup page (backup.rs B1 card + Backups table) ----------
+const BK=[
+ ['sentient-2026-11-16_0200','16 Nov, 02:00','2.9 GB','ok','Verified'],
+ ['sentient-2026-11-15_0200','15 Nov, 02:00','2.9 GB','ok','Verified'],
+ ['sentient-2026-11-14_1712','14 Nov, 17:12','2.8 GB','mute','Not verified'],
+ ['sentient-2026-11-13_0200','13 Nov, 02:00','2.8 GB','bad','Damaged'],
+];
+function backupCard(folder='/var/backups/sentient'){
+  return card('Backup',
+   crow('Backup folder',`<span class="mono" style="font-size:13.5px">${folder}</span><span class="mut" style="font-size:12.5px">64.1 GB free</span>`,btn('Change…','','folder'))+
+   crow('Automatic backup',`<span class="sw2 on"></span>${btn('Every day at 02:00','ghost sm')}`,'',"A backup every day at this time, on the server's clock.")+
+   crow('Keep',`<span class="inp" style="width:72px">7</span><span>backups</span>`,'','Older backups are deleted, across the folder and any folder used before.')+
+   crow('What to back up',`<span class="seg"><span class="on">Everything</span><span>Last 90 days</span><span>Configuration only</span></span>`,'','Everything: settings and all telemetry.',true),'','g0');
+}
+function backupsTable(o={}){
+  const rows=(o.rows||BK).map((r,i)=>{
+    const dmg=r[3]==='bad';
+    return `<div class="tr"><span class="c1">${r[0]}</span><span class="cm">${r[1]}</span><span class="cs">${r[2]}</span><span class="cc">${pill(r[4],r[3])}</span>
+     <span class="cr">${dmg?`<span class="btn sm off" title="A damaged backup cannot be restored">${I.restore}Restore…</span>`:`<span class="btn sm">${I.restore}Restore…</span>`}</span><span class="cmenu"><span class="ib">${I.chev}</span></span></div>`}).join('');
+  const head=`<div class="ch" style="padding-bottom:4px"><b>Backups</b>${btn('Add a file…','ghost')}${N('A Restore from… button at the title; today a server has only the row menu, this computer has Choose backup… in the Restore panel (backup.rs replace_panel).')}${btn('Restore from…','','restore')}${btn('Back up now')}</div>`;
+  const body=o.empty?`<div class="mut small" style="padding:10px 0 4px">No backups in this folder. Restore from… can still take a file from this computer or another instance.</div>`:
+   `<div class="th"><span class="c1">File</span><span class="cm">Made</span><span class="cs">Size</span><span class="cc">Integrity</span><span class="cr" style="justify-content:flex-end">${o.mark?N('Restore… on every row, visible. Today it is the first item behind the row chevron (backup.rs table_row), hidden for Damaged rows; that rule stays.'):''}</span><span class="cmenu"></span></div>${rows}`;
+  return `<div class="card g0">${head}${body}</div>`;
+}
+function historyCard(o={}){
+  const rows=o.empty?`<div class="mut small" style="padding:8px 0 2px">No restores on this server yet.</div>`:`
+   <div class="th"><span style="width:132px">When</span><span class="c1">From backup</span><span style="width:160px">By</span><span style="width:150px">Result</span><span style="width:60px;text-align:right">Log</span></div>
+   <div class="tr"><span style="width:132px">14 Nov, 17:40</span><span class="c1">sentient-2026-11-14_1712 <span class="mut small">from Plant B</span></span><span style="width:160px" class="small">mz on MZ-LAPTOP</span><span style="width:150px">${pill('Done','ok')}</span><span style="width:60px;text-align:right">${btn('Log','ghost sm')}</span></div>
+   <div class="tr"><span style="width:132px">2 Nov, 09:12</span><span class="c1">sentient-2026-11-01_0200</span><span style="width:160px" class="small">ops on PLANT-B</span><span style="width:150px">${pill('Rolled back','warn')}</span><span style="width:60px;text-align:right">${btn('Log','ghost sm')}</span></div>`;
+  return `<div class="card g0"><div class="ch" style="padding-bottom:4px"><b>Restores</b>${N('Nothing records restores today; the job log lives only while the window is open. Proposal: the server agent appends one line per restore to restore-history.jsonl in the state dir and keeps its log beside it.')}${H('Restores on this server, who ran them from which computer, and their logs. Kept for a year.')}</div>${rows}</div>`;
+}
+function backupPage(o={}){
+  return title('Backup and restore','The backups on this server.')+(o.only==='list'?'':'')+backupsTable(o)+historyCard(o)+(o.withCard?backupCard():'');
+}
+
+// ---------- wizard frame (in page) ----------
+const STEPS=['Source','Check','What','Where','Pre-check','Settings','Confirm'];
+function stepper(n){return `<div class="stepper">${STEPS.map((s,i)=>`${i?'<span class="ln"></span>':''}<span class="${i<n?'dn':i===n?'on':''}"><i>${i<n?'✓':i+1}</i>${s}</span>`).join('')}</div>`}
+function wiz(n,inner,foot,sub='sentient-2026-11-14_1712 from Plant B'){
+  return `<div class="ptitle"><span class="ib ob" style="margin-top:1px">${I.back}</span><div class="tt"><h3>Restore</h3><small>${sub}</small></div></div>
+   ${stepper(n)}${inner}<div class="row" style="margin-top:auto">${foot||`${btn('Back')}<span class="sp"></span>${btn('Cancel','ghost')}${btn('Next','pri')}`}</div>`;
+}
+
+// ---------- frames ----------
+const F=[]; // {lane,id,t,s,html,arrow}
+const LANES=[];
+function lane(id,t,lead){LANES.push({id,t,lead})}
+function fr(lane,id,t,s,html,arrow){F.push({lane,id,t,s,html,arrow})}
+
+/* ===== Lane R: restore flow ===== */
+lane('R','Restore: the main flow','From the Backup page to SENTIENT running on the restored data. Each arrow is the click that leads to the next window.');
+
+fr('R','R1','Backup page','Restore from… beside Back up now, Restore… on every row, and the restore history',
+ shell({page:'Backup and restore',h:760,body:title('Backup and restore','The backups on this server.')+backupsTable({mark:1})+historyCard()+
+  `<div class="mut small">Damaged rows keep Restore… off ${E('table_row: restore is None for a damaged backup.')}. Verify, Delete stay behind the chevron ${E('Verify, Delete in the row menu.')}</div>`}),
+ ['Restore… on a row, or Restore from…','R4']);
+
+fr('R','R2','Backup page, empty','No backups yet, no restores yet',
+ shell({page:'Backup and restore',body:title('Backup and restore','The backups on this server.')+backupsTable({empty:1})+historyCard({empty:1})}));
+
+fr('R','R3','Restore details','Opened from a history row: what ran, by whom, and the full log',
+ shell({page:'Backup and restore',body:title('Backup and restore','The backups on this server.')+backupsTable()+historyCard(),
+  over:dlg('Restore on 14 Nov, 17:40',`
+   <div class="kv"><span class="k f">Result</span><span class="f">${pill('Done','ok')} SENTIENT answered on the restored data after 48 s.</span>
+    <span class="k">From</span><span><span class="mono">sentient-2026-11-14_1712</span> <span class="mut small">copied from Plant B, server to server</span></span>
+    <span class="k">What</span><span>Everything; history converted from PostgreSQL + TimescaleDB</span>
+    <span class="k">By</span><span>mz, Platform Manager 0.8.0 on MZ-LAPTOP</span>
+    <span class="k">Took</span><span>17 min 20 s · SENTIENT down 1 min 05 s</span>
+    <span class="k">Safety backup</span><span><span class="mono">sentient-before-restore-2026-11-14_1722</span></span>
+    <span class="k">Data from before</span><span><span class="mono">sentient_before_restore_202611141740</span> ${E('restore_switch.rs keeps it; listed under Kept after earlier changes.')}</span></div>
+   <div class="logbox" style="max-height:120px">>> Restoring the backup beside the live data (and converting it)
+Backup of 'sentient' (TimescaleDB 2.17.2), created 2026-11-14T17:12:03Z
+The backup is from PostgreSQL + TimescaleDB; its telemetry is converted for PostgreSQL + ClickHouse.
+  412 044 310 telemetry rows read</div>`,`${btn('Save log…')}<span class="sp"></span>${btn('Close','pri')}`,'w','log')}),
+ null);
+
+function srcDialog(src,body,foot){
+  const seg=`<span class="seg"><span class="${src===0?'on':''}">${I.server}This server</span><span class="${src===1?'on':''}">${I.laptop}This computer</span><span class="${src===2?'on':''}">${I.server}Another instance</span></span>`;
+  return dlg('Restore from…',`<div class="row">${seg}${src?N(src===1?'Upload from this computer to the server: no such path today; a server restores only files already in its folder.':'Backups of another instance: new. The Instances list and SSH to each exist.'):E('A server lists its own backups (backup-folder job); this computer has its own list.')}</div>${body}`,foot,'w','restore');
+}
+const srvList=(sel)=>`<div class="card g0" style="padding:4px 12px"><div class="th"><span class="c1">File</span><span class="cm">Made</span><span class="cs">Size</span><span class="cc">Integrity</span></div>
+ ${BK.map((r,i)=>`<div class="tr${i===sel?' sel':''}${r[3]==='bad'?' " style="opacity:.5':''}"><span class="c1">${r[0]}</span><span class="cm">${r[1]}</span><span class="cs">${r[2]}</span><span class="cc">${pill(r[4],r[3])}</span></div>`).join('')}</div>
+ <div class="row">${btn('Another folder on the server…','ghost','folder')}${E('The server folder chooser (folder_chooser.rs).')}</div>`;
+const bg=(o={})=>shell({page:'Backup and restore',strip:o.strip,chip:o.chip,body:title('Backup and restore','The backups on this server.')+backupsTable()+historyCard(),over:o.over});
+
+fr('R','R4','Restore from…: this server','The default source; Damaged ones cannot be picked',
+ bg({over:srcDialog(0,srvList(2),`${btn('Cancel')}${btn('Check this backup','pri')}`)}),['Check this backup','R7']);
+
+fr('R','R5','Restore from…: this computer','A file on this computer goes up to the server first, with its .sha256',
+ bg({over:srcDialog(1,`
+  <div class="crow"><div class="l"><span class="k">File</span><span class="v"><span class="mono">D:\\Backups\\plant-b-2026-11-14_1712.sentient-backup</span> <span class="mut small">2.8 GB</span></span></div><div class="a">${btn('Choose…','','folder')}</div></div>
+  <div class="crow last"><div class="l"><span class="k">Upload to${H('The server keeps the file in its backup folder, so it shows in Backups afterwards and can be restored again.')}</span><span class="v"><span class="mono">/var/backups/sentient</span> <span class="mut small">64.1 GB free</span></span></div><div class="a"></div></div>
+  <div class="card" style="gap:6px"><div class="row"><span>${I.upload.replace('<svg','<svg style="width:16px;height:16px;color:var(--primary)"')}</span><b style="font-weight:500">Uploading</b><span class="sp"></span><span class="mut small" style="font-variant-numeric:tabular-nums">1.1 of 2.8 GB · 24 MB/s · about 1 min left</span></div>
+   <div class="row"><div class="pbar"><i style="width:39%"></i></div><span class="small">39%</span></div>
+   <div class="mut small">Over the same SSH connection. A broken upload goes on from where it stopped ${N('Resumable sftp upload with a size and SHA-256 check at the end.')}</div></div>`,
+  `${btn('Cancel upload')}<span class="sp"></span>${btn('Check this backup','pri off')}`)}),['Upload done','R7']);
+
+fr('R','R5e','Upload broken','The connection dropped; the part already sent stays',
+ bg({over:srcDialog(1,`
+  <div class="crow last"><div class="l"><span class="k">File</span><span class="v"><span class="mono">D:\\Backups\\plant-b-2026-11-14_1712.sentient-backup</span> <span class="mut small">2.8 GB</span></span></div><div class="a">${btn('Choose…','','folder')}</div></div>
+  <div class="card" style="gap:6px"><div class="row"><b style="font-weight:500">Upload stopped at 1.6 of 2.8 GB</b></div><div class="row"><div class="pbar bad"><i style="width:57%"></i></div><span class="small">57%</span></div>
+  ${out('bad','The connection to INVENIA IIoT dropped (no answer for 30 s). The 1.6 GB already sent is kept.')}</div>`,
+  `${btn('Cancel')}<span class="sp"></span>${btn('Resume upload','pri')}`)}));
+
+const instSel=`<div class="crow"><div class="l"><span class="k">Instance</span><span class="v"><span class="btn">Plant B · 10.20.0.31${I.down}</span><span class="mut small">from Instances</span></span></div><div class="a"></div></div>`;
+fr('R','R6l','Restore from…: another instance, reading','Its backups are read over its own SSH connection',
+ bg({over:srcDialog(2,`${instSel}<div class="card g0" style="padding:4px 12px"><div class="th"><span class="c1">File</span><span class="cm">Made</span><span class="cs">Size</span><span class="cc">Integrity</span></div>
+  ${[70,62,66].map(w=>`<div class="tr"><span class="c1"><span class="skel" style="width:${w}%"></span></span><span class="cm"><span class="skel" style="width:90px"></span></span><span class="cs"><span class="skel" style="width:50px"></span></span><span class="cc"><span class="skel" style="width:70px"></span></span></div>`).join('')}</div>
+  <div class="mut small">Reading the backups on Plant B…</div>`,`${btn('Cancel')}${btn('Copy and check','pri off')}`)}));
+
+fr('R','R6','Restore from…: another instance','Pick an instance from Instances, then one of its backups and the way the copy travels',
+ bg({over:srcDialog(2,`${instSel}<div class="card g0" style="padding:4px 12px"><div class="th"><span class="c1">File</span><span class="cm">Made</span><span class="cs">Size</span><span class="cc">Integrity</span></div>
+  <div class="tr"><span class="c1">sentient-2026-11-16_0200</span><span class="cm">16 Nov, 02:00</span><span class="cs">2.9 GB</span><span class="cc">${pill('Verified','ok')}</span></div>
+  <div class="tr sel"><span class="c1">sentient-2026-11-14_1712</span><span class="cm">14 Nov, 17:12</span><span class="cs">2.8 GB</span><span class="cc">${pill('Verified','ok')}</span></div></div>
+  <div class="crow last"><div class="l"><span class="k">Copy${H('Server to server: Plant B sends the file straight to INVENIA IIoT; it needs Plant B to reach INVENIA IIoT on SSH port 22. Through this computer: down to here, then up; slower, works whenever this computer reaches both.')}</span><span class="v"><span class="seg"><span class="on">Server to server</span><span>Through this computer</span></span><span class="mut small">Plant B reaches INVENIA IIoT ✓</span></span></div><div class="a"></div></div>`,
+  `${btn('Cancel')}${btn('Copy and check','pri')}`)}),['Copy and check','R7']);
+
+// --- check
+fr('R','R7','Check: reading','Every part is read back and compared with its SHA-256',
+ shell({page:'Backup and restore',body:wiz(1,card('Checking the backup',`
+  <div class="row"><div class="pbar"><i style="width:62%"></i></div><span class="small" style="font-variant-numeric:tabular-nums">1.7 of 2.8 GB</span></div>
+  ${chk('done','Format 2, made by Platform Manager 0.8.0','')}${chk('done','Platform data','SHA-256 matches')}${chk('done','Telemetry history, Sep 2026','SHA-256 matches')}${chk('now','Telemetry history, Oct 2026','')}${chk('todo','Telemetry history, Nov 2026')}${chk('todo','Report files')}
+  <div class="row">${E('restore::check reads each member against the manifest SHA-256, the .sha256 sidecar, and the format version.')}</div>`),
+  `${btn('Back')}<span class="sp"></span>${btn('Cancel','ghost')}${btn('Next','pri off')}`)}),null);
+
+fr('R','R8','Check: encrypted','An encrypted backup asks for its passphrase before anything is read',
+ shell({page:'Backup and restore',body:wiz(1,card('This backup is encrypted',`
+  <div class="mut">Type its passphrase to read it. Nothing is kept on the server.</div>
+  <div class="row"><span class="inp focus" style="width:320px">••••••••••••${I.eye}</span>${btn('Read the backup','pri')}</div>
+  <div class="row">${E('replace.rs Unreadable::Passphrase; age with a passphrase (restore::is_encrypted).')}${N('On a server: the passphrase goes to the agent job over SSH stdin, not argv. Today the server job reads SBR_BACKUP_PASSWORD only.')}</div>`),
+  `${btn('Back')}<span class="sp"></span>${btn('Cancel','ghost')}${btn('Next','pri off')}`)}));
+
+const cmpTable=(o={})=>`<div class="gt" style="grid-template-columns:170px 1fr 1fr 1.3fr">
+  <div class="h">&nbsp;</div><div class="h">In the backup</div><div class="h">On INVENIA IIoT</div><div class="h">What happens</div>
+  <div>Database type</div><div>PostgreSQL + TimescaleDB</div><div>PostgreSQL + ClickHouse</div><div>History is converted to ClickHouse ${E('replace::check type_line; restore_converted.')}</div>
+  <div>SENTIENT</div><div>${o.newer?'<b class="bad">4.5.0.3</b>':'4.3.0.58'}</div><div>4.4.0.2</div><div class="${o.newer?'bad':''}">${o.newer?'Newer than this SENTIENT: blocked':'Brought up to 4.4.0.2'} ${E('replace::check version_line.')}</div>
+  <div>Schema</div><div>${o.newer?'<b class="bad">33</b>':'30'}</div><div>31</div><div class="${o.newer?'bad':''}">${o.newer?'Cannot be read here':'Upgraded 30 → 31 after the restore'} ${E('restore_switch::match_schema.')}</div>
+  <div>Holds</div><div style="grid-column:span 2">Platform data, telemetry history (all), report files and version control</div><div>${E('replace::Summary holds.')}</div>
+  <div>Made</div><div style="grid-column:span 2">14 Nov 2026, 5:12 PM on PLANT-B</div><div>${E('manifest source.host, created_at.')}</div></div>`;
+fr('R','R9','Check: passed','Differences are shown before anything happens',
+ shell({page:'Backup and restore',body:wiz(1,card('The backup is sound',`
+  ${out('good','Every part matches its SHA-256 (14 parts, 2.8 GB). Format 2.')}
+  ${cmpTable()}`)) }),['Next','R10']);
+
+// --- what
+const telemOpts=(sel,holds=true)=>`<div class="opts g2">
+  ${opt('Everything','Configuration and all telemetry in the backup.',sel===0,false,'')}
+  ${opt(`Configuration only, without telemetry ${N('Restore the dump without ts_kv data and without telemetry members. Today a restore restores all the file holds.')}`,'Devices, dashboards, users and settings. Offered even when the backup holds telemetry.',sel===1,false)}
+  ${opt(`Telemetry only ${N('Into the running configuration. Needs a restore into a non-empty database, which restore.rs refuses today (empty only).')}`,holds?'History from the backup into this server; its configuration stays.':'This backup holds no telemetry.',sel===2,!holds)}
+  ${opt(`Telemetry for a date range ${N('Only the monthly members (db/telemetry/YYYY-MM, clickhouse/ts_kv/YYYYMM) in the range, then cut to the days.')}`,holds?'From the backup, within the dates you pick.':'This backup holds no telemetry.',sel===3,!holds)}
+ </div>`;
+fr('R','R10','What to restore','Only what the backup holds is offered',
+ shell({page:'Backup and restore',body:wiz(2,card('What to restore',telemOpts(0)+`<div class="mut small">The backup holds telemetry from 3 Jan 2025 to 14 Nov 2026 ${E('manifest.telemetry and the monthly member names.')}</div>`))}),['Configuration only','R10b']);
+
+const keepClear=(clear)=>`<div class="card" style="gap:8px;background:var(--tint);border-color:var(--primary)"><div class="row"><b style="font-weight:500">The telemetry on INVENIA IIoT now</b>${N('Keep: this server\'s history is carried into the restored database before the switch (ClickHouse: the history tables are not exchanged). Clear: it is not.')}${H('84 GB of history, 1 182 devices. Kept history stays tied to device ids; a device that the backup does not have keeps its history, but nothing shows it.')}</div>
+  <div class="row"><span class="seg"><span class="${clear?'':'on'}">Keep it</span><span class="${clear?'on':''}">Clear it</span></span></div>
+  ${clear?out('warn','84 GB of history on INVENIA IIoT is deleted after the switch. The safety backup keeps a copy.'):out('info','Telemetry of 3 devices not in the backup stays without a device (Press 7, Press 8, Line 2 meter). It is removed with the next retention clean-up or by hand.')}</div>`;
+fr('R','R10b','Configuration only: keep this server\'s telemetry','Always offered, even when the backup holds telemetry. Keep is the default',
+ shell({page:'Backup and restore',h:800,body:wiz(2,card('What to restore',telemOpts(1)+keepClear(false)))}),null);
+fr('R','R10c','Configuration only: clear this server\'s telemetry','Clear it, with what that deletes',
+ shell({page:'Backup and restore',h:800,body:wiz(2,card('What to restore',telemOpts(1)+keepClear(true)))}),null);
+fr('R','R10d','Telemetry for a date range','Months outside the range are not read',
+ shell({page:'Backup and restore',h:800,body:wiz(2,card('What to restore',telemOpts(3)+`<div class="card" style="gap:8px;background:var(--tint);border-color:var(--primary)"><div class="row"><span class="mut" style="width:60px">From</span><span class="inp" style="width:150px">1 Sep 2026${I.cal}</span><span class="mut" style="width:30px;text-align:center">to</span><span class="inp" style="width:150px">14 Nov 2026${I.cal}</span><span class="mut small">3 of 23 months · about 410 MB</span></div>
+  <div class="mut small">Telemetry on INVENIA IIoT for the same dates is replaced; other dates stay.</div></div>`))}),null);
+fr('R','R10e','What to restore: a configuration-only backup','The telemetry choices are off, with the reason',
+ shell({page:'Backup and restore',body:wiz(2,card('What to restore',telemOpts(0,false)+`<div class="mut small">This backup was made with “Configuration only”, so it holds no telemetry. Everything restores its configuration ${E('manifest.telemetry = none.')}</div>`),undefined,'sentient-2026-11-10_config from INVENIA IIoT')}),null);
+
+// --- where
+fr('R','R11','Where to restore','Replace this instance, or a new instance as with Setup',
+ shell({page:'Backup and restore',body:wiz(3,card('Where to restore',`<div class="opts">
+  ${opt(`Replace the data of INVENIA IIoT ${E('replace.rs: restore beside the live data, then switch (restore_switch.rs).')}`,'This server keeps its own PostgreSQL, ClickHouse, ports and licence; only the data inside is replaced.',true,false)}
+  ${opt(`A new instance on INVENIA IIoT ${N('Setup with another stack name and free ports, then the restore into its empty database (backup_jobs::restore into a fresh database exists).')}`,'Beside the current one, on other ports. Good to look at the backup first.',false,false)}
+  ${opt(`A new instance on another server ${N('Setup on a server from Instances or Add a server, then the restore. The backup is copied there.')}`,'Pick a server; SENTIENT is set up there and the backup restored into it.',false,false)}</div>`))}),['Next','R13']);
+fr('R','R11b','Where: a new instance','The Setup fields that matter here; the database type can follow the backup',
+ shell({page:'Backup and restore',h:800,body:wiz(3,card('Where to restore',`<div class="opts">
+  ${opt('Replace the data of INVENIA IIoT','This server keeps its own PostgreSQL, ClickHouse, ports and licence.',false,false)}
+  ${opt('A new instance','Set up and restored in one go.',true,false,`<div style="margin-top:8px">
+   ${crow('Server',`${btn('Plant C · 10.20.0.40')}`,'','',false)}
+   ${crow('Name',`<span class="inp" style="width:240px">Plant B restored</span>`)}
+   ${crow('Database type',`<span class="seg"><span>PostgreSQL</span><span class="on">PostgreSQL + TimescaleDB</span><span>PostgreSQL + ClickHouse</span></span>`,'','The backup\'s own type by default, so nothing is converted.')}
+   ${crow('Ports',`<span class="mono">8080 · 1883 · 5432</span><span class="mut small">free on Plant C</span>`,btn('Change…'),'',true)}</div>`)}</div>`))}),null);
+
+// --- pre-check
+const diskTable=(o={})=>`<div class="gt" style="grid-template-columns:1.3fr 2.4fr .8fr .8fr .4fr">
+  <div class="h">Disk</div><div class="h">Used for</div><div class="h num">Needs</div><div class="h num">Free</div><div class="h"></div>
+  ${(o.rows||[
+   ['/ <span class="mut small">/dev/sda1</span>','Backup copy 0 B (already there) · unpacking 3.1 GB · safety backup 2.9 GB','6.0 GB','64.1 GB',1],
+   ['/mnt/disk-a <span class="mut small">PostgreSQL</span>','Restored database beside the live one','4.2 GB','1.4 TB',1],
+   ['/mnt/disk-b <span class="mut small">ClickHouse</span>','Restored history beside the live one','5.0 GB','3.1 TB',1]]).map(r=>`<div>${r[0]}</div><div class="small">${r[1]}</div><div class="num">${r[2]}</div><div class="num ${r[4]?'':'bad'}">${r[3]}</div><div class="${r[4]?'ok':'bad'}">${r[4]?'✓':'✕'}</div>`).join('')}</div>`;
+fr('R','R13','Pre-check','Room on each store\'s own disk, the time it takes, the downtime, and the upgrade after',
+ shell({page:'Backup and restore',h:780,body:wiz(4,card('Pre-check',`
+  <div class="kv"><span class="k f">Size</span><span class="f">2.8 GB file · about 9.2 GB once restored ${E('replace::Summary restored_bytes (components, at least 3 × the file).')}</span></div>
+  <div class="row"><b style="font-weight:500">Space, per disk</b>${N('Per store and per disk. Today one figure: PostgreSQL\'s free space (dbstatus) against the whole need.')}</div>
+  ${diskTable()}
+  <div class="kv"><span class="k f">Takes about</span><span class="f">18 min · SENTIENT is down about 1 min, at the switch ${N('An estimate from the sizes, as backups::estimate does for a backup.')}${E('SENTIENT runs until the switch: the restore goes beside the live data.')}</span>
+   <span class="k">After the restore</span><span>Schema upgrade 30 → 31 (SENTIENT 4.3.0.58 → 4.4.0.2) ${E('match_schema: on Docker SENTIENT upgrades when it starts on it; native runs the schema tool.')}</span>
+   <span class="k">While it runs${H('The restore stops and rolls back when free space on any of these disks falls under 2 GB.')}</span><span>Stops cleanly under 2 GB free on any disk ${N('A watch on free space during the run.')}</span></div>`))}),['Next','R14']);
+fr('R','R13w','Pre-check on a Windows server','Drive letters, Windows services and paths',
+ shell({page:'Backup and restore',inst:'plantb',os:'win',h:780,body:wiz(4,card('Pre-check',`
+  <div class="kv"><span class="k f">Size</span><span class="f">2.9 GB file · about 9.3 GB once restored</span></div>
+  ${diskTable({rows:[['C: <span class="mut small">System</span>','Unpacking 3.1 GB in C:\\ProgramData\\SENTIENT\\tmp · safety backup 2.9 GB in C:\\ProgramData\\SENTIENT\\backups','6.0 GB','41.0 GB',1],
+   ['D: <span class="mut small">PostgreSQL</span>','Restored database beside the live one, D:\\SENTIENT\\pg\\data','4.2 GB','812 GB',1],
+   ['C: <span class="mut small">ClickHouse (WSL)</span>','Restored history inside the WSL disk of the account sentient-clickhouse','5.0 GB','41.0 GB',1]]})}
+  <div class="kv"><span class="k f">Takes about</span><span class="f">21 min · SENTIENT is down about 2 min: the SENTIENT service stops and starts</span>
+   <span class="k">After the restore</span><span>Schema upgrade 30 → 31 with the installed schema tool ${E('Native engine: safe_update::upgrade_restored.')}</span></div>`),undefined,'sentient-2026-11-14_1712 from INVENIA IIoT')}),null);
+
+// --- settings differences
+const SD=[
+ ['SENTIENT version','4.3.0.58','4.4.0.2','fix','This server\'s; the data is upgraded','r'],
+ ['Database type','PostgreSQL + TimescaleDB','PostgreSQL + ClickHouse','keep','Converted to this server\'s type. To use the backup\'s, change the type in Migration first','r'],
+ ['MQTT port','1883','21883','keep','Tied to this machine and its firewall','n'],
+ ['Public URL','https://plantb.local','https://iiot.invenia.in','keep','Devices and links reach this server by its own name','n'],
+ ['TLS certificate','plantb.local, until 3 Mar 2027','iiot.invenia.in, until 9 Jan 2027','keep','A certificate belongs to the host name','n'],
+ ['Time zone (reports)','Asia/Kolkata','UTC','backup','A setting of the plant, not the machine','n'],
+ ['Telemetry retention','365 days','90 days','backup','Kept data would be cut to 90 days otherwise','n'],
+ ['Licence','Bound to PLANT-B','Active, bound to this server','lock','Bound to the hardware: not carried over','x'],
+ ['Gateway connections','3 gateways → plantb.local:1883','—','info','Gateways keep their own address; point them here after','n'],
+ ['Report files','/var/lib/sentient/reports','/mnt/disk-a/sentient/reports','keep','Paths of this machine','r'],
+ ['Secrets key','Key file sentient-2026-11-14_1712.key','Own key','backup','Stored passwords need the backup\'s key','r'],
+];
+function choice(c){
+  if(c==='fix') return `<span class="mut small">This server's</span>`;
+  if(c==='lock') return `<span class="seg sm"><span class="on">Keep current</span><span class="dis">Use from backup</span></span>`;
+  if(c==='info') return btn('Open Gateway after','ghost sm');
+  return `<span class="seg sm"><span class="${c==='keep'?'on':''}">Keep current</span><span class="${c==='backup'?'on':''}">Use from backup</span></span>`;
+}
+const recMark=r=>r==='r'?E('Recorded in the manifest today: source.sentient_version, schema_version, database_type, file_stores[].source_path; the secrets key file beside the backup (secrets_key.rs).'):r==='x'?E('The licensing category is off by default (categories.rs) and the replace flow says "This computer keeps its own licence".'):N('Not in the manifest. Added as manifest.platform.');
+fr('R','R14','Settings differences','Every platform setting that differs; Keep current is the default for anything tied to the machine',
+ shell({page:"Backup and restore",h:1090,body:wiz(5,card('Settings that differ',`
+  <div class="row"><span class="mut small">11 differ · 14 are the same</span>${btn('Show all','ghost sm')}<span class="sp"></span>${N('The whole step is new. It reads manifest.platform, a new section: ports, public URL, TLS certificate name, issuer and expiry (never the key), the non-secret environment settings, retention, licence id and hardware hash (never the licence), gateway endpoints, file store paths.')}</div>
+  <div class="gt" style="grid-template-columns:124px 1fr 1fr 240px 1.15fr 64px;font-size:13px">
+   <div class="h">Setting</div><div class="h">In the backup</div><div class="h">On INVENIA IIoT</div><div class="h">Use</div><div class="h">Why</div><div class="h">Manifest</div>
+   ${SD.map(r=>`<div>${r[0]}</div><div class="small">${r[1]}</div><div class="small">${r[2]}</div><div>${choice(r[3])}</div><div class="small mut">${r[4]}</div><div>${recMark(r[5])}</div>`).join('')}</div>
+  ${out('warn','The licence is not carried over: it is bound to PLANT-B\'s hardware. After the restore, activate this server\'s licence again or request a demo licence.')}`))}),['Next','R15']);
+fr('R','R14o','Settings differences: an older backup','A backup without the new record compares only what it has',
+ shell({page:'Backup and restore',h:820,body:wiz(5,card('Settings that differ',`
+  ${out('info','This backup was made before settings were recorded (Platform Manager 0.8.0 or earlier). Only the SENTIENT version, database type and file store paths can be compared; everything else stays as it is on INVENIA IIoT.')}
+  <div class="gt" style="grid-template-columns:150px 1fr 1fr 240px 1.3fr;font-size:13px">
+   <div class="h">Setting</div><div class="h">In the backup</div><div class="h">On INVENIA IIoT</div><div class="h">Use</div><div class="h">Why</div>
+   ${SD.filter(r=>r[5]!=='n').map(r=>`<div>${r[0]}</div><div class="small">${r[1]}</div><div class="small">${r[2]}</div><div>${choice(r[3])}</div><div class="small mut">${r[4]}</div>`).join('')}
+   <div>Ports, URL, TLS, environment, retention, gateways</div><div class="small mut">Not recorded</div><div class="small">As now</div><div><span class="mut small">Keep current</span></div><div class="small mut">Nothing to compare with</div></div>`))}),null);
+
+// --- confirm
+fr('R','R15','Confirm','What is replaced, the safety backup, and the instance name typed',
+ shell({page:'Backup and restore',h:800,body:wiz(6,card('Replace the data of INVENIA IIoT?',`
+  <div class="kv"><span class="k f">Replaced</span><span class="f">Devices, dashboards, users and settings (1 284 devices, 96 dashboards, 41 users), and all telemetry, from sentient-2026-11-14_1712</span>
+   <span class="k">Kept as now</span><span>Licence, ports, public URL, TLS certificate, report file paths</span>
+   <span class="k">Downtime</span><span>About 1 minute, at the switch</span></div>
+  <div class="cbx">${box(true)}<span>Back up the current data first</span><span class="mut small">sentient-before-restore-2026-11-16_1102 · 2.9 GB · 4 min</span>${N('A full backup file before the restore. Today the previous database is kept aside (below), not written as a file.')}</div>
+  <div class="cbx">${box(false)}<span>Delete the data from before once the restored data runs</span>${H('Without this, the data from before is kept under “Kept after earlier changes” until you remove it.')}${E('replace.rs delete_old; kept.rs.')}</div>
+  <div class="row" style="margin-top:4px"><span>Type <b style="font-weight:600">INVENIA IIoT</b> to confirm</span><span class="inp focus" style="width:240px">INVENIA IIoT</span>${N('Typed confirmation. Today: a Replace this server\'s data? dialog.')}</div>`),
+  `${btn('Back')}<span class="sp"></span>${btn('Cancel','ghost')}${btn('Replace the data','dan')}`)}),['Replace the data','R16']);
+
+// --- run
+const runCard=(st,o={})=>card(o.t||'Replacing the data of INVENIA IIoT',`
+  ${chk(st[0],'Backing up the current data',st[0]==='done'?'2.9 GB, checked':'')}
+  ${chk(st[1],'Checking the backup file and its passphrase')}
+  ${chk(st[2],'Restoring the backup beside the live data (and converting it)',st[2]==='now'?'46% · history 190 of 412 M rows':'')}
+  ${chk(st[3],'Bringing the data up to schema 31')}
+  ${chk(st[4],'Switching SENTIENT to the restored data and checking it answers',o.sw||'')}
+  ${o.extra||''}`,pill(o.pill||'Running',o.pk||'run'));
+const runLog=t=>card('Log',`<div class="logbox">${t}</div>`);
+fr('R','R16','Running','The strip under the top bar and the job view in the page',
+ shell({page:'Backup and restore',strip:'46%',chip:'Restoring <i><b style="width:46%"></b></i> 46%',body:title('Backup and restore','The backups on this server.')+
+  runCard(['done','done','now','todo','todo'],{extra:`<div class="row">${btn('Cancel')}<span class="mut small">Stops before the switch; nothing on INVENIA IIoT changes.</span>${E('Steps as replace::planned_steps; the job view and strip exist.')}</div>`})+
+  runLog(`>> Creating the empty database sentient_restore_202611161106
+>> Restoring database (pg_restore)
+>> Converting telemetry
+  2026-08: copied and checked
+  2026-09: copied and checked`)}),['SENTIENT answers','R17']);
+
+fr('R','R17','Done','Back, Done, and what to do next',
+ shell({page:'Backup and restore',body:title('Backup and restore','The backups on this server.')+
+  runCard(['done','done','done','done','done'],{pill:'Done',pk:'ok',t:'This instance runs on the restored data',extra:`
+   ${out('good','SENTIENT runs on the data from sentient-2026-11-14_1712. The data from before is kept as sentient_before_restore_202611161118, and as the safety backup.')}
+   <div class="row"><b style="font-weight:500">Next</b></div>
+   <div class="row">${btn('Open SENTIENT','pri')}${btn('Reset password…')}${E('backup.rs: Sign in, Open SENTIENT, Reset password… after a replace.')}${btn('Activate the licence…','','key')}${N('Licence step after a restore.')}${btn('Point gateways here…','','gateway')}${N('')}</div>
+   <div class="row" style="border-top:1px solid var(--border);padding-top:10px">${btn('Back to Backup and restore')}${btn('Show log')}<span class="sp"></span>${btn('Done','pri')}</div>`})}),null);
+
+// --- failures
+lane('X','Restore: failure midway','A restore stops in one of two places. Before the switch nothing on the instance has changed; after it, the switch is undone on its own.');
+fr('X','X1','Failed before the switch','Resume from the last finished step, or start again',
+ shell({page:'Backup and restore',strip:'100%',stripBad:1,body:title('Backup and restore','The backups on this server.')+
+  runCard(['done','done','bad','todo','todo'],{pill:'Failed',pk:'bad',extra:`
+   ${out('bad','pg_restore failed: could not extend file "base/16384/2619": No space left on device. Nothing on INVENIA IIoT changed: SENTIENT runs on its own data. The half-restored database was removed.')}
+   <div class="row">${btn('Resume','pri')}${N('Resume after the last finished step (backup, copy and check are not repeated). Today: start again.')}${btn('Start again')}${btn('Back to Backup and restore')}${E('Live data untouched until the switch; restore::run cleans up its temp files.')}</div>`})+
+  runLog(`pg_restore: error: could not extend file "base/16384/2619"
+pg_restore: error: No space left on device`)}),null);
+fr('X','X2','Failed after the switch: rolled back','SENTIENT did not answer on the restored data, so the previous data was put back',
+ shell({page:'Backup and restore',strip:'100%',stripBad:1,h:760,body:title('Backup and restore','The backups on this server.')+
+  card('The data was not replaced',`
+   ${chk('done','Backing up the current data','2.9 GB, checked')}${chk('done','Checking the backup file and its passphrase')}${chk('done','Restoring the backup beside the live data (and converting it)')}${chk('done','Bringing the data up to schema 31')}
+   ${chk('bad','SENTIENT did not answer on the restored data within 3 minutes')}${chk('done','Putting the previous data back (PostgreSQL renamed back, ClickHouse tables exchanged back)')}${chk('done','SENTIENT answers on its previous data')}
+   ${out('bad','SENTIENT did not start on the restored data. It runs on its previous data again; the restored database sentient_restore_202611161106 is unchanged, for a look.')}
+   <div class="row">${E('restore_switch::run swaps back by itself and says why.')}${N('The safety backup stays in the folder and is named in the history.')}</div>
+   <div class="row">${btn('Show SENTIENT\'s log','pri')}${btn('Remove the restored database…')}${btn('Back to Backup and restore')}</div>`,pill('Rolled back','warn'))}),null);
+fr('X','X3','Space ran low midway','The free-space watch stops the run and rolls back before a disk fills',
+ shell({page:'Backup and restore',strip:'100%',stripBad:1,body:title('Backup and restore','The backups on this server.')+
+  runCard(['done','done','bad','todo','todo'],{pill:'Stopped',pk:'bad',t:'Replacing the data of INVENIA IIoT',extra:`
+   ${out('bad','Stopped: /mnt/disk-a (PostgreSQL) fell to 1.9 GB free, under the safe level of 2 GB. Something else is writing there (sentient-postgres WAL grew 12 GB). Nothing on INVENIA IIoT changed; the half-restored database was removed.')}
+   <div class="row">${N('The free-space watch, every 10 s on every disk the restore uses.')}</div>
+   <div class="row">${btn('Free space in Files','','folder')}${btn('Move data to another disk…','','move')}${btn('Start again')}${btn('Back')}</div>`})}),null);
+
+/* ===== Lane B: blocked ===== */
+lane('B','Restore: blocked','When the check or the pre-check finds a restore impossible or unsafe, the step shows why and the exact steps to fix it, with a button wherever the Platform Manager can do the step itself.');
+const blk=(t,why,steps,btns,w)=>`<div class="blk${w?' w':''}"><div class="bh">${w?I.warn:I.xc}<span>${t}</span></div><div>${why}</div><div class="mut small" style="font-weight:500">To fix it</div><ol class="fix">${steps.map(s=>`<li>${s}</li>`).join('')}</ol><div class="row">${btns}</div></div>`;
+const bwiz=(n,inner,sub)=>shell({page:'Backup and restore',h:760,body:wiz(n,inner,`${btn('Back')}<span class="sp"></span>${btn('Cancel','ghost')}${btn('Next','pri off')}`,sub)});
+fr('B','B1','Schema newer than this SENTIENT','Update SENTIENT first',
+ bwiz(1,blk('This backup is from a newer SENTIENT','Made on SENTIENT 4.5.0.3 (schema 33). INVENIA IIoT runs 4.4.0.2 (schema 31) and cannot read newer data.',
+  ['Update SENTIENT on INVENIA IIoT to 4.5.0.3 or later.','Start the restore again; this backup stays chosen.'],`${btn('Update SENTIENT…','pri','update')}${E('replace::check refusal Fix::UpdateSentient; "Update SENTIENT first" button on this computer.')}${N('The same on a server page.')}`)+cmpTable({newer:1})));
+const diskBlk=`<div class="gt" style="grid-template-columns:1.2fr 2.6fr .7fr .7fr .7fr">
+  <div class="h">Disk</div><div class="h">Used for</div><div class="h num">Needs</div><div class="h num">Free</div><div class="h num">Short</div>
+  <div>/ <span class="mut small">/dev/sda1</span></div><div class="small">Upload 2.8 GB · unpacking 3.1 GB · safety backup 2.9 GB</div><div class="num">8.8 GB</div><div class="num bad">3.9 GB</div><div class="num bad">4.9 GB</div>
+  <div>/mnt/disk-a <span class="mut small">PostgreSQL</span></div><div class="small">Restored database 4.2 GB, beside the live one</div><div class="num">4.2 GB</div><div class="num">1.4 TB</div><div class="num ok">✓</div>
+  <div>/mnt/disk-b <span class="mut small">ClickHouse</span></div><div class="small">Restored history 5.0 GB, beside the live one</div><div class="num">5.0 GB</div><div class="num">3.1 TB</div><div class="num ok">✓</div></div>`;
+fr('B','B2','Not enough disk','Per disk: what needs the room, what is free, and every way out',
+ shell({page:'Backup and restore',h:880,disk:['3.9 GB free',96],body:wiz(4,blk('Not enough free disk on /','The restore needs about 8.8 GB on /, and 3.9 GB is free. The database disks have room.',
+  ['Put the safety backup or the temporary files on a disk with room, or','restore a shorter range of telemetry, or','free space on /, or','skip the safety backup.'],
+  `<div style="display:flex;flex-direction:column;gap:8px;width:100%">${diskBlk}
+   <div class="row">${btn('Safety backup on another disk…','','folder')}${btn('Temporary files on another disk…','','folder')}${btn('Restore a shorter date range','','cal')}</div>
+   <div class="row">${btn('Free space in Files','','folder')}${H('Opens Files on INVENIA IIoT at the largest folders on /.')}${btn('Remove old backups…','','trash')}${H('Keeps the newest 3, deletes the rest; it says what it frees first.')}${btn('Move data to another disk…','','move')}<span class="sp"></span>${btn('Skip the safety backup…','ghost')}</div>
+   <div class="row">${E('replace::check refusal Fix::FreeDisk with one figure.')}${N('Per-disk breakdown and these buttons.')}</div></div>`),
+  `${btn('Back')}<span class="sp"></span>${btn('Cancel','ghost')}${btn('Next','pri off')}`)}),['Skip the safety backup…','B2s']);
+fr('B','B2s','Skip the safety backup','A clear warning and the name typed',
+ shell({page:'Backup and restore',h:880,disk:['3.9 GB free',96],body:wiz(4,card('Pre-check',diskBlk)),
+  over:dlg('Restore without a safety backup?',`${out('warn','Without it, the data on INVENIA IIoT now can only come back from the data kept beside it, until that is removed, or from an older backup (newest: 16 Nov, 02:00).')}
+  <div class="row"><span>Type <b style="font-weight:600">INVENIA IIoT</b> to restore without it</span><span class="inp focus" style="width:200px">INVENIA</span></div>`,
+  `${btn('Back')}${btn('Restore without it','dan off')}`,'','warn')}),null);
+fr('B','B3','Database type not possible here','The backup\'s type was asked for; change this server\'s type in Migration first',
+ bwiz(5,blk('INVENIA IIoT cannot run on PostgreSQL + TimescaleDB as it is','You chose “Use from backup” for the database type. INVENIA IIoT runs PostgreSQL + ClickHouse; a restore keeps the server\'s type and converts the history.',
+  ['Keep this server\'s type: the history is converted to ClickHouse (every direction works), or','change INVENIA IIoT to PostgreSQL + TimescaleDB in Migration, then restore again.'],
+  `${btn('Keep this server\'s type','pri')}${btn('Open Migration…','','mig')}${E('restore.rs converts between all three types; replace keeps the installation\'s type.')}${N('This choice and its block.')}`)+
+  blk('ClickHouse on INVENIA IIoT is not answering','The history goes into ClickHouse, which did not answer on port 8123.',['Start ClickHouse in Control, or Repair if it does not start.'],`${btn('Open Control…','','power')}${btn('Repair…','','wrench')}${N('')}`)));
+fr('B','B4','Wrong passphrase','The passphrase did not open the file',
+ bwiz(1,card('This backup is encrypted',`<div class="row"><span class="inp err" style="width:320px">••••••••••${I.eye}</span>${btn('Read the backup','pri')}</div>
+  ${blk('The passphrase is wrong, or the file is damaged','The file is encrypted with age; the passphrase did not open it.',['Type it again: it is case-sensitive.','If it is surely right, Verify the file from the Backups list.'],`${btn('Try again','pri')}${E('replace.rs: "The passphrase is wrong, or the file is damaged."')}`)}`)));
+fr('B','B5','Damaged file','One part does not match its checksum: take another copy, or leave that month out',
+ bwiz(1,blk('This backup is damaged','Telemetry history, Oct 2026 does not match its SHA-256. The other 13 parts are sound.',
+  ['Use the copy in the “Also copy to” folder, which checks sound, or','choose another backup, or','restore without October 2026.'],
+  `${btn('Use the copy in /mnt/nas/sentient','pri')}${btn('Choose another backup…')}${btn('Restore without Oct 2026')}${E('restore::check names the damaged member; Damaged rows cannot be restored.')}${N('The buttons; leaving one month out (format 2 keeps a month per member).')}`)+
+  card('Parts',`${chk('done','Platform data','matches')}${chk('done','Telemetry history, Sep 2026','matches')}${chk('bad','Telemetry history, Oct 2026','does not match')}${chk('done','Telemetry history, Nov 2026','matches')}`)));
+fr('B','B6','Unknown or too-new format','A newer Platform Manager made it, or the file is not a backup',
+ bwiz(1,blk('This backup needs a newer Platform Manager','It is in format 3; this Platform Manager reads formats 1 and 2.',['Update the Platform Manager on this computer (and the agent on INVENIA IIoT with it).','Start the restore again.'],`${btn('Update the Platform Manager…','pri','update')}${E('restore::run refuses format_version > FORMAT_VERSION; format 1 still restores.')}${N('The button.')}`)+
+  blk('This file is not a SENTIENT backup','There is no manifest at its start. It may be another program\'s file, or only part of a split backup.',['For a split backup (.001, .002, …), choose the first part, or the folder holding all parts.','Otherwise, choose another file.'],`${btn('Choose another file…')}${E('inspect: "not a SENTIENT backup (no manifest at its start)"; parts.rs resolves .001.')}`)));
+fr('B','B7','Licence bound to other hardware','Not a stop: the restore goes on, and the licence is activated after',
+ bwiz(5,blk('The licence stays with INVENIA IIoT','The backup comes from PLANT-B, whose licence is bound to that machine\'s hardware. It is not carried over. INVENIA IIoT keeps its own licence.',
+  ['After the restore, check Licence on INVENIA IIoT.','If INVENIA IIoT has none yet, activate one or request a demo licence.'],`<span class="cbx">${box(true)} Open Licence when the restore is done</span><span class="sp"></span>${E('Licensing is not backed up by default; the replace flow keeps this computer\'s licence.')}${N('The reminder and the jump.')}`,true)));
+fr('B','B8','Instance not reachable','Another instance as the source, and it does not answer',
+ bg({over:srcDialog(2,`${instSel}${blk('Plant B is not answering','No answer over SSH from 10.20.0.31:22 within 15 s.',['Check that Plant B is on and on the network.','Try again, or take its backup from a USB disk with “This computer”.'],`${btn('Try again','pri')}${btn('Open Instances…','','server')}${E('Pages of an unreachable instance already say so.')}${N('Here, as a restore source.')}`)}`,`${btn('Cancel')}${btn('Copy and check','pri off')}`)}));
+fr('B','B9','No permission on the folder','The upload folder is not writable by SENTIENT',
+ bg({over:srcDialog(1,`<div class="crow last"><div class="l"><span class="k">Upload to</span><span class="v"><span class="mono">/var/backups/sentient</span></span></div><div class="a">${btn('Change…','','folder')}</div></div>
+  ${blk('SENTIENT cannot write in /var/backups/sentient','The folder belongs to root.',['Make it writable (asks for the administrator password once), or','upload to another folder.'],`${btn('Make it writable…','pri','lock')}${btn('Another folder…','','folder')}${E('folder_chooser.rs "Make it writable…".')}`)}`,`${btn('Cancel')}${btn('Upload','pri off')}`)}));
+
+/* ===== Lane M: move data ===== */
+lane('M','Move data to another disk','A new flow. Each store moves on its own: PostgreSQL, ClickHouse or TimescaleDB, SENTIENT files, backups. Today every store is a named Docker volume (st-pg-data, st-ch-data, st-data) in Docker\'s own folder, with no way to place it elsewhere.');
+const locRows=(o={})=>[
+ ['PostgreSQL',o.pg||'/mnt/disk-a/sentient/postgres','disk A · 1.4 TB free','184 GB'],
+ ['ClickHouse',o.ch||'/mnt/disk-b/sentient/clickhouse','disk B · 3.1 TB free','612 GB'],
+ ['SENTIENT files','/var/lib/docker/volumes/st-data','/ · 64.1 GB free','2.1 GB'],
+ ['Backups','/var/backups/sentient','/ · 64.1 GB free','17.4 GB']];
+const locCard=(o={})=>card(`Data locations`,locRows(o).map((r,i,a)=>crow(r[0],`<span class="mono">${r[1]}</span><span class="mut" style="font-size:12.5px">${r[2]} · ${r[3]}</span>${o.badge&&i===1?pill(o.badge,'run'):''}`,i===3?btn('Change…','','folder'):btn('Move…','','move'),i===0?'Where each store keeps its data. Each one moves on its own.':'',i===a.length-1)).join(''),N('Data location rows: new. Docker volume mountpoints are not shown anywhere today; Backups has its Change… already.'),'g0');
+fr('M','M1','Platform settings, Database: a disk per store','PostgreSQL on disk A, ClickHouse on disk B',
+ shell({page:'Platform settings',body:title('Platform settings','Ports, addresses and data of SENTIENT on this server.')+
+  `<div class="seg" style="align-self:flex-start"><span>General</span><span>Network</span><span class="on">Database</span><span>Environment</span></div>`+
+  card('Database',crow('Type','PostgreSQL + ClickHouse '+pill('Current','cur'),btn('Migration…','ghost'))+crow('PostgreSQL port','<span class="mono">5432</span>','','',true),'','g0')+locCard()}),['Move… on ClickHouse','M4']);
+fr('M','M2','Migration: a fourth card','Move data to another disk, beside the three database types; no reinstall',
+ shell({page:'Migration',body:title('Migration')+card(null,`<div class="mut small">Database type</div><div class="opts">
+  ${opt('PostgreSQL','Everything in PostgreSQL. Simplest; suits small sites.',false,false)}
+  ${opt('PostgreSQL + TimescaleDB','History compressed and kept in time chunks inside PostgreSQL.',false,false)}
+  ${opt(`PostgreSQL + ClickHouse ${pill('Current','cur')}`,'History in ClickHouse, everything else in PostgreSQL. For large sites.',true,false)}</div>
+  <div class="row"><span class="btn pri off">Change database</span><span class="mut small">Pick another type to change to it.</span>${E('migration.rs type_cards.')}</div>
+  <div class="mut small" style="border-top:1px solid var(--border);padding-top:10px">Data location</div>
+  <div class="opt"><span class="ix">${I.hd}</span><div class="ot"><b>Move data to another disk ${N('The fourth card. Opens the same per-store flow as Platform settings.')}</b><span>PostgreSQL, ClickHouse, SENTIENT files or backups, each to its own disk or folder.</span></div>${btn('Choose…')}</div>`)}),['Choose…','M4']);
+fr('M','M3','Status: low disk','A low-disk warning links to the move',
+ shell({page:'Status',disk:['3.9 GB free',96],body:title('Status')+
+  `<div class="blk w"><div class="bh">${I.warn}<span>/ is 96% full: 3.9 GB free</span></div><div>PostgreSQL on / grows about 1.2 GB a week; at that rate it fills in about 3 weeks.</div>
+  <div class="row">${btn('Move data to another disk…','pri','move')}${btn('Free space in Files','','folder')}${btn('Remove old backups…','','trash')}${N('The warning and its buttons.')}</div></div>`+
+  card('SENTIENT',crow('State',`${pill('Running','ok')}<span class="mut small">since 9 Nov, 08:14</span>`)+crow('Version','4.4.0.2','','',true),'','g0')}),['Move data to another disk…','M4']);
+
+const disksTable=(sel,o={})=>`<div class="gt" style="grid-template-columns:28px 1.2fr 1.2fr .6fr .7fr .7fr 2fr">
+  <div class="h"></div><div class="h">Disk</div><div class="h">Mounted at</div><div class="h">Type</div><div class="h num">Size</div><div class="h num">Free</div><div class="h">Can hold ClickHouse (612 GB)</div>
+  ${[['/dev/sda1','/','ext4','500 GB','64.1 GB','Too small','bad'],['/dev/sdb1','/mnt/disk-a','ext4','2 TB','1.4 TB','Yes · PostgreSQL is here','ok'],['/dev/sdc1','/mnt/disk-b','xfs','4 TB','3.1 TB','Yes · ClickHouse is here now','mute'],['/dev/sdd1','/mnt/disk-c','xfs','2 TB','1.9 TB','Yes','ok'],['//nas/plant','/mnt/nas','cifs','8 TB','5.2 TB','Network disk: not for a database','bad'],['/dev/sde1','/media/usb','vfat','256 GB','240 GB','FAT: no owners or permissions, 4 GB file limit','bad']]
+   .map((r,i)=>`<div>${i===sel?'<span class="rd" style="width:16px;height:16px;border-radius:50%;border:5px solid var(--primary);box-sizing:border-box;display:inline-block;flex:none"></span>':'<span style="width:16px;height:16px;border-radius:50%;border:2px solid var(--text2);box-sizing:border-box;display:inline-block;flex:none;opacity:'+(r[6]==='ok'?1:.4)+'"></span>'}</div><div class="drv">${I.hd}<span class="mono">${r[0]}</span></div><div class="mono">${r[1]}</div><div>${r[2]}</div><div class="num">${r[3]}</div><div class="num">${r[4]}</div><div class="${r[6]==='bad'?'bad':r[6]==='ok'?'ok':'mut'} small">${r[5]}</div>`).join('')}</div>`;
+const mwiz=(n,inner,foot)=>{const S=['What','Disk','Folder','Plan'];return `<div class="ptitle"><span class="ib ob">${I.back}</span><div class="tt"><h3>Move data to another disk</h3><small>INVENIA IIoT</small></div></div>
+ <div class="stepper">${S.map((s,i)=>`${i?'<span class="ln"></span>':''}<span class="${i<n?'dn':i===n?'on':''}"><i>${i<n?'✓':i+1}</i>${s}</span>`).join('')}</div>${inner}<div class="row" style="margin-top:auto">${foot||`${btn('Back')}<span class="sp"></span>${btn('Cancel','ghost')}${btn('Next','pri')}`}</div>`};
+fr('M','M4','What to move','One store, or several in one stop',
+ shell({page:'Platform settings',body:mwiz(0,card('What to move',`
+  ${['PostgreSQL|184 GB on /mnt/disk-a|0','ClickHouse|612 GB on /mnt/disk-b|1','SENTIENT files|2.1 GB in Docker\'s folder on /|0','Backups|17.4 GB in /var/backups/sentient (moves without stopping SENTIENT)|0'].map(s=>{const [a,b,c]=s.split('|');return `<div class="cbx" style="min-height:34px">${box(c==='1')}<span style="width:150px">${a}</span><span class="mut small">${b}</span></div>`}).join('')}
+  <div class="row">${N('The whole move flow is new.')}</div>`))}),['Next','M5']);
+fr('M','M5','Pick a disk','The server\'s disks with size and free space; unsuitable ones say why',
+ shell({page:'Platform settings',h:760,body:mwiz(1,card('Disk for ClickHouse',disksTable(3)+`<div class="mut small">Read from the server (lsblk, df). A network disk or FAT cannot hold a database; each row says why.</div>`))}),['Next','M6']);
+fr('M','M6','Choose a folder','The folder chooser on the server, checked as you move',
+ shell({page:'Platform settings',body:mwiz(2,card('Folder on /mnt/disk-c',`
+  <div class="row"><span class="ib ob">${I.back}</span><span class="inp focus" style="flex:1"><span class="mono">/mnt/disk-c/sentient/clickhouse</span></span>${btn('New folder','','plus')}</div>
+  <div class="gt" style="grid-template-columns:1fr 120px"><div class="h">Name</div><div class="h num">Free space</div><div>${I.folder.replace('<svg','<svg style="width:16px;height:16px;color:#d39e2a"')} archive</div><div class="num">1.9 TB</div><div style="background:var(--sel)">${I.folder.replace('<svg','<svg style="width:16px;height:16px;color:#d39e2a"')} sentient</div><div class="num" style="background:var(--sel)">1.9 TB</div></div>
+  ${out('good','Empty · writable by ClickHouse (uid 101) · xfs · 1.9 TB free, 612 GB needed')}
+  <div class="row">${E('folder_chooser.rs: browse, New folder, writable check, Make it writable….')}${N('Filesystem type, empty, owner for the container uid.')}</div>`))}),['Next','M8']);
+fr('M','M7b','Blocked: unsuitable disk','A network disk, FAT, or no permission: each names its fix',
+ shell({page:'Platform settings',h:820,body:mwiz(1,card('Disk for ClickHouse',disksTable(5)+
+  blk('/media/usb cannot hold a database','It is FAT (vfat): no owners or permissions, and no file over 4 GB. ClickHouse would not start on it.',['Pick another disk, or','format it as ext4 or xfs outside the Platform Manager (this erases it).'],`${btn('Pick another disk','pri')}${N('')}`)+
+  `<div class="mut small">The other blocks read the same way: a network disk (cifs, nfs) “is too slow and unsafe for a database; use a local disk”; no permission “ClickHouse cannot write here” with Make it writable….</div>`),
+  `${btn('Back')}<span class="sp"></span>${btn('Cancel','ghost')}${btn('Next','pri off')}`)}),null);
+fr('M','M7c','Blocked: too small','Needed against free, and the ways out',
+ shell({page:'Platform settings',h:770,body:mwiz(1,card('Disk for ClickHouse',disksTable(0)+
+  blk('ClickHouse does not fit on /','It needs 612 GB; / has 64.1 GB free.',['Pick a disk with room, or','free space on / first.'],`${btn('Pick another disk','pri')}${btn('Free space in Files','','folder')}${N('')}`)),
+  `${btn('Back')}<span class="sp"></span>${btn('Cancel','ghost')}${btn('Next','pri off')}`)}),null);
+
+const planSteps=(st,o={})=>`${chk(st[0],'Stop SENTIENT')}${chk(st[1],`Copy ${o.what||'ClickHouse'} data to /mnt/disk-c/sentient/clickhouse`,st[1]==='now'?'288 of 612 GB · 260 MB/s · 21 min left':st[1]==='done'?'612 GB':'')}${chk(st[2],'Verify sizes and checksums','')}${chk(st[3],'Point the st-ch-data volume at the new folder (bind mount)')}${chk(st[4],'Start SENTIENT')}${chk(st[5],'Check SENTIENT answers and ClickHouse holds the same rows')}`;
+fr('M','M8','Plan and downtime','Only ClickHouse moves; PostgreSQL stays where it is. The downtime is shown before the start',
+ shell({page:'Platform settings',h:800,body:mwiz(3,card('Move ClickHouse to /mnt/disk-c/sentient/clickhouse',`
+  <div class="kv"><span class="k f">Moves</span><span class="f">ClickHouse, 612 GB, from /mnt/disk-b</span>
+   <span class="k">Stays</span><span>PostgreSQL on /mnt/disk-a, SENTIENT files, backups</span>
+   <span class="k">SENTIENT is down</span><span><b style="font-weight:600">about 42 minutes</b> <span class="mut small">612 GB at about 260 MB/s, measured on these disks</span></span>
+   <span class="k">The old copy</span><span>Kept on /mnt/disk-b until you remove it</span></div>
+  <div class="mut small" style="font-weight:500">Steps</div>${planSteps(['todo','todo','todo','todo','todo','todo'])}
+  <div class="cbx">${box(false)}<span>Also move PostgreSQL in the same stop</span>${H('Both moves share one stop of SENTIENT; the downtime adds up.')}</div>`),
+  `${btn('Back')}<span class="sp"></span>${btn('Cancel','ghost')}${btn('Stop SENTIENT and move','pri')}`)}),['Stop SENTIENT and move','M10']);
+fr('M','M9','Two moves queued','PostgreSQL to disk A and ClickHouse to disk C in one stop',
+ shell({page:'Platform settings',body:mwiz(3,card('Two moves in one stop',`
+  <div class="gt" style="grid-template-columns:30px 1fr 1.6fr .6fr .8fr"><div class="h">#</div><div class="h">Store</div><div class="h">To</div><div class="h num">Size</div><div class="h num">Copy takes</div>
+   <div>1</div><div>ClickHouse</div><div class="mono">/mnt/disk-c/sentient/clickhouse</div><div class="num">612 GB</div><div class="num">42 min</div>
+   <div>2</div><div>PostgreSQL</div><div class="mono">/mnt/disk-a/sentient/postgres</div><div class="num">184 GB</div><div class="num">13 min</div></div>
+  <div class="kv"><span class="k f">SENTIENT is down</span><span class="f"><b style="font-weight:600">about 58 minutes</b></span><span class="k">If one fails</span><span>Both go back to where they were</span></div>`),
+  `${btn('Back')}<span class="sp"></span>${btn('Cancel','ghost')}${btn('Stop SENTIENT and move both','pri')}`)}),null);
+fr('M','M10','Moving','The strip and the job view',
+ shell({page:'Platform settings',strip:'47%',chip:'Moving <i><b style="width:47%"></b></i> 47%',body:title('Platform settings','Ports, addresses and data of SENTIENT on this server.')+
+  card('Moving ClickHouse to /mnt/disk-c',planSteps(['done','now','todo','todo','todo','todo'])+`<div class="row">${btn('Cancel')}<span class="mut small">Cancel puts everything back as it was and starts SENTIENT.</span></div>`,pill('Running','run'))+
+  runLog(`rsync -aHAX --info=progress2 /var/lib/docker/volumes/st-ch-data/_data/ /mnt/disk-c/sentient/clickhouse/
+  288,140,331,008  47%  260.14MB/s  0:21:02`)}),['Healthy','M11']);
+fr('M','M11','Moved','The old copy is kept until he confirms',
+ shell({page:'Platform settings',h:880,body:title('Platform settings','Ports, addresses and data of SENTIENT on this server.')+
+  card('ClickHouse runs from /mnt/disk-c',planSteps(['done','done','done','done','done','done'])+out('good','SENTIENT answers, and ClickHouse holds the same 2 812 440 118 rows as before. Down for 44 min.')+
+  `<div class="row">${btn('Remove old copy…','','trash')}<span class="mut small">612 GB on /mnt/disk-b. Remove it once SENTIENT has run well for a while.</span><span class="sp"></span>${btn('Done','pri')}</div>`,pill('Done','ok'))+
+  locCard({ch:'/mnt/disk-c/sentient/clickhouse'}).replace('disk B · 3.1 TB free','disk C · 1.3 TB free')}),null);
+fr('M','M12','Move failed: switched back','A failed check puts the old place back by itself',
+ shell({page:'Platform settings',strip:'100%',stripBad:1,body:title('Platform settings','Ports, addresses and data of SENTIENT on this server.')+
+  card('ClickHouse was not moved',`${chk('done','Stop SENTIENT')}${chk('done','Copy ClickHouse data to /mnt/disk-c/sentient/clickhouse','612 GB')}${chk('bad','Verify sizes and checksums','3 files differ')}${chk('done','Point st-ch-data back at its old place')}${chk('done','SENTIENT answers on the old place')}
+  ${out('bad','The copy did not match: 3 files under store/ts_kv differ in size. /mnt/disk-c reported I/O errors (dmesg: sdd: Medium Error). ClickHouse runs from /mnt/disk-b as before; the partial copy is left for a look.')}
+  <div class="row">${btn('Remove the partial copy…','','trash')}${btn('Try another disk','pri')}${btn('Show log')}</div>`,pill('Switched back','warn'))}),null);
+fr('M','M13','Windows server: what moves and how','Native PostgreSQL, ClickHouse in WSL, and Docker Desktop\'s disk',
+ shell({page:'Platform settings',inst:'plantb',os:'win',h:800,body:title('Platform settings','Ports, addresses and data of SENTIENT on this server.')+
+  card('Data locations',
+   crow('PostgreSQL','<span class="mono">C:\\SENTIENT\\pg\\data</span><span class="mut" style="font-size:12.5px">C: · 41 GB free · 96 GB</span>',btn('Move…','','move'),'The PostgreSQL service is stopped, its data copied with robocopy and checked, and the service pointed at the new folder (-D).')+
+   crow('ClickHouse (WSL)','<span class="mono">C:\\Users\\sentient-clickhouse\\…\\ext4.vhdx</span><span class="mut" style="font-size:12.5px">C: · 310 GB</span>',btn('Move…','','move'),'ClickHouse runs in a WSL distribution of the hidden account sentient-clickhouse. Its disk file is moved whole with wsl --manage sentient --move D:\\WSL\\sentient (or export and import on older WSL).')+
+   crow('SENTIENT files','<span class="mono">C:\\ProgramData\\SENTIENT</span><span class="mut" style="font-size:12.5px">C: · 2.4 GB</span>',btn('Move…','','move'))+
+   crow('Backups','<span class="mono">C:\\ProgramData\\SENTIENT\\backups</span>',btn('Change…','','folder'),'',true),N('Windows variant: no compose volumes. Services, robocopy /MIR with a hash check, the service\'s data folder, and the WSL disk file.'),'g0')+
+  `<div class="notes" style="max-width:none">${out('info','Differs from Linux: SENTIENT and PostgreSQL are Windows services, not containers; ClickHouse\'s data is one virtual disk file (ext4.vhdx), moved whole, so the target needs its full size free, not the data size. A server running Docker Desktop instead moves Docker\'s disk image in Docker Desktop, Settings, Resources (the Platform Manager links there).')}</div>`}),null);
+fr('M','M13b','Windows server: the plan','ClickHouse\'s WSL disk to D:, with Windows steps and downtime',
+ shell({page:'Platform settings',inst:'plantb',os:'win',h:780,body:mwiz(3,card('Move ClickHouse (WSL) to D:\\WSL\\sentient',`
+  <div class="kv"><span class="k f">Moves</span><span class="f">The WSL disk ext4.vhdx of the account sentient-clickhouse, 310 GB (the whole file, not only the data)</span>
+   <span class="k">Stays</span><span>PostgreSQL in C:\\SENTIENT\\pg\\data, SENTIENT files, backups</span>
+   <span class="k">SENTIENT is down</span><span><b style="font-weight:600">about 25 minutes</b> <span class="mut small">310 GB from C: to D: at about 220 MB/s</span></span>
+   <span class="k">The old copy</span><span>Kept as C:\\Users\\sentient-clickhouse\\…\\ext4.vhdx.old until you remove it</span></div>
+  <div class="mut small" style="font-weight:500">Steps</div>
+  ${chk('todo','Stop the SENTIENT service')}${chk('todo','Shut down the WSL distribution sentient (wsl --terminate, as sentient-clickhouse)')}${chk('todo','Copy ext4.vhdx to D:\\WSL\\sentient and compare SHA-256')}${chk('todo','Point the distribution at the new file (wsl --manage sentient --move; export and import on WSL before 2.0)')}${chk('todo','Start ClickHouse, then the SENTIENT service')}${chk('todo','Check SENTIENT answers and ClickHouse holds the same rows')}
+  <div class="row">${N('Windows move: services, the WSL disk file, robocopy or a hashed copy. clickhouse_wsl.rs knows the account and the distribution today.')}</div>`),
+  `${btn('Back')}<span class="sp"></span>${btn('Cancel','ghost')}${btn('Stop SENTIENT and move','pri')}`)}),null);
+fr('M','M14','Setup: Advanced, data locations','A fresh install: one folder by default, a place per store if asked',
+ shell({page:'Status',inst:'iiot',h:760,body:`<div class="ptitle"><div class="tt"><h3>Set up SENTIENT</h3><small>On INVENIA IIoT · step 4 of 6</small></div></div>
+  ${card('Advanced: data locations',
+   crow('Data',`<span class="seg"><span>One folder</span><span class="on">A place per store</span></span>`,'','One folder keeps everything together under /var/lib/sentient-data; a place per store puts each database on its own disk.')+
+   crow('PostgreSQL','<span class="mono">/mnt/disk-a/sentient/postgres</span><span class="mut" style="font-size:12.5px">1.4 TB free</span>',btn('Change…','','folder'))+
+   crow('ClickHouse','<span class="mono">/mnt/disk-b/sentient/clickhouse</span><span class="mut" style="font-size:12.5px">3.1 TB free</span>',btn('Change…','','folder'))+
+   crow('SENTIENT files','<span class="mono">/var/lib/sentient-data/files</span><span class="mut" style="font-size:12.5px">64.1 GB free</span>',btn('Change…','','folder'))+
+   crow('Backups','<span class="mono">/var/backups/sentient</span><span class="mut" style="font-size:12.5px">64.1 GB free</span>',btn('Change…','','folder'),'',true),N('Setup writes named volumes today (distro.rs: postgres_data, clickhouse_data, sentient_data with pinned names). New: each volume with driver_opts type none, o bind, device <folder>, so the name st-pg-data stays and only its place changes.'),'g0')}
+  <div class="row" style="margin-top:auto">${btn('Back')}<span class="sp"></span>${btn('Next','pri')}</div>`}),null);
+
+// ---------- render ----------
+const only=qs.get('f');
+if(only){
+  const f=F.find(x=>x.id===only);
+  document.body.style.padding='0';document.body.style.background='var(--sheet)';
+  document.querySelector('main').innerHTML=`<div id="solo" style="display:inline-block;padding:0">${f?f.html:'no frame'}</div>`;
+  return;
+}
+const ARROW='<svg viewBox="0 0 22 34" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M11 2v28"/><path d="m4 23 7 8 7-8"/></svg>';
+const idx=LANES.map(L=>`<div class="ln"><b>${L.t}</b>${F.filter(f=>f.lane===L.id).map((f,i,a)=>`<a class="code" href="#${f.id}" title="${f.t}">${f.id}</a>${i<a.length-1?(f.arrow?'<span class="ar">→</span>':'<span class="br">·</span>'):''}`).join('')}</div>`).join('');
+document.getElementById('index').innerHTML=`<div class="row"><b style="font-weight:500">Frame index</b><span class="mut small">→ the next click; · another state of the same step. Every frame is drawn in light and dark (the switch at the top).</span></div>${idx}<div class="legend"><span>${E('')} the backup engine or the app does it today</span><span>${N('')} to be built</span><span>${H('Help')} help in a tooltip</span></div>`;
+document.getElementById('board').innerHTML=LANES.map(L=>`<section class="lane" id="lane-${L.id}"><div class="lanehd"><h2>${L.t}</h2><p class="lead">${L.lead}</p></div>
+ ${F.filter(f=>f.lane===L.id).map((f,i,a)=>`<div class="frame" id="${f.id}"><div class="cap"><span class="code">${f.id}</span><b>${f.t}</b><span>${f.s}</span></div><div class="scroll">${f.html}</div></div>
+  ${i<a.length-1?(f.arrow?`<div class="arrow">${ARROW}<span class="act">${f.arrow[0]}</span><span>to <a href="#${f.arrow[1]}">${f.arrow[1]}</a></span></div>`:`<div class="branch">· also at this step:</div>`):''}`).join('')}</section>`).join('');
+
+document.getElementById('matrixnotes').innerHTML=`<h3>Across database types: what restore.rs supports</h3>
+<p class="mut" style="margin-top:4px">A restore keeps the target's type and converts the telemetry (RestoreOptions.telemetry_into, from the installation). Every one of the nine pairs works today ${E('restore_converted + telemetry_move.')}</p>
+<div class="gt" style="grid-template-columns:200px 1fr 1fr 1fr;margin-top:10px">
+ <div class="h">Backup from ↓ / into →</div><div class="h">PostgreSQL</div><div class="h">PostgreSQL + TimescaleDB</div><div class="h">PostgreSQL + ClickHouse</div>
+ <div>PostgreSQL</div><div class="ok">✓ as backed up</div><div class="ok">✓ ts_kv made a hypertable, history moved month by month</div><div class="ok">✓ history and latest values into ClickHouse</div>
+ <div>PostgreSQL + TimescaleDB</div><div class="ok">✓ ts_kv partitioned by month</div><div class="ok">✓ as backed up (timescaledb_pre/post_restore)</div><div class="ok">✓ history and latest values into ClickHouse</div>
+ <div>PostgreSQL + ClickHouse</div><div class="ok">✓ ClickHouse history read into PostgreSQL, newest write wins; latest from history</div><div class="ok">✓ same, into a hypertable</div><div class="ok">✓ as backed up, into an empty ClickHouse</div></div>
+<ul>
+ <li>What can block: the target's ClickHouse not answering (B3, second card); asking for the backup's type on an existing instance (B3, first card: Migration first) ${N('')}; a new instance can take the backup's type, so nothing is converted (R11b).</li>
+ <li>Configuration only, Telemetry only and a date range cross types the same way: the dump without telemetry, and the telemetry through the same staging table.</li>
+ <li>On Windows, ClickHouse needs WSL2; Migration installs it, a restore does not.</li></ul>`;
+
+const SUM=[
+ ['Restore… on rows','In the row chevron; hidden for Damaged','Visible button on every row','R1'],
+ ['Restore from…','This computer: Choose backup… in its Restore panel. A server: only its own folder\'s rows','One entry with three sources','R4–R6'],
+ ['Upload from this computer to a server','—','sftp upload with progress, resume, size and SHA-256 check','R5, R5e'],
+ ['Backup from another instance','—','List its backups; copy server to server or through this computer','R6, R6l, B8'],
+ ['Restore history','—','restore-history.jsonl on the server, logs kept, card and details dialog','R1–R3'],
+ ['Integrity: SHA-256 per part, sidecar, format version','restore::check, verify_all, FORMAT_VERSION refusal; format 1 still restores','Progress per part in the check step','R7, B5, B6'],
+ ['Encrypted backups','age passphrase; on this computer asked in the panel','Asked on a server too (agent stdin)','R8, B4'],
+ ['Type, version, schema differences; newer schema blocked','replace::check type_line, version_line, refusal UpdateSentient','Same on server pages','R9, B1'],
+ ['What to restore','Everything only','Configuration only (always), Keep/Clear this server\'s telemetry with orphan count, Telemetry only, date range','R10–R10e'],
+ ['Where','Replace this instance (beside, then switch)','New instance here or on another server','R11, R11b'],
+ ['Across types','All 9 pairs convert (restore_converted, telemetry_move)','Block when the backup\'s type is asked on an existing instance','Notes, B3'],
+ ['Pre-check','Size estimate, one free-space figure, schema upgrade after','Per store and per disk, time estimate, free-space watch during the run','R13, R13w, B2, X3'],
+ ['Settings differences','Manifest has version, schema, type, host, PG/TimescaleDB versions, file store paths; secrets key handled; licence not carried','manifest.platform: ports, URL, TLS (name, issuer, expiry), env (non-secret), retention, licence id + hardware hash, gateway endpoints; the step itself','R14, R14o, B7'],
+ ['Confirm','Replace dialog; previous data kept aside; Delete once it runs','Safety backup file, typed instance name','R15, B2s'],
+ ['Run and done','Job view, strip, planned steps, Open SENTIENT, Reset password','Licence and gateway next steps','R16, R17'],
+ ['Failure','Before the switch: live untouched; after: automatic swap back with the reason','Resume after the last finished step; safety backup named in history','X1–X3'],
+ ['Blocked cases','Newer schema, free disk, wrong passphrase, damaged, format, not a backup, Make it writable…, unreachable pages','Per-disk ways out, Skip the safety backup, Use the other copy, leave a month out, Migration first','B1–B9'],
+ ['Move data to another disk','—: named volumes in Docker\'s folder only','Data location rows, disk picker, checks, stop-copy-verify-switch-start-health, keep old copy, switch back, Windows variant, Setup step, Migration card, Status link','M1–M14'],
+];
+document.getElementById('summary').innerHTML=`<h3>Exists / new</h3><div class="gt" style="grid-template-columns:1.1fr 1.6fr 1.8fr 100px;margin-top:10px"><div class="h">Part</div><div class="h">${E('')} today</div><div class="h">${N('')} to build</div><div class="h">Frames</div>${SUM.map(r=>`<div>${r[0]}</div><div class="small">${r[1]}</div><div class="small">${r[2]}</div><div class="small mono">${r[3]}</div>`).join('')}</div>`;
+document.getElementById('questions').innerHTML=`<h3>Open questions</h3><ul>
+ <li>Configuration only with Keep: PostgreSQL's ts_kv has to be copied into the restored database before the switch (minutes to hours on a large plant), or the restore goes into the live database instead. Which?</li>
+ <li>The safety backup is a second copy on top of the data kept aside. Keep both, or let the kept data be the safety copy and offer the file only when the kept data will be deleted?</li>
+ <li>Restore history: who is "by" on a server: the SSH user and the computer name, or a Platform Manager user name?</li>
+ <li>Telemetry only into a running instance needs a restore into a non-empty database. Allow it, or only through a new instance?</li>
+ <li>Move data: bind mounts (folder) or local volumes with device (name kept)? The mockup keeps the volume names with driver_opts.</li>
+ <li>Windows: move ClickHouse's whole WSL disk (needs WSL 2.x for --move), or only support it on newer WSL?</li></ul>`;
+})();
+</script>

@@ -15,6 +15,17 @@ refreshes that repository's Downloads table.
 
 ## [Unreleased]
 
+### Changed
+- Logs: Follow shows each new line the moment it is written, on this
+  computer and on a server, instead of reading the last 500 lines again
+  every 3 seconds. A server's lines come over its one SSH connection; no
+  port is opened. Docker containers and the journal are followed by their
+  own follow, log files are watched for new lines, and the few sources
+  without either (the gateway's log folder on Windows, Docker inside WSL)
+  are read again every 2 seconds on the server itself, sending only new
+  lines. A server whose agent is older, or a follow that stops, falls back
+  to reading every 3 seconds and tries following again a minute later.
+
 ## [0.9.10] - 2026-11-22
 
 The Files page has Back, Forward and Up, a path you can type, and sorting by any column.
