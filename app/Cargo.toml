@@ -6,7 +6,7 @@
 
 [package]
 name = "sentient-platform-manager"
-version = "0.9.9"
+version = "0.9.10"
 edition = "2021"
 license = "Apache-2.0"
 authors = ["The SENTIENT Authors"]

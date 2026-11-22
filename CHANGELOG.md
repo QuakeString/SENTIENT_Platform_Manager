@@ -15,6 +15,10 @@ refreshes that repository's Downloads table.
 
 ## [Unreleased]
 
+## [0.9.10] - 2026-11-22
+
+The Files page has Back, Forward and Up, a path you can type, and sorting by any column.
+
 ### Added
 - Files: Back, Forward and Up beside each pane's path bar (Alt+Left,
   Alt+Right, Alt+Up; Backspace goes up). Each pane keeps its own history.
