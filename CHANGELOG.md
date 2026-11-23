@@ -15,6 +15,10 @@ refreshes that repository's Downloads table.
 
 ## [Unreleased]
 
+## [0.9.11] - 2026-11-23
+
+Logs show each new line the moment it is written, on this computer and on a server.
+
 ### Changed
 - Logs: Follow shows each new line the moment it is written, on this
   computer and on a server, instead of reading the last 500 lines again
