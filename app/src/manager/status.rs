@@ -57,6 +57,7 @@ pub struct StatusPage {
     _tasks: Vec<Task<()>>,
     _observe: Subscription,
     _job_observe: Subscription,
+    _updates_observe: Subscription,
 }
 
 /// What this computer's Status read, kept when the window closes while
@@ -118,6 +119,48 @@ impl EventEmitter<OpenGateway> for StatusPage {}
 /// "Apply…" on the line about changes waiting for this installation.
 pub struct OpenUpdate;
 impl EventEmitter<OpenUpdate> for StatusPage {}
+
+/// What the update channel says about the SENTIENT a Status card shows.
+pub(crate) enum VersionNote {
+    /// Not read yet, or the release list could not be read: nothing shown.
+    Unknown,
+    UpToDate,
+    /// A newer version: a pill that opens Update.
+    Newer(String),
+}
+
+/// Status's "SENTIENT version" row: the version, then "Up to date" or a
+/// "<v> available" pill that opens the Update screen. Shared by this
+/// computer's Status and a server's.
+pub(crate) fn version_row(theme: &gpui_kit::component::Theme, id: &'static str, version: String, note: VersionNote, open_update: impl Fn(&mut Window, &mut App) + 'static) -> Div {
+    h_flex()
+        .flex_wrap()
+        .gap_x_3()
+        .gap_y_1()
+        .items_center()
+        .child(ui::card_fact(theme, "SENTIENT version", version).flex_1().min_w(px(200.)))
+        .map(|r| match note {
+            VersionNote::Unknown => r,
+            VersionNote::UpToDate => r.child(ui::pill(theme, Tone::Good, "Up to date")),
+            VersionNote::Newer(v) => r.child(
+                div()
+                    .id(id)
+                    .cursor_pointer()
+                    .child(
+                        h_flex()
+                            .px_2p5()
+                            .py_0p5()
+                            .rounded_full()
+                            .text_size(px(13.))
+                            .font_weight(FontWeight::MEDIUM)
+                            .bg(theme.primary.opacity(0.14))
+                            .text_color(theme.primary)
+                            .child(format!("{v} available \u{203a}")),
+                    )
+                    .on_click(move |_, window, cx| open_update(window, cx)),
+            ),
+        })
+}
 
 /// A button that leads to another screen.
 #[derive(Clone, Copy)]
@@ -186,6 +229,15 @@ fn table_row(theme: &gpui_kit::component::Theme, name: String, hint: String, fra
 }
 
 impl StatusPage {
+    /// What the update channel says about this computer's SENTIENT.
+    fn version_note(&self, cx: &App) -> VersionNote {
+        match self.updates.read(cx).found.as_ref().map(|f| &f.sentient) {
+            Some(Ok(Some(o))) => VersionNote::Newer(o.version.clone()),
+            Some(Ok(None)) => VersionNote::UpToDate,
+            _ => VersionNote::Unknown,
+        }
+    }
+
     pub fn new(record: Option<InstallationRecord>, updates: Entity<crate::updates::UpdateState>, cx: &mut Context<Self>) -> Self {
         let poll = record.as_ref().map(|record| {
             let platform = record.platform();
@@ -225,6 +277,13 @@ impl StatusPage {
             cx.notify();
         });
         let job = cx.new(|_| Job::new());
+        // The "available" pill beside the version follows the update check.
+        let _updates_observe = cx.observe(&updates, |_, _, cx| cx.notify());
+        updates.update(cx, |u, cx| {
+            if u.stale() {
+                u.check(cx);
+            }
+        });
         let _job_observe = cx.observe(&job, |page: &mut Self, job, cx| {
             // An action ended: read the services again at once.
             if !job.read(cx).is_running() && matches!(job.read(cx).state(), JobState::Done(_) | JobState::Failed(_)) {
@@ -276,6 +335,7 @@ impl StatusPage {
             _tasks: vec![gateway_poll],
             _observe,
             _job_observe,
+            _updates_observe,
         };
         // A window opened again: what this run read before shows at once
         // (the polls read it again behind it).
@@ -717,7 +777,12 @@ impl Render for StatusPage {
                         move |_, _, cx| ui::open_sentient(record.stack.http_port, record.opens_as_kiosk(), cx)
                     }))),
             )
-            .child(ui::card_fact(&theme, "SENTIENT version", self.shown_version.clone().unwrap_or_else(|| record.sentient_version.clone())))
+            .child({
+                let this = cx.entity().downgrade();
+                version_row(&theme, "status-update-available", self.shown_version.clone().unwrap_or_else(|| record.sentient_version.clone()), self.version_note(cx), move |_, cx| {
+                    this.update(cx, |_, cx| cx.emit(OpenUpdate)).ok();
+                })
+            })
             .child(ui::card_fact(&theme, "Database", flavor_label(record.flavor())))
             .child(ui::card_fact(
                 &theme,

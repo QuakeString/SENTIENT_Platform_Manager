@@ -417,6 +417,8 @@ enum AgentRefresh {
     Failed(String),
 }
 
+impl EventEmitter<crate::manager::status::OpenUpdate> for RemotePages {}
+
 pub struct RemotePages {
     inst: Instance,
     pub kind: Kind,
@@ -1019,6 +1021,8 @@ impl RemotePages {
                     let channel = crate::updates::Prefs::load().channel;
                     self.fetch(cx, move || crate::updates::newest_sentient_with(channel, force), |p| &mut p.newest);
                 }
+                // A newer SENTIENT shows beside its version ("… available").
+                self.fetch_offer(force, cx);
                 self.fetch(cx, move || remote::status(&inst), |p| &mut p.status);
                 let inst = self.inst.clone();
                 self.fetch(cx, move || remote::services(&inst), |p| &mut p.services);
@@ -1056,22 +1060,7 @@ impl RemotePages {
                     },
                     |p| &mut p.versions,
                 );
-                self.fetch(
-                    cx,
-                    move || {
-                        #[cfg(debug_assertions)]
-                        if std::env::var_os("SPM_DEBUG_REMOTE_OFFER").is_some() {
-                            // Nothing newer for a server that runs it already.
-                            let running = remote::status(&inst).map(|s| s.comparable_version()).unwrap_or_default();
-                            let offer = canned_offer();
-                            return Ok((sentient_installer_core::releases::movement(&offer.version, &running) == sentient_installer_core::releases::Move::Newer).then_some(offer));
-                        }
-                        let installed = remote::status(&inst)?.comparable_version();
-                        let channel = crate::updates::Prefs::load().channel;
-                        crate::updates::check_with(channel, Some(installed), native, force).sentient
-                    },
-                    |p| &mut p.offer,
-                );
+                self.fetch_offer(force, cx);
             }
             Kind::Backup => {
                 let i2 = inst.clone();
@@ -1113,6 +1102,30 @@ impl RemotePages {
                 self.fetch(cx, move || remote::status(&i3), |p| &mut p.status)
             }
         }
+    }
+
+    /// The newest SENTIENT on this computer's update channel that is newer
+    /// than the server's (None: none newer), for Update and for Status's
+    /// "available" pill.
+    fn fetch_offer(&mut self, force: bool, cx: &mut Context<Self>) {
+        let inst = self.inst.clone();
+        let native = inst.detected.as_ref().is_some_and(|d| d.install != "Docker");
+        self.fetch(
+            cx,
+            move || {
+                #[cfg(debug_assertions)]
+                if std::env::var_os("SPM_DEBUG_REMOTE_OFFER").is_some() {
+                    // Nothing newer for a server that runs it already.
+                    let running = remote::status(&inst).map(|s| s.comparable_version()).unwrap_or_default();
+                    let offer = canned_offer();
+                    return Ok((sentient_installer_core::releases::movement(&offer.version, &running) == sentient_installer_core::releases::Move::Newer).then_some(offer));
+                }
+                let installed = remote::status(&inst)?.comparable_version();
+                let channel = crate::updates::Prefs::load().channel;
+                crate::updates::check_with(channel, Some(installed), native, force).sentient
+            },
+            |p| &mut p.offer,
+        );
     }
 
     /// Read one of the page's values in the background (stale-while-
@@ -1746,7 +1759,17 @@ impl RemotePages {
                                 .child(div().flex_1())
                                 .child(h_flex().ml_auto().child(ui::open_sentient_button("r-open", s.serving, move |_, _, cx| ui::open_url(&url, cx)))),
                         )
-                        .child(ui::card_fact(&theme, "SENTIENT version", s.sentient_version.clone()))
+                        .child({
+                            let note = match &self.offer {
+                                Read::Got(Some(o)) => crate::manager::status::VersionNote::Newer(o.version.clone()),
+                                Read::Got(None) => crate::manager::status::VersionNote::UpToDate,
+                                _ => crate::manager::status::VersionNote::Unknown,
+                            };
+                            let this = cx.entity().downgrade();
+                            crate::manager::status::version_row(&theme, "r-update-available", s.sentient_version.clone(), note, move |_, cx| {
+                                this.update(cx, |_, cx| cx.emit(crate::manager::status::OpenUpdate)).ok();
+                            })
+                        })
                         .child(ui::card_fact(&theme, "Database", s.database.clone()))
                         .when(!det.install.is_empty(), |p| p.child(ui::card_fact(&theme, "Runs as", det.install.clone())))
                         .child(ui::card_fact(&theme, "Server", format!("{} · {} {}", self.inst.address(), det.os_name, det.arch)))
