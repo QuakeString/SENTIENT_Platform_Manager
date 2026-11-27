@@ -15,6 +15,10 @@ refreshes that repository's Downloads table.
 
 ## [Unreleased]
 
+## [0.9.12] - 2026-11-27
+
+Status shows whether a newer SENTIENT is available, on this computer and on a server.
+
 ### Added
 - Status: the SENTIENT version shows "Up to date" or "<version> available"
   beside it, on this computer and on a server. The pill opens Update, so a
