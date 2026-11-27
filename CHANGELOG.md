@@ -15,6 +15,11 @@ refreshes that repository's Downloads table.
 
 ## [Unreleased]
 
+### Added
+- Status: the SENTIENT version shows "Up to date" or "<version> available"
+  beside it, on this computer and on a server. The pill opens Update, so a
+  newer SENTIENT no longer has to be looked for on the Update screen.
+
 ## [0.9.11] - 2026-11-23
 
 Logs show each new line the moment it is written, on this computer and on a server.

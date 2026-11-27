@@ -2143,6 +2143,11 @@ impl Manager {
                     None => {
                         let updates = self.updates.clone();
                         let p = cx.new(|cx| remote_pages::RemotePages::new(r.clone(), kind, updates, window, cx));
+                        // Status's "<v> available" pill opens Update.
+                        self._subscriptions.push(cx.subscribe(&p, |this, _, _: &status::OpenUpdate, cx| {
+                            this.page = Page::Update;
+                            cx.notify();
+                        }));
                         self.remote_pages.insert(r.id.clone(), p.clone());
                         p
                     }
