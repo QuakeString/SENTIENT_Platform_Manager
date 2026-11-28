@@ -25,6 +25,10 @@ refreshes that repository's Downloads table.
   check answers: those rows are as high with their pill as without.
 ### Changed
 - Files is now just above Platform settings in the menu.
+### Changed
+- The progress line under the top bar belongs to the open instance: a job
+  on another instance keeps its chip and Details in the bar, but the line
+  runs only for the instance you are looking at.
 
 ## [0.9.12] - 2026-11-27
 
