@@ -15,6 +15,10 @@ refreshes that repository's Downloads table.
 
 ## [Unreleased]
 
+## [0.9.13] - 2026-11-28
+
+Scrolling a job's log no longer moves the page, the Status card stays still, Files sits above Platform settings, and the loading line follows the open instance.
+
 ### Fixed
 - The wheel over a job's log (an update, a backup, a restore) scrolls the
   log only; the page around it no longer scrolls with it. The same for
@@ -23,9 +27,9 @@ refreshes that repository's Downloads table.
 - A server's Status card no longer grows a few pixels while its server
   agent is checked or updated ("Updating"), or when the SENTIENT version
   check answers: those rows are as high with their pill as without.
+
 ### Changed
 - Files is now just above Platform settings in the menu.
-### Changed
 - The progress line under the top bar belongs to the open instance: a job
   on another instance keeps its chip and Details in the bar, but the line
   runs only for the instance you are looking at.
