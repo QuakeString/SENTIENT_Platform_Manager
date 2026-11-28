@@ -350,9 +350,15 @@ fn log_card(theme: &gpui_kit::component::Theme, id: &'static str, entity: &Entit
         )
         .child(
             div()
+                .id(SharedString::from(format!("{id}-log-box")))
                 .relative()
                 .h(px(LOG_HEIGHT))
                 .w_full()
+                // Scrolling the log scrolls the log only, not the page.
+                .on_scroll_wheel({
+                    let h = handle.0.borrow().base_handle.clone();
+                    move |_, _, cx| ui::keep_wheel(&h, cx)
+                })
                 .rounded(px(8.))
                 .border_1()
                 .border_color(theme.border)
