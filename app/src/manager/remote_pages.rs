@@ -1783,6 +1783,8 @@ impl RemotePages {
                                 .gap_y_1()
                                 .items_center()
                                 .child(ui::card_fact(&theme, "Server agent", s.manager_version.clone()).flex_1().min_w(px(200.)))
+                                // As high with the pill as without: no jump when "Updating" shows.
+                                .child(ui::pill_room(&theme))
                                 .map(|r| match &self.agent_refresh {
                                     AgentRefresh::Running => r.child(ui::pill(&theme, Tone::Warn, "Updating")),
                                     AgentRefresh::Failed(why) => {

@@ -390,6 +390,13 @@ pub fn warn_text(on_light: bool) -> Hsla {
 }
 
 /// A rounded status label. Colour is never the only signal: the text says it.
+/// A row's room for a pill that comes and goes (a version check, an agent
+/// update): an empty pill of no width, not drawn, that keeps the row as
+/// high as a pill makes it, so the card does not grow when one shows.
+pub fn pill_room(theme: &Theme) -> Div {
+    pill(theme, Tone::Neutral, "\u{200b}").w(px(0.)).px_0().overflow_hidden().invisible()
+}
+
 pub fn pill(theme: &Theme, tone: Tone, text: impl Into<SharedString>) -> Div {
     let (bg, fg) = match tone {
         Tone::Good => (theme.success, theme.success_foreground),

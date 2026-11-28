@@ -15,6 +15,11 @@ refreshes that repository's Downloads table.
 
 ## [Unreleased]
 
+### Fixed
+- A server's Status card no longer grows a few pixels while its server
+  agent is checked or updated ("Updating"), or when the SENTIENT version
+  check answers: those rows are as high with their pill as without.
+
 ## [0.9.12] - 2026-11-27
 
 Status shows whether a newer SENTIENT is available, on this computer and on a server.
