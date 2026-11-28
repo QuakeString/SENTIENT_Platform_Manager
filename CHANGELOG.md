@@ -15,6 +15,11 @@ refreshes that repository's Downloads table.
 
 ## [Unreleased]
 
+### Changed
+- The progress line under the top bar belongs to the open instance: a job
+  on another instance keeps its chip and Details in the bar, but the line
+  runs only for the instance you are looking at.
+
 ## [0.9.12] - 2026-11-27
 
 Status shows whether a newer SENTIENT is available, on this computer and on a server.

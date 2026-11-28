@@ -1289,7 +1289,7 @@ impl Manager {
             }));
         let bell_panel = bell_open.then(|| self.notifications_panel(conditions, width, cx));
         let unseen = if unread_failed { 1 } else { 0 };
-        let line = self.strip.read(cx).line(window, cx);
+        let line = self.strip.read(cx).line(self.open_remote.as_deref(), window, cx);
         h_flex()
             .id("top-bar")
             .relative()
