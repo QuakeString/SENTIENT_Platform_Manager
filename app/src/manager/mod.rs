@@ -75,7 +75,7 @@ enum Page {
     About,
     /// Statistics: in the menu after Status, and opened from the top bar's monitors.
     Statistics,
-    /// SENTIENT's licence, directly above Platform settings.
+    /// SENTIENT's licence, above Files and Platform settings.
     Licence,
 }
 
@@ -85,13 +85,14 @@ impl Page {
         Page::Status,
         Page::Statistics,
         Page::Logs,
-        Page::Files,
         Page::Update,
         Page::Gateway,
         Page::Backup,
         Page::Migration,
         Page::Repair,
         Page::Licence,
+        // Files: just above Platform settings.
+        Page::Files,
         Page::Settings,
     ];
 
