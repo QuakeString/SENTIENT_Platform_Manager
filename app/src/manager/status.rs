@@ -139,6 +139,8 @@ pub(crate) fn version_row(theme: &gpui_kit::component::Theme, id: &'static str, 
         .gap_y_1()
         .items_center()
         .child(ui::card_fact(theme, "SENTIENT version", version).flex_1().min_w(px(200.)))
+        // As high before the check answers as with its pill after.
+        .child(ui::pill_room(theme))
         .map(|r| match note {
             VersionNote::Unknown => r,
             VersionNote::UpToDate => r.child(ui::pill(theme, Tone::Good, "Up to date")),
