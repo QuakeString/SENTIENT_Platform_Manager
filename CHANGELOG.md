@@ -15,6 +15,12 @@ refreshes that repository's Downloads table.
 
 ## [Unreleased]
 
+### Fixed
+- The wheel over a job's log (an update, a backup, a restore) scrolls the
+  log only; the page around it no longer scrolls with it. The same for
+  every other scroll box inside a page; a box with nothing to scroll lets
+  the page scroll.
+
 ## [0.9.12] - 2026-11-27
 
 Status shows whether a newer SENTIENT is available, on this computer and on a server.

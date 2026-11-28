@@ -2754,6 +2754,16 @@ mod menu_fit_tests {
     }
 }
 
+/// A wheel event over a scroll area that can scroll goes no further: the
+/// page around it does not scroll with it. Its own scroll has run by then
+/// (an element's scroll listener runs before its other wheel listeners, and
+/// a child's before its parent's).
+pub fn keep_wheel(handle: &ScrollHandle, cx: &mut App) {
+    if handle.max_offset().y > px(0.) {
+        cx.stop_propagation();
+    }
+}
+
 /// A scroll area that keeps its own size and scroll (a box sized by its
 /// content, a list scrolled from code) with the shared bar drawn over its
 /// edge: the bar paints where its handle's area is (gpui_base::Scrollbar
@@ -2785,9 +2795,14 @@ impl RenderOnce for ScrollY {
                 window.use_keyed_state((id, "scroll-y"), cx, |_, _| ScrollHandle::new()).read(cx).clone()
             }
         };
+        let own = h.clone();
         self.el
             .track_scroll(&h)
             .overflow_y_scroll() /* scroll-own: this is the shared bar's own area */
+            // The wheel scrolls this area only, not the page around it too
+            // (GPUI hands a wheel event to every scroll area under the
+            // pointer); an area with nothing to scroll lets it through.
+            .on_scroll_wheel(move |_, _, cx| keep_wheel(&own, cx))
             .child(div().absolute().top_0().left_0().size_0().child(gpui_kit::component::scroll::Scrollbar::vertical(&h)))
     }
 }
