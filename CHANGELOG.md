@@ -15,6 +15,9 @@ refreshes that repository's Downloads table.
 
 ## [Unreleased]
 
+### Changed
+- Files is now just above Platform settings in the menu.
+
 ## [0.9.12] - 2026-11-27
 
 Status shows whether a newer SENTIENT is available, on this computer and on a server.
