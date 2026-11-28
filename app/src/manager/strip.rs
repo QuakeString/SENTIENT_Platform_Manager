@@ -332,8 +332,11 @@ impl Strip {
     }
 
     /// The progress line under the top bar: (fraction or None while it
-    /// cannot say, its colour), or nothing when no job is shown.
-    pub fn line(&self, window: &mut Window, cx: &App) -> Option<AnyElement> {
+    /// cannot say, its colour), or nothing when no job is shown. It is the
+    /// open instance's (`open`: its id, None for this computer): a job on
+    /// another instance keeps its chip and Details, but no line, so the line
+    /// always says whether the instance in view is busy.
+    pub fn line(&self, open: Option<&str>, window: &mut Window, cx: &App) -> Option<AnyElement> {
         let theme = cx.theme();
         if self.job.is_none() && self.quiet > 0 {
             let accent = theme.primary;
@@ -361,6 +364,9 @@ impl Strip {
             );
         }
         let job = self.job.as_ref()?.read(cx);
+        if job.instance().map(|i| i.0).as_deref() != open {
+            return None;
+        }
         let (running, accent) = match job.state() {
             JobState::Running => (true, theme.primary),
             JobState::Done(_) => (false, theme.success_foreground),
